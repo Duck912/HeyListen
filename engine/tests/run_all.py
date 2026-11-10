@@ -167,6 +167,7 @@ ARGS = {
     "tests/test_lower_atomg_cas.py": ["--cxx", "g++"],
     "tests/test_lower_isberd_output.py": ["--cxx", "g++"],
     "tests/test_lower_ldg_uniform_order.py": ["--cxx", "g++"],
+    "tests/test_lower_tld_ms.py": ["--cxx", "g++"],
     "tests/test_lower_lea_hi_constant.py": ["--cxx", "g++"],
     "tests/test_wb_diff_split.py": ["--cxx", "g++"],
     "tests/test_native_suatom.py": ["--cxx", "clang++"],
