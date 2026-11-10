@@ -94,6 +94,7 @@ ARGS = {
     "tests/test_guestpages.py": ["--cc", "gcc"],
     "tests/test_hl_trace.py": ["--cc", "gcc"],
     "tests/test_windows_display_startup.py": ["--cc", "gcc"],
+    "tests/test_texture_handle_banks.py": ["--cxx", "{cxx}"],
     "tests/test_system_header_cache.py": ["--cc", "clang"],
     "tests/test_precompile_compute_guard.py": ["--cxx", "clang++"],
     "tests/test_vulkan_clear_mip.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
