@@ -23,6 +23,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <exception>
 #include <map>
 #include <deque>
 #include <memory>
@@ -4606,7 +4607,28 @@ VkBufferView dummy_texel_view(VkFormat f) {
     }
     return views[texel_kind(f)];
 }
+// A guest GPU address may resolve to another imported buffer later. Keep the views with the actual backing,
+// and release them only where memory.cpp already destroys that backing after its recorded users complete.
+using TexelViewKey = std::tuple<VkFormat, uint64_t, uint64_t>;   // (format, offset, range)
+struct TexelViews {
+    std::map<TexelViewKey, VkBufferView> views;
+    uint64_t failed_frame = UINT64_MAX;
+};
+std::mutex texel_views_mu;
+std::map<VkBuffer, TexelViews> texel_views;
+uint64_t texel_registry_failed_frame = UINT64_MAX;
 } // namespace
+
+void release_texel_buffer_views(VkBuffer buffer) {
+    // Unpublished imports may also be dropped by the import worker. Never take pools_mu under this lock:
+    // the callers that retire a published buffer already hold pools_mu, and gpu_buffer takes it first.
+    std::lock_guard lk(texel_views_mu);
+    auto it = texel_views.find(buffer);
+    if (it == texel_views.end()) return;
+    for (const auto& [key, view] : it->second.views)
+        if (view) vkDestroyBufferView(dev.device, view, nullptr);
+    texel_views.erase(it);   // (a later import may receive the same numerical VkBuffer handle)
+}
 
 VkBufferView texel_buffer_view(const nvn_tex* t, const nvn_view* v, bool storage) {
     if (!t || !t->gpu) return VK_NULL_HANDLE;
@@ -4628,29 +4650,49 @@ VkBufferView texel_buffer_view(const nvn_tex* t, const nvn_view* v, bool storage
     const uint64_t size = (uint64_t)std::max(1u, t->d.width) * bpb;
     // (a formatted store into it: textures over that memory are uploaded again once the GPU is done)
     if (storage) texture_gpu_wrote(t->gpu, size);
-    static std::unordered_map<uint64_t, VkBufferView> views;
-    // (RX_VK_POOL_MIRROR: a pool never imported is read through its mirror, bound at every use as any buffer is: synced with the
-    // CPU's writes, and written back when the view is a storage one; the view kept by buffer and offset too)
-    BufferRef b;
-    const bool every_use = memory_pool_mirror_on();
-    if (every_use) b = gpu_buffer(t->gpu, size, storage ? kGpuBufferWritten : kGpuBufferRead);
-    const uint64_t key = mix(mix(mix(t->gpu, (uint64_t)f << 1 | storage), size), every_use ? mix((uint64_t)b.buffer, b.offset) : 0);
     st_import_texel_views.fetch_add(1, std::memory_order_relaxed);   // (TICK-019: a view of the imported pool itself, never its mirror)
     st_import_texel_bytes.fetch_add((int64_t)size, std::memory_order_relaxed);
-    auto it = views.find(key);
-    if (it != views.end()) return it->second;
-    if (!every_use) b = gpu_buffer(t->gpu, size);
-    VkBufferView bv = VK_NULL_HANDLE;
-    if (b && b.offset % std::max<uint64_t>(dev.props.limits.minTexelBufferOffsetAlignment, 1) == 0) {
-        VkBufferViewCreateInfo ci{VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO};
-        ci.buffer = b.buffer;
-        ci.format = f;
-        ci.offset = b.offset;
-        ci.range = std::min<uint64_t>(size, (uint64_t)dev.props.limits.maxTexelBufferElements * bpb);
-        vkCreateBufferView(dev.device, &ci, nullptr, &bv);
+    // Resolve and stamp even a cache hit: the address can be remapped, and cached-only bindings are not idle.
+    // (RX_VK_POOL_MIRROR: a pool never imported is read through its mirror, bound at every use as any buffer is: synced with the
+    // CPU's writes, and written back when the view is a storage one)
+    BufferRef b = memory_pool_mirror_on() ? gpu_buffer(t->gpu, size, storage ? kGpuBufferWritten : kGpuBufferRead) : gpu_buffer(t->gpu, size);
+    if (!b || b.offset % std::max<uint64_t>(dev.props.limits.minTexelBufferOffsetAlignment, 1)) return VK_NULL_HANDLE;
+    const uint64_t range = std::min<uint64_t>(size, (uint64_t)dev.props.limits.maxTexelBufferElements * bpb);
+    if (!range) return VK_NULL_HANDLE;
+    const TexelViewKey key{f, b.offset, range};
+    std::lock_guard lk(texel_views_mu);
+    auto owner = texel_views.find(b.buffer);
+    if (owner == texel_views.end()) {
+        if (texel_registry_failed_frame == frame_no) return VK_NULL_HANDLE;
+        try {
+            owner = texel_views.try_emplace(b.buffer).first;
+        } catch (const std::exception&) {
+            texel_registry_failed_frame = frame_no;
+            return VK_NULL_HANDLE;
+        }
     }
-    views[key] = bv;
-    return bv;
+    TexelViews& cache = owner->second;
+    auto it = cache.views.find(key);
+    if (it != cache.views.end()) return it->second;
+    if (cache.failed_frame == frame_no) return VK_NULL_HANDLE;   // (one failed allocation per backing and present)
+    VkBufferViewCreateInfo ci{VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO};
+    ci.buffer = b.buffer;
+    ci.format = f;
+    ci.offset = b.offset;
+    ci.range = range;
+    VkBufferView view = VK_NULL_HANDLE;
+    if (vkCreateBufferView(dev.device, &ci, nullptr, &view) != VK_SUCCESS) {
+        cache.failed_frame = frame_no;   // (an error's output handle is undefined; never cache or destroy it)
+        return VK_NULL_HANDLE;
+    }
+    try {
+        cache.views.emplace(key, view);
+    } catch (const std::exception&) {
+        vkDestroyBufferView(dev.device, view, nullptr);   // (only the new, uncommitted view)
+        cache.failed_frame = frame_no;
+        return VK_NULL_HANDLE;
+    }
+    return view;
 }
 
 Texture* texture_for_present(const nvn_tex* t) {
