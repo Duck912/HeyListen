@@ -199,6 +199,8 @@ uint64_t texture_bytes();
 void full_barrier(VkCommandBuffer cmd, const char* why = "barrier (other)");
 void pass_start_barrier(VkCommandBuffer cmd, const char* why);   // (TICK-016: left out after draws only)
 void dispatch_barrier(VkCommandBuffer cmd, const char* why);
+/// (hookshot) RX_VK_GAME_ORDER: the game's own barriers order back-to-back passes and dispatches (on NVIDIA by default; vk_texture.cpp)
+bool game_order();
 /// Full barriers recorded and left out (RX_VK_BARRIER_DEDUPE_OFF=1: none), since the start
 void barrier_stats(int64_t* made, int64_t* left_out);
 /// (hookshot) Set around a draw's sampled-texture lookups (vk_draw.cpp): a new ASTC texture there may wait for a later frame

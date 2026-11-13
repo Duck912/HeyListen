@@ -763,6 +763,7 @@ std::unordered_map<uint64_t, std::unique_ptr<PipeEntry>> pipelines;   // (the re
 // (TICK-052: st_draws to st_mesh are bumped at every draw by every recording thread: a cache line a thread, split_count.h)
 SplitCount st_draws, st_skipped, st_dispatches, st_passes, st_mesh;
 int64_t st_pending_skips, st_waits;
+int64_t st_dispatch_unordered;   // (hookshot: dispatches right after another left without a barrier, RX_VK_GAME_ORDER)
 // (hookshot) skips by the line that made them, reported with the frame statistics (draw_skip_report)
 namespace {
 struct SkipSite { std::atomic<int> line{0}; std::atomic<int64_t> n{0}; int64_t last = 0; };
@@ -4185,6 +4186,8 @@ struct Pass {
 };
 TLS_OBJECT(pass, Pass)
 thread_local bool work_since_barrier = false;   // (GPU work recorded since the last full barrier: a dispatch orders after it)
+thread_local VkCommandBuffer last_dispatch_cmd = VK_NULL_HANDLE;   // (the last direct or indirect dispatch's command buffer, and the
+thread_local uint64_t last_dispatch_epoch = 0;                     // work count right after it: game_order's back-to-back test)
 // what the command buffer has bound (draws skip what is already there)
 thread_local bool last_desc_valid = false;
 thread_local const Program* last_desc_prog = nullptr;
@@ -9131,7 +9134,14 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     // (dispatches after other work wait for it: the WebGPU renderer's dispatches were ordered the same way by
     // wgpu's own tracking, and MKW's compute chains read what the one before wrote)
     static const bool no_order = getenv("RX_VK_NO_DISPATCH_ORDER") != nullptr;
-    if (work_since_barrier && !no_order) dispatch_barrier(cmd, "barrier (dispatch)");
+    // (hookshot, RX_VK_GAME_ORDER: a direct dispatch right after another, nothing recorded between, gets none: game_order)
+    const bool after_dispatch = !indirect && cmd == last_dispatch_cmd &&
+                                work_epoch.load(std::memory_order_relaxed) == last_dispatch_epoch && game_order() &&
+                                !par_active.load(std::memory_order_relaxed);
+    if (work_since_barrier && !no_order && !after_dispatch) dispatch_barrier(cmd, "barrier (dispatch)");
+    else if (after_dispatch && ++st_dispatch_unordered % 50000 == 1)
+        logf("vk: %lld dispatches right after another ordered by the game's barriers so far, with none of their own (RX_VK_GAME_ORDER)",
+             (long long)st_dispatch_unordered);
     work_since_barrier = true;
     if (!p.stages.empty() && p.stages[0].info.uses_cooperative_matrix) {   // (the game's networks, once each: what they read and write)
         static std::mutex mu;
@@ -9237,6 +9247,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             checkpoint_work('x', x, y, z);
             vkCmdDispatch(cmd, x, y, z);
         }
+        last_dispatch_cmd = cmd, last_dispatch_epoch = work_epoch.load(std::memory_order_relaxed);
     }
     if (dump_on() && dump_ssbo_wanted(p.key)) dump_ssbos(cmd, p, "after");
     if (gprof_on()) {
