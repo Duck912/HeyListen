@@ -53,7 +53,10 @@ enum class EntryWay : uint8_t {
     Geometry,       ///< the geometry processing mode changes
     FlagsMask,      ///< the drawable's flags meet the item's flag bit 3
     FlagsBit5,      ///< the drawable's flag bit 5
-    Indirect,       ///< the draw kinds (indirect, clusters) the plain path does not cover
+    Indirect,       ///< the indirect draw (kind bit 4)
+    ClusterOther,   ///< the cluster paths: the drawable's cluster entry is not the plain list of index ranges
+    ClusterCull,    ///< ... the culling loop (kind bit 7)
+    ClusterPlain,   ///< ... the other cluster path
     Instances,      ///< more than one instance
     NoRecorded,     ///< the sub-mesh has no pre-recorded list
     NoListAllowed,  ///< the block does not allow pre-recorded lists
@@ -64,6 +67,7 @@ const char* entry_way_name(EntryWay way);
 /// What the function reads of one entry before it writes anything, in place.
 struct KeyLoopEntry {
     GuestAddr entry = 0, drawable = 0, model = 0, resource = 0, query = 0, record = 0, command_buffer = 0;
+    GuestAddr cluster_list = 0;   ///< the cluster path's list of (range, count, descriptor) records (0: not that path)
     uint32_t pass = 0;       ///< the block's pass slot
     uint32_t index = 0;      ///< the query slot the entry uses
     uint32_t base = 0;       ///< the pass's query base

@@ -3,6 +3,8 @@
 
 #include <cstring>
 
+#include "hl/bridge/GfxBridge.h"
+
 namespace hl::bridge {
 
 namespace {
@@ -38,7 +40,8 @@ struct Mem {
 const char* entry_way_name(EntryWay way) {
     static constexpr const char* names[] = {"native",     "masked",   "enable",    "bit10",     "state",     "model",
                                             "inline",     "method",    "geometry",  "flags",     "bit5",
-                                            "indirect",   "instances", "norecorded", "nolist"};
+                                            "indirect",   "cl-other", "cl-cull",    "cl-plain",
+                                            "instances", "norecorded", "nolist"};
     static_assert(sizeof names / sizeof names[0] == (size_t)EntryWay::Count);
     return (size_t)way < (size_t)EntryWay::Count ? names[(size_t)way] : "?";
 }
@@ -93,7 +96,21 @@ EntryWay KeyLoopBridge::classify(const KeyLoopCall& call, GuestAddr entry, KeyLo
         const uint32_t drawn = m.rd<uint32_t>(drawable + 84);
         if ((call.flags & 8u) & drawn) return EntryWay::FlagsMask;
         if ((drawn >> 5) & 1) return EntryWay::FlagsBit5;
-        if (drawn & call.flags & 0x51u) return EntryWay::Indirect;
+        if (const uint32_t kinds = drawn & call.flags; kinds & 0x51u) {
+            if (kinds & 0x10u) return EntryWay::Indirect;
+            const GuestAddr clusters = m.rd<uint64_t>(drawable + 120);
+            if ((kinds & 2u) && clusters) {
+                const GuestAddr cluster = clusters + (uint64_t)m.rd<uint8_t>(block + kBlockPass) * 24;
+                if (m.rd<int8_t>(cluster + 16) == (int32_t)plan.sub_mesh) {
+                    // (this sub-mesh's cluster entry: a list of records, each a run of index ranges of one descriptor)
+                    if (m.rd<uint64_t>(cluster + 8) != 0) return EntryWay::ClusterOther;
+                    plan.cluster_list = m.rd<uint64_t>(cluster);
+                    plan.command_buffer = m.rd<uint64_t>(m.rd<uint64_t>(block + kBlockContext) + 216);
+                    return EntryWay::Native;
+                }
+            }
+            return (kinds & 0x80u) ? EntryWay::ClusterCull : EntryWay::ClusterPlain;
+        }
         if (m.rd<uint16_t>(drawable + 92) > 1) return EntryWay::Instances;
         plan.record = m.rd<uint64_t>(resource + 1592) + (uint64_t)plan.sub_mesh * 0x270;
         if (!(m.rd<uint8_t>(plan.record + 88) & 1)) return EntryWay::NoRecorded;
@@ -112,6 +129,37 @@ GuestAddr report_byte(const Mem& m, const KeyLoopEntry& p) {
     return m.rd<uint64_t>(p.query + 32) + (int64_t)(int32_t)(used < size ? used : 0);
 }
 }   // namespace
+
+// The cluster path's draw: the entry's list holds records of three u16 (the first index range, how many ranges, the
+// descriptor), ended by a record with no ranges. Each record is one indexed draw from the descriptor's index buffer:
+// the ranges are adjacent, so one draw from the first range's offset covers them to the end of the last. The block's
+// triangle counter takes a third of each draw's index count.
+template <class Address>
+void draw_clusters(const Mem& m, const KeyLoopEntry& p, GuestAddr block, gfx::CommandSink& sink, Address&& address) {
+    using gfx::command;
+    using gfx::Proc;
+    const GuestAddr descriptors = m.rd<uint64_t>(m.rd<uint64_t>(p.resource + 8) + 24);
+    uint32_t triangles = 0;
+    GuestAddr record = p.cluster_list;
+    for (uint32_t ranges = m.rd<uint16_t>(record + 2); ranges != 0; ranges = m.rd<uint16_t>(record + 2)) {
+        const GuestAddr desc = descriptors + (uint64_t)m.rd<uint16_t>(record + 4) * sizeof(guest::SubmeshDescriptor);
+        const GuestAddr first = m.rd<uint64_t>(desc) + (uint64_t)m.rd<uint16_t>(record) * 8;
+        const GuestAddr last = first + ((uint64_t)ranges << 3) - 8;
+        const uint32_t first_offset = m.rd<uint32_t>(first);
+        const uint32_t shift = m.rd<uint32_t>(desc + offsetof(guest::SubmeshDescriptor, index_type));
+        const uint64_t span = (uint64_t)m.rd<uint32_t>(last) - (uint64_t)first_offset;
+        const uint32_t count = m.rd<uint32_t>(last + 4) + (uint32_t)(span >> (shift & 63));
+        const uint32_t primitive = m.rd<uint32_t>(desc + offsetof(guest::SubmeshDescriptor, primitive));
+        const uint64_t base = address(m.rd<uint64_t>(m.rd<uint64_t>(desc + offsetof(guest::SubmeshDescriptor, index_holder)) + 8));
+        sink.emit(command(Proc::CommandBufferDrawElementsInstanced, p.command_buffer,
+                          m.rd<uint32_t>(kPrimitiveTable + 4ull * primitive), m.rd<uint32_t>(kIndexTypeTable + 4ull * shift),
+                          count, base + first_offset, m.rd<uint32_t>(desc + offsetof(guest::SubmeshDescriptor, base_vertex)), 1, 1));
+        const int64_t product = (int64_t)(int32_t)count * 0x55555556ll;
+        triangles += (uint32_t)(product >> 32) + (uint32_t)((uint64_t)product >> 63);
+        record += 6;
+    }
+    m.wr<uint32_t>(block + kBlockTriangles, m.rd<uint32_t>(block + kBlockTriangles) + triangles);
+}
 
 void KeyLoopBridge::snapshot_prepare(GuestAddr block, GuestAddr command_buffer, uint8_t* bytes) const {
     std::memcpy(bytes, runtime_.ptr(block), 352);
@@ -192,7 +240,9 @@ void KeyLoopBridge::run(const KeyLoopCall& call, const KeyLoopEntry& p, const Pr
     }
     if (p.in_range) {
         const uint64_t prepared = prepare(block, p.drawable);
-        if (prepared & 1) {
+        if ((prepared & 1) && p.cluster_list) {
+            draw_clusters(m, p, block, sink, address);
+        } else if (prepared & 1) {
             mark();
             sink.emit(command(Proc::CommandBufferCallCommands, cb, 1, p.record + 80));
             m.wr<uint32_t>(block + kBlockTriangles, m.rd<uint32_t>(block + kBlockTriangles) + m.rd<uint32_t>(p.record + 616));
