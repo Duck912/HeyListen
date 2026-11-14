@@ -1080,12 +1080,75 @@ mesh-task draws, with the cluster paths and the scene objects' virtual calls cal
 item: the NVN calls of one call of `0x80084de0` (Initialize to Finalize) against the translated item's, plus the
 bytes written into the entry, the slot and the manager.
 
-**Not built in this session.** The loop's own body between the inlined pieces (how it walks the list, the per-draw
-keys it compares, the render-enable and counter logic, the 3 to 5 threads' claim: the runner hands out items, each a
-key, so the threads never share an item; the cache's mutex is the one shared step) was not read to the level a native
-version needs; nothing of A is native, `HL_GFX_LOOP` does not exist yet. Next: read the draw loop (from the view's setup to
-EndRecording, `0x800855a8` to `0x80086788`, and the cluster and indexed blocks after it) block by block against `0x80681320` and `0x80078fc0`, whose native halves exist, and write it as one C++
-loop over the list with the leaves inlined, behind an entry gate with the whole-item check.
+### The loop's map (session 2f: read, and measured with an observing gate)
+
+**What one item does, in order** (guest addresses of the job; every step is one path of the one function):
+
+1. *Entry*: returns at once when the cache's mask (+0x14) does not meet the key's first word, its count (+0x2c) is not
+   positive, or the item's flag (x4+0xc bit 0) is set. Then the key's crc32 over its fourteen words; under the cache's
+   mutex (+0x48, the SDK's lock / unlock imports `0x83c62460` / `0x83c62470`) the entry whose hash (+0xc0) and 0x70
+   bytes (`0x83c61f00`, a compare) match, else a new one (+0x40 grows, the key copied in).
+2. *The slot*: an atomic add on the manager's counter (+0xb8) picks a 0x98-byte slot (+0xd8, by +0xe1 x +0xea); a scan
+   of the manager's ring entries (0x28 bytes, four at a time, `0x84f84`..`0x850bc`) picks the ring with the least used,
+   whose three indices are **written into the key** (+0x6c..+0x6e); under the manager's lock (+8) the slot takes its
+   memory: Initialize, AddControlMemory, AddCommandMemory, BeginRecording, SetMemoryCallback(Data), SetRecordingMode,
+   two ReportCounters; the view (SetScissor, SetViewport, SetDepthRange).
+3. *The draw function `0x80681320`, inlined once*: the 352-byte block built at sp+0x108 from the draw and the material
+   (`0x85600`..`0x85d40`: flags, SDK reads `0x83c61cf0` twice, line width and point size), then the key from the flag
+   bits and the dispatch: the item's list is a (start, count) pair at x5 over an array of 8-byte pointers to **draw
+   entries** (entry +0x8 a kind mask tested against the cache entry's first word, +0xe sub-key bits 0-3 and bit 4,
+   +0x10 the drawable). A count below 1 goes straight to the epilogue.
+   - key 0x80: a loop over the entries (`0x85d88`), per entry the render-state function's calls inlined when the
+     sub-key changes, counters (Reset / Report) and **the sub-mesh submission called** (`0x85ea0`);
+   - key 0x40 (`0x8746c`) and key 0 (`0x894f4`): loops over the entries and their sub-meshes, each calling **the shared
+     preparation** (`0x8758c`, `0x895b8`) and then the drawable's submission method (vtable +0x58): when it is
+     `0x80078fc0` its body is inlined there (geometry mode, CallCommands, indexed draw, mesh tasks, the cluster paths),
+     else the method is called (`0x8008f8e0`, a 200-instruction method that calls the preparation; `0x800955a0`);
+   - any other key: **one call of the per-variant draw** through the table at `0x84c29878` for the whole list (x0 the
+     list, w1 the count, x2 the block): template instances such as `0x8050f680` and `0x810385a0`, which call the
+     render-state function `0x80077d60` and the render-enable function `0x80078b10` themselves.
+4. *Epilogue* (`0x86694`..): the material's state callback when it is not the empty one; the render enable put back
+   (sp+0x1c8 / +0x1d0); an atomic add on the cache entry's +0xd8; the slot's ReportCounter; EndRecording (the handle
+   into slot +0x50), the memory used (slot +0x4c, +0x2c, slot +0x58 bit 0), Finalize, a global counter decremented
+   (`[0x84ca2d60]`+0xd1c), the pool's flags and its range flushed.
+
+**Threads.** The runners hand out whole items (each call is one key), so two threads never share an item; the shared
+steps are the cache's mutex (step 1), the manager's counter and lock (step 2) and the atomic adds of step 4. Items ran
+on 6 host threads in every scene.
+
+**The observing gate.** `HL_GATE(80084de0, "3ba04b5feac748d3")` (in `code_hot_7.c`, beside the two other gates): with
+`HL_GFX_CHECK=1` it lets the translated item answer and counts, per item, its NVN calls (the check's tap) and the
+route its draws took, from the return address the submission, preparation and render-state gates are called with
+(route bits: 1 the key-0x80 loop's call, 2 the key-0x40 loop's, 4 the key-0 loop's, 8 any other caller: a variant or a
+drawable's own method). Without the check it turns itself off at its first call. The line `hl gfx: loop map: ...`
+every 10 s. Main PC, `HL_GFX_CHECK=1`, 110 s a scene (counts at the last report; the other checks of the same runs at
+0 mismatches):
+
+| Scene | Items (at once) | No draw seen | Key-0x80 loop only | Key-0x40 / key-0 loops only | With a variant or a method | NVN calls: no draw / loops only / with a variant |
+|---|---:|---:|---:|---:|---:|---|
+| castle-move | 467,894 (23,436) | 240,557 | 37,635 | 6,312 / 36,445 | 146,945 | 6.2% / 9.4% / 84.4% of 99.4 M |
+| kokiri-idle | 416,619 (264) | 210,332 | 39,020 | 3,999 / 36,260 | 127,008 | 5.7% / 8.7% / 85.6% of 98.6 M |
+| hyrule-walk | 294,915 (21,948) | 154,361 | 24,308 | 3,228 / 19,118 | 93,900 | 7.4% / 8.5% / 84.1% of 63.4 M |
+
+What it says:
+
+- **Half the items draw nothing** a gate sees (the items that return at once are among them), at 26-35 NVN calls each of the others: the slot, the recording's frame (Initialize to
+  SetDepthRange, EndRecording to the flush) and an empty or fully masked list. *(Inference: the frame alone is 21-24
+  calls; the rest a few counters.)*
+- **The job's own loops, with the native leaves inside, carry 9% of its NVN calls**; 84-86% are in items whose draws go
+  through the per-variant draws or the drawables' own submission methods (`0x8008f8e0`, `0x800955a0`), which are guest
+  code. The largest items (3,338-3,344 NVN calls) are of that kind.
+- So a native loop that composes the native leaves only, as the brief puts it, is exact on 9% of the work and the empty
+  items; the rest needs the per-variant draws (about 130 template instances, section 8) and the two methods made native,
+  or called back from the native loop as guest calls.
+
+**Not built yet** (nothing of the item is native; there is no `HL_GFX_LOOP`): the native item. The order the map
+gives: (1) the item's frame (steps 1, 2 and 4) native. An entry gate answers a whole call, so the frame cannot be native
+with a translated step 3 in its middle; the first native item is therefore the **empty item** (a count below 1,
+or no entry passing the mask on the key-0x80 route, decidable at the entry by reading the list), checked whole (its
+NVN calls from Initialize to the flush, the key's three bytes, the cache entry, the slot and the manager's words); (2)
+the key-0x80 loop with the native submission and render state; (3) the key-0x40 / key-0 loops with the native
+preparation and the inlined submission, calling the methods back; (4) the per-variant draws, by template.
 
 ## Not established
 
