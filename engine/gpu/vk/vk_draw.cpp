@@ -7183,6 +7183,21 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
                      (unsigned long long)cp->key);
             return;
         }
+        // (hookshot, issues 6 and 7, 2026-11-14) OoT's 2b37a33d189014a8 and 0948a49a3c3068a8: two small box draws (24 indices) into a
+        // half-size HDR target that read the 128 x 72 x 96 volume textures, every frame. On an RTX 5070 Ti the device was lost as
+        // soon as Link entered water, and both of a player's reports named these two as the only draws in flight both times, the
+        // second the last one begun (NV checkpoints, knoch23, v0.6.6). On this RTX 3060 Ti they never hang, but they are wrong
+        // too: in the Market fountain Link's skin, hair and belt came out white (hs2864), and normal without them (hs2865).
+        // Standing in the Market and Kokiri Forest without them, no difference beyond the anti-aliasing's jitter (hs2866 /
+        // hs2867). Left out until what they compute is translated right; RX_VK_FOG_BOXES=1 runs them as before
+        static const bool fog_boxes = getenv("RX_VK_FOG_BOXES") && atoi(getenv("RX_VK_FOG_BOXES")) != 0;
+        if (!fog_boxes && (cp->key == 0x2b37a33d189014a8ull || cp->key == 0x0948a49a3c3068a8ull)) {
+            static std::atomic<int> told{0};
+            if (told++ < 2)
+                logf("vk: draws of program %016llx left out: a GPU hang in water on RTX 50 cards, Link white in water elsewhere "
+                     "(RX_VK_FOG_BOXES=1 runs them)", (unsigned long long)cp->key);
+            return;
+        }
         // (the list parsed once into key prefixes: it was a snprintf and a string compare on every draw)
         static const std::vector<std::pair<uint64_t, uint64_t>> skip_keys = [] {   // (value, mask) of each prefix
             std::vector<std::pair<uint64_t, uint64_t>> v;
