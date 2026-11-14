@@ -1179,8 +1179,8 @@ traits structure replaces the family. Both were tested against the code and meas
   memory used read back (+0x4c, +0x2c), **Finalize**, the global counter `[0x84ca2d60]`+0xd1c taken and put back,
   the pool's flags (and a flush when bit 2 is set), the ring's used sizes advanced under the lock, the pass object
   unlinked, and **when either memory used is not 0, the slot is appended to the cache entry's list (+0xc8 count, +0xd0
-  array)**: the recording is handed on to whoever replays the entry's list. A recording holding the view state has
-  command memory used, so an empty item's recording is handed on like any other.
+  array)**: the recording is handed on to whoever replays the entry's list. *(Inference, not measured: a recording
+  holding the view state has command memory used, so an empty item's recording is handed on like any other.)*
 - So nothing of an empty item can be dropped on the code's evidence: its recording is listed for the consumer, its
   slot and ring sizes are the manager's, its counters are the game's. A native empty item is the whole frame native
   (about 1,000 of the 1,500 guest instructions read: the block build included, since its key decides whether a variant
@@ -1192,6 +1192,8 @@ submission, a preparation or a render-state call):
 | Scene | Items | Count below 1 | All entries masked (all drew nothing) | Live, no draw | Live, drew |
 |---|---:|---:|---:|---:|---:|
 | castle-move | 169,176 | 0 | 87,242 at 17.0 NVN calls each | 2,277 at 672 each | 79,031 at 466 each |
+| kokiri-idle | 329,901 | 0 | 170,179 at 17.0 | 4,106 at 763 | 155,293 at 478 |
+| hyrule-walk | 252,440 | 0 | 129,596 at 17.0 | 3,490 at 523 | 118,282 at 420 |
 
 What it says:
 
@@ -1209,7 +1211,10 @@ small bodies (90 to 476 lifted lines) with the same two direct callees (the rend
 render-enable function `0x80078b10`, plus the sub-mesh submission in three of them) whose sizes and indirect-call counts
 follow the key's bits exactly (bit 0 adds 4 indirect calls and about 40 lines in every family; the families of bits
 4-7 step 90-100, 195-211, 308-323, 410-428 lines): **one template instantiated over 8 option bits**, as the owner read
-it. Three entries are other code: key 5 `0x8008b3e0` (4,065 lines, 51 NVN sites), key 0xa0 `0x8008d640` (4,032 lines,
+it. Their NVN procedures are the same in every family (render enable, conditional render enable, a buffer's address;
+the families from 0x50 up add a counter reset and report), and their other indirect calls are the drawables' virtual
+methods: the instances are the loop and the state around the draw, the draws themselves are the methods'. Three
+entries are other code: key 5 `0x8008b3e0` (4,065 lines, 51 NVN sites), key 0xa0 `0x8008d640` (4,032 lines,
 49 NVN sites) and key 0xb0 `0x80522a20` (960 lines). The two large ones have the job's own draw loop's direct callees
 (the shared preparation, the cluster paths, the indexed draws: the same thirteen functions as the job) and the
 render-state and submission inlined: they are **the job's draw loop specialized for one key**, as keys 0x80, 0x40 and
@@ -1220,9 +1225,12 @@ return address its gates saw; other first return addresses are the drawables' me
 
 | Scene | Variant keys taken | Key 0xa0 (`0x8008d640`) | The small template's keys | Methods: `0x800955a0` / `0x8008f8e0` / `0x80296540` / `0x800715e0` |
 |---|---:|---|---|---|
-| castle-move | 4 | 9,998 items, 16.6 M NVN (41.6%) | 0x84, 0x4, 0x50: 1,501 items, 0.41 M (1.0%) | 10.4 M / 1.1 M / 0.56 M / 0.34 M (31%) |
+| castle-move | 4 | 9,998 items, 16.6 M NVN (41.6%) | 0x84, 0x4, 0x50: 1,501 items, 0.41 M (1.0%) | 10.4 M (26.2%) / 1.1 M / 0.56 M / 0.34 M |
+| kokiri-idle | 3 | 19,602 items, 33.3 M (41.5%) | 0x84, 0x4: 3,266 items, 1.48 M (1.8%) | 21.4 M (26.7%) / 2.0 M / 1.1 M / 0.66 M |
+| hyrule-walk | 3 | 15,332 items, 21.4 M (39.7%) | 0x84, 0x4: 2,553 items, 0.79 M (1.5%) | 12.8 M (23.8%) / 2.0 M / 0.84 M / 0.55 M |
 
-(Shares of the 39.8 M NVN calls of all items in the run.)
+(Shares of all items' NVN calls in the run: 39.8 M, 80.2 M, 53.8 M. A method's figure is the NVN calls of the items
+whose first off-loop draw came from it, the job's own loop calls in those items included.)
 
 What it says:
 
@@ -1241,6 +1249,8 @@ What it says:
   filter, and its check has to compare a frame whose shared effects (the slot counter, the rings, the entry's list,
   the NVN layer's recording) cannot be run twice: the native side must compute from a snapshot of what the frame reads,
   into a recording whose return values (EndRecording's handle, the memory used) are taken from the translated run.
+- No picture validation: the build only observes (the translated item answers); the other checks of the same runs
+  stayed at 0 mismatches.
 - No crossings removed (nothing native). What the empty item would remove: its 17 NVN calls, each a crossing from
   translated code into the NVN layer, become native calls under one gate crossing: 16 a item.
 
