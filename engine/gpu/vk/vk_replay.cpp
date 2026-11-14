@@ -714,9 +714,15 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
         // the next wait or present and the GPU sat idle meanwhile, and with serial replay the game waits for it mid-frame
         // (take_capture's late pages), so the GPU started cold just as it was waited for. RX 9070 XT, RADV, Kokiri Forest:
         // 33-41 fps -> 46-61, no flashes in 5230 frames; ~10 flushes a frame of ~3.7 command buffers each, so batching still
-        // groups the submits while the GPU is busy. RX_VK_BATCH_IDLE=0: held until a wait, a present or the cap, as before
+        // groups the submits while the GPU is busy. RX_VK_BATCH_IDLE=0: held until a wait, a present or the cap, as before.
+        // (HeyListen, stream Q1) Not while the recordings are held for a late fix (late_hold): batch_tl does not see the
+        // submission the fix's value is in (sent before the hold began, outside the batches), so "idle" was true while the
+        // GPU still ran it, and the flush then waited for that value under the queue's lock (late_fix_flush_locked): once a
+        // frame, 8.8 ms on the replay thread (PC 3050, castle-move: "600 by a submit or wait that needed the queue (8.83 ms
+        // each)" against 0 without the flush), the 2-4% main lost to v0.3.2. Those recordings go out when the fix thread
+        // sees the value reached (FR_VALUE), as TICK-060 has it
         static const bool idle_flush = !getenv("RX_VK_BATCH_IDLE") || atoi(getenv("RX_VK_BATCH_IDLE")) != 0;
-        if (idle_flush && !pend.cbs.empty()) {
+        if (idle_flush && !late_hold && !pend.cbs.empty()) {
             uint64_t done = 0;
             if (vkGetSemaphoreCounterValue(dev.device, batch_tl, &done) == VK_SUCCESS && done >= batch_flushed)
                 flush_reason = FR_OTHER, queue_flush_locked();
