@@ -89,7 +89,7 @@ EntryWay KeyLoopBridge::classify(const KeyLoopCall& call, GuestAddr entry, KeyLo
     if (plan.in_range) {
         plan.resource = m.rd<uint64_t>(drawable + 104);
         const GuestAddr resource = plan.resource;
-        if (m.rd<uint8_t>(resource + 1694) != m.rd<uint8_t>(block + 59)) return EntryWay::Geometry;
+        if (m.rd<uint8_t>(resource + 1694) != m.rd<uint8_t>(block + kBlockGeometry)) return EntryWay::Geometry;
         const uint32_t drawn = m.rd<uint32_t>(drawable + 84);
         if ((call.flags & 8u) & drawn) return EntryWay::FlagsMask;
         if ((drawn >> 5) & 1) return EntryWay::FlagsBit5;

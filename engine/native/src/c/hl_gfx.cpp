@@ -612,7 +612,7 @@ hl::bridge::KeyLoopBridge* g_var;
 bool g_var_native;
 std::atomic<uint64_t> g_var_calls{0}, g_var_entries{0}, g_var_native_calls{0}, g_var_by[(size_t)EntryWay::Count];
 hl::gfx::StateCheck* g_var_check;
-std::atomic<uint64_t> g_var_unchecked{0};
+std::atomic<uint64_t> g_var_unchecked{0}, g_var_raced{0};
 // what the native entries do that the translation did as calls out of lifted code: NVN calls (queries included) and
 // calls of the shared preparation
 std::atomic<uint64_t> g_var_commands{0}, g_var_prepares{0};
@@ -719,6 +719,13 @@ void var_checked(const hl::bridge::KeyLoopCall& call, const hl::bridge::KeyLoopE
     g_var->run(call, plan, replay, native, g_nvn);
     unmatched |= next != t_var_segments.size();
     g_var->snapshot(call, plan, post_n);
+    // (the query object is shared by the items of other threads: when either run's own stamp store does not read back
+    // as the block's value it was overwritten there in between, and the stamp and flag byte are not this entry's to
+    // compare)
+    if (plan.reset && (std::memcmp(post_t + 353, pre + 76, 4) != 0 || std::memcmp(post_n + 353, pre + 76, 4) != 0)) {
+        std::memcpy(post_n + 353, post_t + 353, 5);
+        g_var_raced.fetch_add(1, std::memory_order_relaxed);
+    }
     g_var_check->compare(call.block, 0, native.calls(), t_var_translated.calls(), post_n, post_t, sizeof post_n, unmatched);
     g_var->restore(call, plan, post_t);
 }
@@ -770,10 +777,10 @@ extern "C" int hl_gfx_var_report(char* out, size_t cap) {
         const hl::gfx::StateCheck::Report r = g_var_check->report();
         n += std::snprintf(out + n, cap - n,
                            "; check: entries compared %llu, NVN calls compared %llu, mismatched entries %llu (NVN calls "
-                           "%llu, bytes %llu), not compared (a preparation left to the translation) %llu",
+                           "%llu, bytes %llu), not compared (a preparation left to the translation) %llu, query object overwritten by another thread %llu",
                            (unsigned long long)r.calls, (unsigned long long)r.commands,
                            (unsigned long long)r.mismatched_calls, (unsigned long long)r.command_mismatches,
-                           (unsigned long long)r.block_mismatches, (unsigned long long)g_var_unchecked.load());
+                           (unsigned long long)r.block_mismatches, (unsigned long long)g_var_unchecked.load(), (unsigned long long)g_var_raced.load());
     }
     return n < 0 ? 0 : ((size_t)n < cap ? n : (int)cap - 1);
 }

@@ -1273,6 +1273,102 @@ price of a crossing (out of lifted code, the gate's look at the call, back: the 
 56 ns, so about 0.1 ms of CPU a frame for the crossings themselves; the rest is the native work and its NVN calls. A
 declined preparation costs as much as an answered one (1.6 us): its route is decided most of the way before it declines.
 
+## 13. Stream 2i: the key-0xa0 draw function `0x8008d640` (native on its plain entries)
+
+**What it is.** The function is reached only through the variant table (`0x84c29878`, no direct caller), so it is
+answered by pointer (`HL_ANSWER`, no lifted code changes; `hl_translated` gives the lifted body for the entries left to
+it). Arguments: x0 the item's list of draw entries (8-byte pointers), w1 their count, x2 the render-state block, x3 the
+key's first word, w5 the item's flags. It is a loop over the list that **keeps nothing between entries but the block**
+(and the command buffer): the prologue only saves registers and derives values from the arguments, the epilogue only
+restores them. So the translated function can be called on any sublist, in particular on one entry: **an entry the
+native code does not take is run by the translation on a list of that one, and the next entry is looked at natively**.
+That is the per-draw decline the brief asked for, with no item-level decision.
+
+**One entry** = a drawable and one of its sub-meshes (entry +16 the drawable, +8 a kind mask, +14 bits: 0-3 state sub-key,
+4 render enable, 6-9 sub-mesh, 10). In the function's order (offsets in bytes):
+
+1. Kind mask (+8) against x3: no match, nothing happens. *(native)*
+2. Render enable (entry bit 4) against block+91: differs, the render-enable function is inlined *(left)*. The state
+   sub-key (| 0x80 when the block's mask +104 meets the entry; bit 10 then set: left) against block+90: differs, the
+   render-state function is inlined *(left)*.
+3. The drawable's model (+8): its per-pass table (+64, 0x100 bytes a pass slot = block+56) gives the pass's **query
+   object** (+104) and a query base (+120); the model's class method (vtable +488) must be the game's usual one *(else
+   left)*. The query slot index = drawable+24 + model+244 x pass.
+4. Query not null and model+72 = 0 (**reset and report**): the command buffer's mark byte (+0x10) set, **ResetCounter**(cb,
+   1), query+40 = block+76; and, after the draw, the report slot's flag byte (query+32 array, index wrapped to query+24)
+   |= 1, **BufferGetAddress**(query+80) and **ReportCounter**(cb, 1, address + slot x 32).
+5. Block mask meets the entry (**conditional render**): when the (query, slot) pair differs from block+192 / +200:
+   **SetRenderEnable**(cb, 1) when one was set, then, with a query, BufferGetAddress and **SetRenderEnableConditional**(cb,
+   1, address + slot x 32) and the pair stored in the block; without a query only the SetRenderEnable and the pair
+   (0, 0xffffffff) stored.
+6. The sub-mesh (entry bits 6-9) against the drawable's count (+30 bits 4-7): out of range, no draw. Else: the drawable's
+   submission method (vtable +0x58) must be `0x80078fc0` *(else the method is called: left)*; geometry mode against block+59
+   *(differs: left)*; the shared preparation `0x8008fc00` (block, drawable, 0); on its result's bit 0: drawable+84
+   against the item flags' bit 3 and its own bit 5 *(left)*, draw kinds 0x51 *(clusters, indirect: left)*, instances
+   above 1 or no pre-recorded list on the sub-mesh record *(left)*; the plain case is the mark byte and **CallCommands**(cb,
+   1, record + 80), and the block's triangle counter (+80) += record+616.
+7. The global inline-write switch set: left (never seen).
+
+All the tests of an entry are read before anything is written (the preparation does not change them: it rewrites block
+bits 12, 13, 15 of +92, not the bit 5 read here), so an entry is native or translated whole.
+
+**Built.** `hl::bridge::KeyLoopBridge` (`bridge/LoopBridge.{h,cpp}`): `classify()` (the reads, the way: `EntryWay`),
+`run()` (the writes in place and the commands into a sink), `snapshot / restore` for the check; four NVN procedures
+added to the table (ReportCounter, ResetCounter, SetRenderEnable, SetRenderEnableConditional: 43 now); `hl_gfx_var_*`
+in the C surface; `host/hl_gfx.c`: `HL_ANSWER(0x8008d640)`, the translation on a one-entry list, the preparation
+called through `hl_gfx_prep_apply` directly (the gate's own native answer, no crossing) and through `a64_icall` of the
+function when it declines. Switch `HL_GFX_VAR`: 0 (default) the translation, 1 native on the plain entries, 2 only
+classify (every entry translated; the line `hl gfx: key loop` says how many take each way).
+
+**The check** (`HL_GFX_VAR_CHECK=1`; needs no `HL_GFX_CHECK`): for each entry the native code would take, the translated
+body runs first on that one entry with the NVN tap recording (each call of the preparation is a segment: its result and
+the block it left), the memory the entry may write (the block, the mark byte, the query's stamp and flag byte) is put
+back, the native entry runs into a recording with the preparation **replayed** from its segment (the preparation has its
+own checks), the two lists of calls and the bytes left are compared, and the translated run's state is put back. An entry
+whose preparation was not answered natively is not compared (counted).
+
+### Measured (main PC, slot a, 110 s a scene)
+
+**How the entries fall** (`HL_GFX_VAR=2`/`1`, counts at the last report; they vary a little with the scene's time):
+native about 33%, masked 3-4%, left: draw kinds 0x51 (clusters and indirect draws, heavy ones) 34-35%, the drawable's own
+submission method (`0x800955a0` and the other methods) 4-20%, render-enable change 3%, state change 3.5%, sub-key bit 10
+2.5%, geometry mode 0.4%. Conditional render with no query object is 16% of the entries at first sight (it was the
+largest "left" before it was written: the pair stored, nothing recorded). The model-class test failed 11 times, the
+inline-write switch, the item-flag bit 3 and bit 5, instances above 1 and a missing pre-recorded list never. So the plain
+path is a third of the entries and the **cluster path (a numeric kernel with the frustum and depth-pyramid tests) is the
+next third**, then the drawables' methods.
+
+**The check** (`HL_GFX_VAR_CHECK=1`, valid.sh, three scenes, build `s2i-var`): entries compared / NVN calls compared /
+mismatched: kokiri-idle 315,603 / 3,245,237 / 0; castle-move 287,132 / 2,986,749 / 0; hyrule-walk 82,856 / 853,745 / 0
+(14 entries of castle-move not compared: their preparation went to the translation). The entry's stamp store in the
+query object and the flag byte are shared with the items of other threads: 6, 8 and 2 entries had one of them overwritten
+between the two runs and are compared without those bytes (a first build, before that rule, logged 3-6 byte mismatches an
+scene, all at the query's stamp, all in entries whose stamp did not read back as the block's value in one of the runs).
+The call-by-call identity of the commands (procedure and arguments, guest pointers as values) and the 352 bytes of the
+block, the mark byte, the stamp and the flag byte are otherwise equal in every compared entry.
+
+**Native** (`HL_GFX_VAR=1`): castle-move ran to the end with no crash line (a late scene start: first runs after a new build
+spend a long start-up in the shader caches, in both slots, with the variable on or off), game speed ratio 32 in that run
+because of the start-up; hyrule-walk 60.5; kokiri-idle's first run stayed on its loading screen (the same start-up; the
+key loop never ran) and the rerun loaded and ran (97 fps in the first 66 s). The last shots of castle-move and hyrule-walk
+show the scene whole (the forest path at night, grass, the character, the HUD and the minimap). Not seen: kokiri-idle's
+native shots (the rerun was not made with shots). Memory unchanged by the brick (castle-move 3,184 MB game RAM, 17,521
+MB commit; hyrule-walk 3,036 / 17,583).
+
+**Crossings removed.** Per native entry the translated code made 1-2 calls of the shared preparation's gate and 1 to 6
+NVN calls out of lifted code (CallCommands, the query's reset, report and conditional render); the native entry makes
+the preparation's native answer directly (`hl_gfx_prep_apply`, no gate) and the NVN calls from C++. The log line counts
+them: castle-move 1.78 M NVN calls and 252 k preparations over its run, kokiri-idle 1.03 M and 146 k (about 150 NVN calls
+and 20 preparations a presented frame in kokiri-idle at 97 fps: the counters are totals, not per frame). The translated
+function's own loop work for those entries (about 100 guest instructions an entry) goes too.
+
+### What is left, in order of what the counts say
+1. The cluster entries (draw kinds 0x51, 34%): a port of the cull and merge kernel, or leaving them.
+2. The drawables' own methods (`0x800955a0`, 4-20%).
+3. The render-state and render-enable changes (6.5%: the inlined render-state function with the state objects at this
+   function's frame; `RenderState` takes the handles, the frame addresses of this copy are not yet read from the code).
+4. The empty items (the whole frame of `0x80084de0`): not started.
+
 ## Not established
 
 - Who builds the runner's item lists (R+1244..R+1280), the pass and target objects, the slot table of `0x80364080`
