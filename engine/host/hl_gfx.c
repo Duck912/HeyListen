@@ -44,8 +44,9 @@
    on the cached path, and the translated body's NVN calls filed by kind in the paths' histogram.
 
    The recording job's item body (guest 0x80084de0, called directly by the job runners) has a gate too, for its map only:
-   with HL_GFX_CHECK=1 each item is observed (its route, draws and NVN calls counted: "loop map" below); nothing of it is
-   native yet, and without the check the gate is off. */
+   with HL_GFX_CHECK=1 each item is observed (its route, draws and NVN calls counted: "loop map" below; its list read at
+   the entry: "items by list"; its off-loop draws filed by the variant or method they came from: "variants", "methods");
+   nothing of it is native yet, and without the check the gate is off. */
 #include "hl_host.h"
 #include "hl/c/hl_gfx.h"
 #include <stdio.h>
@@ -100,11 +101,12 @@ enum {
 };
 static _Thread_local int t_item;           /* an item's translated body runs on this thread, observed */
 static _Thread_local uint32_t t_item_route;
-static _Thread_local uint64_t t_item_draws, t_item_nvn;
+static _Thread_local uint64_t t_item_draws, t_item_nvn, t_item_lr;   /* t_item_lr: the first "variant" return address */
 static volatile uint64_t loop_other_lr[4];   /* the first return addresses filed as "variant", for the log */
 static void loop_seen(uint32_t route, uint64_t lr) {
     t_item_route |= route;
     t_item_draws++;
+    if (route == LOOP_ROUTE_VARIANT && !t_item_lr) t_item_lr = lr;
     if (route == LOOP_ROUTE_VARIANT)
         for (int i = 0; i < 4; i++) {
             if (loop_other_lr[i] == lr) break;
@@ -128,6 +130,95 @@ static void loop_filed(uint32_t route, uint64_t draws, uint64_t nvn) {
         if (loop_thread_ids[i] == id) break;
         if (!loop_thread_ids[i] && InterlockedCompareExchange(&loop_thread_ids[i], id, 0) == 0) break;
     }
+}
+
+/* The item's list, read at its entry (gfx-record-job.md section 12): class 0 a count below 1, class 1 entries but none
+   whose kind mask (entry +8) meets the key's first word (the three inline loops skip such an entry), class 2 at least
+   one that does. Filed with whether a gate saw a draw, and the item's NVN calls. */
+enum { LIST_EMPTY, LIST_MASKED, LIST_LIVE, LIST_CLASSES };
+static volatile LONG64 class_items[LIST_CLASSES][2], class_nvn[LIST_CLASSES][2];
+
+/* The per-variant draws: the table at 0x84c29878 (256 entries, indexed by the key the item computes), read at the
+   map's start; an item whose only off-loop draws are a variant's is filed under the variant whose entry is the nearest
+   below the first such return address (the variants call the render-state and render-enable functions directly).
+   Any other first return address (the drawables' own methods) goes to a small table by address. */
+#define HL_VARIANT_TABLE 0x84c29878ULL
+enum { VARIANTS = 256, METHOD_LRS = 32 };
+static uint64_t variant_start[VARIANTS];   /* sorted */
+static uint8_t variant_key[VARIANTS];
+static volatile LONG64 variant_items[VARIANTS], variant_nvn[VARIANTS], variant_draws[VARIANTS];
+static volatile uint64_t method_lr[METHOD_LRS];
+static volatile LONG64 method_items[METHOD_LRS], method_nvn[METHOD_LRS];
+
+static void variants_read(const hl_guest_host *h) {
+    const uint64_t *t = (const uint64_t *)h->ptr(h->user, HL_VARIANT_TABLE);
+    for (int k = 0; k < VARIANTS; k++) {   /* (insertion sort: once) */
+        int i = k;
+        while (i > 0 && variant_start[i - 1] > t[k]) {
+            variant_start[i] = variant_start[i - 1];
+            variant_key[i] = variant_key[i - 1];
+            i--;
+        }
+        variant_start[i] = t[k];
+        variant_key[i] = (uint8_t)k;
+    }
+}
+
+static void variant_filed(uint64_t lr, uint64_t draws, uint64_t nvn) {
+    int lo = -1;
+    for (int i = 0; i < VARIANTS && variant_start[i] <= lr; i++) lo = i;
+    /* (the template bodies are under 0x800 bytes; the two large entries 0x8008b3e0 and 0x8008d640 are 0x2260 and
+       0x2200 long, the second ending where the drawables' methods begin) */
+    const uint64_t big = lo >= 0 && (variant_start[lo] == 0x8008b3e0ULL || variant_start[lo] == 0x8008d640ULL);
+    const int method = lo < 0 || lr - variant_start[lo] >= (big ? 0x2200u : 0x800u);
+    if (!method) {
+        const int k = variant_key[lo];
+        InterlockedIncrement64(&variant_items[k]);
+        InterlockedExchangeAdd64(&variant_draws[k], (LONG64)draws);
+        InterlockedExchangeAdd64(&variant_nvn[k], (LONG64)nvn);
+        return;
+    }
+    for (int i = 0; i < METHOD_LRS; i++) {
+        if (!method_lr[i]) InterlockedCompareExchange64((volatile LONG64 *)&method_lr[i], (LONG64)lr, 0);
+        if (method_lr[i] != lr) continue;
+        InterlockedIncrement64(&method_items[i]);
+        InterlockedExchangeAdd64(&method_nvn[i], (LONG64)nvn);
+        return;
+    }
+}
+
+/* The lines "items by list", "variants" and "methods" (with the loop map) */
+static void variant_report(void) {
+    char line[1536];
+    int n = snprintf(line, sizeof line, "items by list (0 count below 1, 1 all masked, 2 live): ");
+    for (int k = 0; k < LIST_CLASSES; k++)
+        n += snprintf(line + n, sizeof line - n, "[%d] no draw %lld items %lld NVN, drew %lld items %lld NVN; ", k,
+                      (long long)class_items[k][0], (long long)class_nvn[k][0], (long long)class_items[k][1],
+                      (long long)class_nvn[k][1]);
+    hos_log("hl gfx: %s", line);
+    /* the variants, the most NVN calls first (a selection over the 256 counters) */
+    uint8_t done[VARIANTS] = {0};
+    LONG64 items = 0, nvn = 0;
+    int distinct = 0;
+    for (int k = 0; k < VARIANTS; k++)
+        if (variant_items[k]) items += variant_items[k], nvn += variant_nvn[k], distinct++;
+    n = snprintf(line, sizeof line, "variants: %d taken, %lld items, %lld NVN; key:items/draws/NVN: ", distinct,
+                 (long long)items, (long long)nvn);
+    for (int r = 0; r < 40 && (size_t)n < sizeof line - 48; r++) {
+        int best = -1;
+        for (int k = 0; k < VARIANTS; k++)
+            if (!done[k] && variant_items[k] && (best < 0 || variant_nvn[k] > variant_nvn[best])) best = k;
+        if (best < 0) break;
+        done[best] = 1;
+        n += snprintf(line + n, sizeof line - n, "%#x:%lld/%lld/%lld ", best, (long long)variant_items[best],
+                      (long long)variant_draws[best], (long long)variant_nvn[best]);
+    }
+    hos_log("hl gfx: %s", line);
+    n = snprintf(line, sizeof line, "methods (first return address: items/NVN): ");
+    for (int i = 0; i < METHOD_LRS && method_lr[i] && (size_t)n < sizeof line - 48; i++)
+        n += snprintf(line + n, sizeof line - n, "%#llx:%lld/%lld ", (unsigned long long)method_lr[i],
+                      (long long)method_items[i], (long long)method_nvn[i]);
+    hos_log("hl gfx: %s", line);
 }
 
 /* "loop map: ..." (0: nothing yet) */
@@ -217,7 +308,10 @@ static void hl_report(void) {
     if (hl_gfx_prep_report(line, sizeof line)) hos_log("hl gfx: %s", line);
     char shapes[2048];
     if (hl_gfx_prep_shapes(shapes, sizeof shapes)) hos_log("hl gfx: %s", shapes);
-    if (loop_report(shapes, sizeof shapes)) hos_log("hl gfx: %s", shapes);
+    if (loop_report(shapes, sizeof shapes)) {
+        hos_log("hl gfx: %s", shapes);
+        variant_report();
+    }
 }
 
 /* ---- the pass ---- */
@@ -609,6 +703,7 @@ static int loop_init(void) {
     } else {
         on = 1;
         log_on = 1;
+        variants_read(hl_host());
         hos_log("hl gfx: loop map: each item of the recording job observed, the translated item answering");
     }
     loop_ready = on ? 2 : 1;
@@ -626,15 +721,30 @@ HL_GATE(80084de0, "3ba04b5feac748d3") {
     const uint8_t *cache = (const uint8_t *)h->ptr(h->user, c->x[0]);
     const uint32_t key0 = *(const uint32_t *)h->ptr(h->user, c->x[3]);
     const uint16_t flag = *(const uint16_t *)h->ptr(h->user, c->x[4] + 0xc);
-    if (!(*(const uint32_t *)(cache + 0x14) & key0) || *(const int32_t *)(cache + 0x2c) <= 0 || (flag & 1))
-        InterlockedIncrement64(&loop_early);
+    const int early = !(*(const uint32_t *)(cache + 0x14) & key0) || *(const int32_t *)(cache + 0x2c) <= 0 || (flag & 1);
+    if (early) InterlockedIncrement64(&loop_early);
+    /* the item's list: (start, count) at x5 over the cache's array of entry pointers (+0x20) */
+    const int32_t *pair = (const int32_t *)h->ptr(h->user, c->x[5]);
+    int list = LIST_EMPTY;
+    if (pair[1] >= 1) {
+        const uint64_t *entries = (const uint64_t *)h->ptr(h->user, *(const uint64_t *)(cache + 0x20) + 8 * (int64_t)pair[0]);
+        list = LIST_MASKED;
+        for (int32_t i = 0; i < pair[1] && list == LIST_MASKED; i++)
+            if (*(const uint32_t *)h->ptr(h->user, entries[i] + 8) & key0) list = LIST_LIVE;
+    }
     t_item = 1;
     t_item_route = 0;
     t_item_draws = 0;
     t_item_nvn = 0;
+    t_item_lr = 0;
     loop_translated(c);
     t_item = 0;
     loop_filed(t_item_route, t_item_draws, t_item_nvn);
+    if (!early) {
+        InterlockedIncrement64(&class_items[list][t_item_route != 0]);
+        InterlockedExchangeAdd64(&class_nvn[list][t_item_route != 0], (LONG64)t_item_nvn);
+    }
+    if (t_item_lr) variant_filed(t_item_lr, t_item_draws, t_item_nvn);
     hl_report();
     return 1;
 }

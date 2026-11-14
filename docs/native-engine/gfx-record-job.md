@@ -1150,6 +1150,100 @@ NVN calls from Initialize to the flush, the key's three bytes, the cache entry, 
 the key-0x80 loop with the native submission and render state; (3) the key-0x40 / key-0 loops with the native
 preparation and the inlined submission, calling the methods back; (4) the per-variant draws, by template.
 
+## 12. Stream 2g: the items that draw nothing, and the variant family (reading and measuring; nothing native yet)
+
+The owner's direction (2026-11-14 evening) had two readings to test: (1) half the items draw nothing because the
+object methods start with a simple state test, and that filter lifted into a native loop removes half the calls into
+translated code; (2) the per-variant draws are one template instantiated per option set, so one function with a
+traits structure replaces the family. Both were tested against the code and measured with the observing gate
+(`HL_GFX_CHECK=1`, main PC, slot c, 110 s a scene; counts at the last report).
+
+### What makes an item empty, and what it must leave
+
+**Read** (the entry, the slot and the epilogue: guest `0x84de0`..`0x85d58` and `0x86694`..`0x8693c`):
+
+- The only early return is at the entry (the cache's mask +0x14 against the key's first word, its count +0x2c, the
+  item's flag x4+0xc bit 0): 264 to 626 items a run. No other test precedes the frame.
+- The item's list is a (start, count) pair at x5 over the cache's array of entry pointers (+0x20). All three inline
+  loops (keys 0x80, 0x40, 0) skip an entry whose kind mask (entry +8) does not meet the cache entry's first word (the
+  key's first word: the entry holds the key's copy); a variant key calls its variant with the whole list, whatever the
+  count. The key itself is computed only after the draw function's block is built (from the key's word +0x18, the
+  item's flags, the cache's +8, the material's callbacks).
+- **An empty item still does the whole frame**: the cache lookup under its mutex (a new entry when the key is new),
+  an atomic slot from the manager (+0xb8), the ring scan whose three indices are written into the slot (+0x6c..+0x6e),
+  the slot's memory taken under the manager's lock (+8), the item's pass object linked to the slot (+0x170, +0x178,
+  +0x180, +0xd8), **Initialize, AddControlMemory, AddCommandMemory, BeginRecording, (SetMemoryCallback and its data
+  when a global flag says so), SetRecordingMode, two ReportCounters, SetScissor, SetViewport, SetDepthRange,
+  SetLineWidth, SetPointSize** (the counters, the view and the last two each under a condition, not all read), the block built on the stack with one write outside it (the item's record +0x46a bit
+  0, when the material index changes), the epilogue's ReportCounter, **EndRecording** (handle into slot +0x50), the
+  memory used read back (+0x4c, +0x2c), **Finalize**, the global counter `[0x84ca2d60]`+0xd1c taken and put back,
+  the pool's flags (and a flush when bit 2 is set), the ring's used sizes advanced under the lock, the pass object
+  unlinked, and **when either memory used is not 0, the slot is appended to the cache entry's list (+0xc8 count, +0xd0
+  array)**: the recording is handed on to whoever replays the entry's list. A recording holding the view state has
+  command memory used, so an empty item's recording is handed on like any other.
+- So nothing of an empty item can be dropped on the code's evidence: its recording is listed for the consumer, its
+  slot and ring sizes are the manager's, its counters are the game's. A native empty item is the whole frame native
+  (about 1,000 of the 1,500 guest instructions read: the block build included, since its key decides whether a variant
+  is called), making the same NVN calls and the same writes; it is not a filter at the entry.
+
+**Measured** (the gate reads the list at the entry and files each item by class; "no draw" means no gate saw a
+submission, a preparation or a render-state call):
+
+| Scene | Items | Count below 1 | All entries masked (all drew nothing) | Live, no draw | Live, drew |
+|---|---:|---:|---:|---:|---:|
+| castle-move | 169,176 | 0 | 87,242 at 17.0 NVN calls each | 2,277 at 672 each | 79,031 at 466 each |
+
+What it says:
+
+- **The empty items are exactly the items whose every entry is masked** (none with a count below 1): decidable at the
+  entry by reading the list, as the owner thought, but the test is the job's own (the kind mask against the key), not
+  the methods', and passing it does not let the item return: the frame runs anyway. They carry 17 NVN calls each, all
+  of them the frame's.
+- The few live items without a draw seen (2,277) are heavy (672 NVN calls each): their draws go through paths no gate
+  sees (the variants' inlined submission); they are not empty.
+
+### The variant family: one template, but not where the work is
+
+**Read**: the table at `0x84c29878` has **256 entries, all distinct**, one per value of the 8-bit key. 253 of them are
+small bodies (90 to 476 lifted lines) with the same two direct callees (the render-state function `0x80077d60` and the
+render-enable function `0x80078b10`, plus the sub-mesh submission in three of them) whose sizes and indirect-call counts
+follow the key's bits exactly (bit 0 adds 4 indirect calls and about 40 lines in every family; the families of bits
+4-7 step 90-100, 195-211, 308-323, 410-428 lines): **one template instantiated over 8 option bits**, as the owner read
+it. Three entries are other code: key 5 `0x8008b3e0` (4,065 lines, 51 NVN sites), key 0xa0 `0x8008d640` (4,032 lines,
+49 NVN sites) and key 0xb0 `0x80522a20` (960 lines). The two large ones have the job's own draw loop's direct callees
+(the shared preparation, the cluster paths, the indexed draws: the same thirteen functions as the job) and the
+render-state and submission inlined: they are **the job's draw loop specialized for one key**, as keys 0x80, 0x40 and
+0 are inside the job, not instances of the small template. Keys 0, 0x40 and 0x80 have table entries the job does not use.
+
+**Measured** (an item whose off-loop draws come from a variant is filed under the table entry nearest below the first
+return address its gates saw; other first return addresses are the drawables' methods, filed by address):
+
+| Scene | Variant keys taken | Key 0xa0 (`0x8008d640`) | The small template's keys | Methods: `0x800955a0` / `0x8008f8e0` / `0x80296540` / `0x800715e0` |
+|---|---:|---|---|---|
+| castle-move | 4 | 9,998 items, 16.6 M NVN (41.6%) | 0x84, 0x4, 0x50: 1,501 items, 0.41 M (1.0%) | 10.4 M / 1.1 M / 0.56 M / 0.34 M (31%) |
+
+(Shares of the 39.8 M NVN calls of all items in the run.)
+
+What it says:
+
+- The owner's reading holds for the table's structure (253 instances of one template), but **the template carries 1%
+  of the job's work** in these scenes: three of its 253 keys are taken. A parameterized native function for it is
+  cheap to write but nearly worthless now.
+- **The work is in two large, different bodies**: the key-0xa0 variant `0x8008d640` (about 40%), the job's draw loop
+  specialized and out of line, and the drawable's method `0x800955a0` (4,652 lines, 95 indirect calls; about 26%),
+  then the three smaller methods. These are the cut the code allows: `0x8008d640` composed from the native leaves the
+  way the job's own loops would be (render state, submission, preparation native, the cluster paths called back),
+  and `0x800955a0` read next.
+
+### Not done in this session
+
+- The native empty item (`HL_GFX_ITEM`) is not built: the reading above shows it is the whole frame, not an entry
+  filter, and its check has to compare a frame whose shared effects (the slot counter, the rings, the entry's list,
+  the NVN layer's recording) cannot be run twice: the native side must compute from a snapshot of what the frame reads,
+  into a recording whose return values (EndRecording's handle, the memory used) are taken from the translated run.
+- No crossings removed (nothing native). What the empty item would remove: its 17 NVN calls, each a crossing from
+  translated code into the NVN layer, become native calls under one gate crossing: 16 a item.
+
 ## Not established
 
 - Who builds the runner's item lists (R+1244..R+1280), the pass and target objects, the slot table of `0x80364080`
