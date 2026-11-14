@@ -2957,7 +2957,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 uint32_t level = 0;
                 VkImageView view = handle ? texture_view_of(handle, vt, ViewUse::Storage, image_format(d.format), &tex, &level)
                                           : VK_NULL_HANDLE;
-                if (view && tex && d.is_written) { ParLock lk; texture_written(tex); }
+                if (view && tex && d.is_written) { ParLock lk; texture_written(tex, "a storage image of a draw"); }
                 if (view && tex) draw_sampled().push_back(tex);
                 if (log_img_wanted(p.key)) {
                     static std::atomic<int> told{0};
@@ -3555,7 +3555,7 @@ void begin_pass(VkCommandBuffer cmd, const Targets& at) {
         ca[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         pass().color[i] = at.color_view[i];
         pass().tex[i] = at.color[i], pass().level[i] = at.color_level[i], pass().layer[i] = at.color_layer[i];
-        texture_written(at.color[i]);
+        texture_written(at.color[i], "a pass's colour target");
         texture_rendered(at.color[i]);
     }
     for (int i = at.n; i < 8; i++) pass().color[i] = VK_NULL_HANDLE;
@@ -3565,7 +3565,7 @@ void begin_pass(VkCommandBuffer cmd, const Targets& at) {
         da.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
         da.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
         da.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        texture_written(at.depth);
+        texture_written(at.depth, "a pass's depth target");
         texture_rendered(at.depth);
     }
     pass().depth = at.depth_view;
@@ -8151,8 +8151,8 @@ void dry_mark_written(NvnState& s, bool compute, bool first) {
         const Targets at = targets(s);
         ParLock lk;   // (TICK-056, RX_VK_SEG_EARLY: segments recorded meanwhile read these marks; nothing when none is)
         for (int i = 0; i < at.n; i++)
-            if (at.color[i]) texture_written(at.color[i]);
-        if (at.depth) texture_written(at.depth);
+            if (at.color[i]) texture_written(at.color[i], "the dry pass (a draw's target)");
+        if (at.depth) texture_written(at.depth, "the dry pass (a draw's depth)");
         return;
     }
     const uint8_t types[8]{};
@@ -8168,7 +8168,7 @@ void dry_mark_written(NvnState& s, bool compute, bool first) {
                 uint32_t level = 0;
                 if (handle && texture_view_of(handle, vt, ViewUse::Storage, image_format(d.format), &tex, &level) && tex) {
                     ParLock lk;   // (TICK-056, as above)
-                    texture_written(tex);
+                    texture_written(tex, "the dry pass (a dispatch's storage image)");
                 }
             }
         }
