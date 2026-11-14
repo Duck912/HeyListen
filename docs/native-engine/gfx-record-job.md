@@ -1084,7 +1084,7 @@ bytes written into the entry, the slot and the manager.
 keys it compares, the render-enable and counter logic, the 3 to 5 threads' claim: the runner hands out items, each a
 key, so the threads never share an item; the cache's mutex is the one shared step) was not read to the level a native
 version needs; nothing of A is native, `HL_GFX_LOOP` does not exist yet. Next: read the draw loop (from the view's setup to
-EndRecording,  x800855a8 to  x80086788, and the cluster and indexed blocks after it) block by block against `0x80681320` and `0x80078fc0`, whose native halves exist, and write it as one C++
+EndRecording, `0x800855a8` to `0x80086788`, and the cluster and indexed blocks after it) block by block against `0x80681320` and `0x80078fc0`, whose native halves exist, and write it as one C++
 loop over the list with the leaves inlined, behind an entry gate with the whole-item check.
 
 ## Not established
