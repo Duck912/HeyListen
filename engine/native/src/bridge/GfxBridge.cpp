@@ -51,6 +51,13 @@ uint64_t u64(const GuestRuntime& rt, GuestAddr a) {
 }   // namespace
 
 bool StateBridge::read(GuestAddr block, uint64_t key, uint64_t sp, gfx::StateInputs& in, gfx::StateHandles& h) const {
+    const uint64_t frame = sp - kStateFrame;
+    return read(block, key, Objects{frame + kStateBlend, frame + kStateColor, frame + kStateChannelMask,
+                                    frame + kStateDepthStencil, frame + kStatePolygon}, in, h);
+}
+
+bool StateBridge::read(GuestAddr block, uint64_t key, const Objects& objects, gfx::StateInputs& in,
+                       gfx::StateHandles& h) const {
     const guest::RenderStateBlock& b = at<guest::RenderStateBlock>(runtime_, block);
     // (the function calls the material's state callback before anything it records when the callback's invoker is not
     // the game's empty function: that call is guest code, and its result decides what follows)
@@ -82,12 +89,11 @@ bool StateBridge::read(GuestAddr block, uint64_t key, uint64_t sp, gfx::StateInp
     // (the command buffer is read only when something is recorded, as the function does)
     h.command_buffer = (in.flags >> 17) & 1 ? 0 : at<guest::Renderer>(runtime_, b.renderer).command_buffer;
     h.blend_color = block + offsetof(guest::RenderStateBlock, blend_color);
-    const uint64_t frame = sp - kStateFrame;
-    h.blend = frame + kStateBlend;
-    h.color = frame + kStateColor;
-    h.channel_mask = frame + kStateChannelMask;
-    h.depth_stencil = frame + kStateDepthStencil;
-    h.polygon = frame + kStatePolygon;
+    h.blend = objects.blend;
+    h.color = objects.color;
+    h.channel_mask = objects.channel_mask;
+    h.depth_stencil = objects.depth_stencil;
+    h.polygon = objects.polygon;
     return true;
 }
 

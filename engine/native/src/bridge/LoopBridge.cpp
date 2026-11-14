@@ -35,10 +35,18 @@ struct Mem {
     }
     bool inline_write() const { return rd<uint32_t>(rd<uint64_t>(kSwitchSlot)) != 0; }
 };
+
+// The material's state callback is the game's empty function (the render-state function then calls no guest code)
+bool state_callback_empty(const Mem& m, GuestAddr block) {
+    const GuestAddr material = m.rd<uint64_t>(block + offsetof(guest::RenderStateBlock, material));
+    if (!material) return false;
+    const GuestAddr callback = m.rd<uint64_t>(material + offsetof(guest::Material, state_callback));
+    return callback && m.rd<uint64_t>(callback + offsetof(guest::StateCallback, invoke)) == m.rd<uint64_t>(kEmptyFunctionSlot);
+}
 }   // namespace
 
 const char* entry_way_name(EntryWay way) {
-    static constexpr const char* names[] = {"native",     "masked",   "enable",    "bit10",     "state",     "model",
+    static constexpr const char* names[] = {"native",     "masked",   "enable",    "state",     "model",
                                             "inline",     "method",    "geometry",  "flags",     "bit5",
                                             "indirect",   "cl-other", "cl-cull",    "cl-plain",
                                             "instances", "norecorded", "nolist"};
@@ -52,17 +60,25 @@ EntryWay KeyLoopBridge::classify(const KeyLoopCall& call, GuestAddr entry, KeyLo
     const uint32_t kind = m.rd<uint32_t>(entry + 8);
     if (!(kind & (uint32_t)call.mask)) return EntryWay::Masked;
     const uint16_t h = m.rd<uint16_t>(entry + 14);
-    if (((h >> 4) & 1u) != (uint32_t)(int32_t)m.rd<int8_t>(block + kBlockEnableApplied)) return EntryWay::EnableChange;
-    uint32_t key = h & 0xf;
+    // (the render enable and the render state change before the entry's draw; both are applied by run(), which reads
+    // the block again between them: the enable function rewrites the state key and the mode bits)
+    const bool enable_changes = ((h >> 4) & 1u) != (uint32_t)(int32_t)m.rd<int8_t>(block + kBlockEnableApplied);
     const uint32_t block_mask = m.rd<uint32_t>(block + kBlockMask);
-    if (block_mask & kind) {
-        if ((h >> 10) & 1) return EntryWay::SubKeyBit10;
-        key |= 0xffffff80u;
+    bool state_may_change = enable_changes;
+    if (!state_may_change) {
+        if ((block_mask & kind) && ((h >> 10) & 1))
+            state_may_change = true;   // (the key takes the block's mode bit 19)
+        else
+            state_may_change = m.rd<uint8_t>(block + kBlockKeyApplied) != (uint8_t)((h & 0xf) | ((block_mask & kind) ? 0x80 : 0));
     }
-    if (m.rd<uint8_t>(block + kBlockKeyApplied) != (uint8_t)key) return EntryWay::StateChange;
+    if (state_may_change && !state_callback_empty(m, block)) return EntryWay::StateChange;
+    if (enable_changes && m.rd<uint64_t>(block + kBlockQuery) != 0 && m.inline_write()) return EntryWay::EnableChange;
 
     plan = KeyLoopEntry{};
     plan.entry = entry;
+    plan.bits = h;
+    plan.kind = kind;
+    plan.enable_changes = enable_changes;
     plan.drawable = m.rd<uint64_t>(entry + 16);
     const GuestAddr drawable = plan.drawable;
     plan.pass = m.rd<uint8_t>(block + kBlockPass);
@@ -77,8 +93,9 @@ EntryWay KeyLoopBridge::classify(const KeyLoopCall& call, GuestAddr entry, KeyLo
     const bool conditional = (block_mask & kind) != 0;
     if (plan.reset && m.inline_write()) return EntryWay::InlineWrite;
     if (conditional) {
-        const uint64_t last = m.rd<uint64_t>(block + kBlockQuery);
-        const uint32_t last_index = m.rd<uint32_t>(block + kBlockQueryIndex);
+        uint64_t last = m.rd<uint64_t>(block + kBlockQuery);
+        uint32_t last_index = m.rd<uint32_t>(block + kBlockQueryIndex);
+        if (enable_changes && !(last == 0 && last_index == 0)) last = 0, last_index = 0xffffffffu;   // (the enable function resets the pair)
         if (!(plan.query == last && plan.index == last_index)) {
             if (m.inline_write()) return EntryWay::InlineWrite;
             plan.conditional = plan.query != 0;
@@ -161,6 +178,77 @@ void draw_clusters(const Mem& m, const KeyLoopEntry& p, GuestAddr block, gfx::Co
     m.wr<uint32_t>(block + kBlockTriangles, m.rd<uint32_t>(block + kBlockTriangles) + triangles);
 }
 
+// The render-enable function (guest 0x80078b10, inlined in the draw function): the entry's render enable is kept in the
+// block, a conditional render in force is turned off (SetRenderEnable) and the block's derived fields are rewritten from
+// its flag bytes. It records nothing else.
+template <class Mark>
+void apply_enable(const Mem& m, const KeyLoopEntry& p, GuestAddr block, gfx::CommandSink& sink, Mark&& mark) {
+    m.wr<uint8_t>(block + kBlockEnableApplied, (uint8_t)((p.bits >> 4) & 1));
+    const uint64_t query = m.rd<uint64_t>(block + kBlockQuery);
+    if (!(query == 0 && m.rd<uint32_t>(block + kBlockQueryIndex) == 0)) {
+        if (query != 0) {
+            mark();
+            sink.emit(gfx::command(gfx::Proc::CommandBufferSetRenderEnable, p.command_buffer, 1));
+        }
+        m.wr<uint64_t>(block + kBlockQuery, 0);
+        m.wr<uint32_t>(block + kBlockQueryIndex, 0xffffffffu);
+    }
+    const uint32_t first = m.rd<uint8_t>(block + 89), mode = m.rd<uint32_t>(block + kBlockMode), faces = m.rd<uint8_t>(block + 349);
+    const uint32_t both = ((mode & 0x200) ? first | 3 : first) | m.rd<uint8_t>(block + 58);
+    const uint32_t low = both & 0xff, depth = both & 4;
+    const uint32_t set = depth != 0 ? 1u : 0u;
+    if (((faces ^ (depth >> 2)) & 1) || ((set ^ ((faces & 2) >> 1)) & 1) || (set - ((faces & 4) >> 2)) != 0)
+        m.wr<uint8_t>(block + 349, (uint8_t)((faces & 0xfe) | (depth >> 2)));
+    uint32_t cull = low & 3;
+    if (cull == 0)
+        cull = 3;
+    else if (cull == 1)
+        cull = (low & 8) ? 1 : 2;
+    else if (cull == 3)
+        cull = 0;
+    else
+        cull = (low & 8) ? 2 : 1;
+    if (cull != m.rd<uint8_t>(block + 341)) m.wr<uint8_t>(block + 341, (uint8_t)cull);
+    const uint32_t polygon = (low >> 4) & 3;
+    const uint32_t fill = polygon == 2 ? 0 : (polygon == 1 ? 1u : 2u);
+    if (!(fill == m.rd<uint8_t>(block + 347) && fill == m.rd<uint8_t>(block + 348))) {
+        m.wr<uint8_t>(block + 347, (uint8_t)fill);
+        m.wr<uint8_t>(block + 348, (uint8_t)fill);
+    }
+    m.wr<uint64_t>(block + 208, 0);
+    m.wr<uint64_t>(block + 216, 0);
+    m.wr<uint16_t>(block + 178, 0);
+    m.wr<uint8_t>(block + 88, 8);
+    m.wr<uint8_t>(block + kBlockKeyApplied, 0xff);
+    m.wr<uint8_t>(block + 96, 0xff);
+    for (uint64_t at = 120; at < 152; at += 8) m.wr<uint64_t>(block + at, ~0ull);
+    m.wr<uint32_t>(block + 152, 0xffffffffu);
+    m.wr<uint32_t>(block + kBlockMode, mode & 0xffff4fffu);
+}
+
+// The render state: the sub-key (with bit 7 when the block's mask meets the entry, and the block's mode bit 19 for the
+// entry's bit 10) against the one applied last; when it differs, the render-state function's work (hl/gfx/RenderState.h)
+// with its five state objects where the draw function's frame has them.
+void apply_state(GuestRuntime& runtime, const Mem& m, const KeyLoopCall& call, const KeyLoopEntry& p, gfx::CommandSink& sink) {
+    const GuestAddr block = call.block;
+    uint32_t key = p.bits & 0xf;
+    if (m.rd<uint32_t>(block + kBlockMask) & p.kind) {
+        if ((p.bits >> 10) & 1)
+            key |= (m.rd<uint32_t>(block + kBlockMode) >> 13) & 0x40;
+        else
+            key |= 0xffffff80u;
+    }
+    if (m.rd<uint8_t>(block + kBlockKeyApplied) == (uint8_t)key) return;
+    const StateBridge bridge(runtime);
+    const uint64_t frame = call.sp - kKeyLoopFrame;
+    gfx::StateInputs in;
+    gfx::StateHandles at;
+    bridge.read(block, key, StateBridge::Objects{frame + 168, frame + 144, frame + 148, frame + 152, frame + 140}, in, at);
+    const gfx::StateOutputs out = gfx::RenderState::decide(in, bridge.offsets(block));
+    bridge.write(block, out);   // (the block first: the blend color call reads it from there)
+    gfx::RenderState::emit(in, out, at, sink);
+}
+
 void KeyLoopBridge::snapshot_prepare(GuestAddr block, GuestAddr command_buffer, uint8_t* bytes) const {
     std::memcpy(bytes, runtime_.ptr(block), 352);
     bytes[352] = command_buffer ? *(const uint8_t*)runtime_.ptr(command_buffer + 0x10) : 0;
@@ -212,6 +300,9 @@ void KeyLoopBridge::run(const KeyLoopCall& call, const KeyLoopEntry& p, const Pr
     };
     auto slot = [&](uint32_t index) { return (uint64_t)index << 5; };
     const uint32_t per = p.query ? (uint32_t)m.rd<uint16_t>(p.query + 12) * m.rd<uint8_t>(p.query + 15) : 0;
+
+    if (p.enable_changes) apply_enable(m, p, block, sink, mark);
+    apply_state(runtime_, m, call, p, sink);
 
     if (p.reset) {
         mark();

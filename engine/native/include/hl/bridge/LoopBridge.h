@@ -44,9 +44,8 @@ struct KeyLoopCall {
 enum class EntryWay : uint8_t {
     Native,         ///< the plain path
     Masked,         ///< the entry's kind mask does not meet the key: the function does nothing for it (native)
-    EnableChange,   ///< the entry's render enable differs from the block's
-    SubKeyBit10,    ///< the block's mask meets the entry and the entry's sub-key bit 10 is set
-    StateChange,    ///< the render state differs from the block's
+    EnableChange,   ///< the render enable changes and the conditional render's switch is set while the inline-write switch is
+    StateChange,    ///< the render state may change and the material has a state callback (guest code)
     ModelClass,     ///< the model's occlusion method is not the game's usual one (a virtual call)
     InlineWrite,    ///< the inline-write switch is set
     Method,         ///< the drawable's submission method is not the game's (a call)
@@ -67,6 +66,9 @@ const char* entry_way_name(EntryWay way);
 /// What the function reads of one entry before it writes anything, in place.
 struct KeyLoopEntry {
     GuestAddr entry = 0, drawable = 0, model = 0, resource = 0, query = 0, record = 0, command_buffer = 0;
+    uint16_t bits = 0;         ///< the entry's flag bits (+14): the state sub-key, the render enable, the sub-mesh
+    uint32_t kind = 0;         ///< the entry's kind mask (+8)
+    bool enable_changes = false;   ///< the render enable differs from the block's: the render-enable function runs
     GuestAddr cluster_list = 0;   ///< the cluster path's list of (range, count, descriptor) records (0: not that path)
     uint32_t pass = 0;       ///< the block's pass slot
     uint32_t index = 0;      ///< the query slot the entry uses
