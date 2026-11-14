@@ -1047,6 +1047,46 @@ shots (the textures in place everywhere: grass, rock, water, foliage, the HUD); 
 native; the record check (render-state and preparation state records) 188,119-280,577 calls compared a run, 0
 mismatched.
 
+## 11. Stream 2e, A: the recording job `0x80084de0` (reading; nothing native yet)
+
+**Shape.** `0x80084de0` (11,044 lifted lines, 6,524 guest instructions, a 0x3b0-byte frame) is one item body of the job
+group runner `0x8007fe60` (and of `0x80083960`). It records **one NVN command buffer for one key**: its x3 is a 0x70-byte
+key (a view or pass description: hashed with crc32 over its fourteen words), x0 a cache of recordings (entries of 0xe0
+bytes at +0x38, count +0x40, capacity +0x30, a mutex at +0x48 taken around the lookup through the SDK's lock imports),
+x2 a command-memory manager like `0x8006cd60`'s (an atomic slot counter at +0xb8, 0x98-byte slots at +0xd8, rings),
+x1 the pass, x4..x6 more of the item. It returns at once when the key's mask (x0+0x14 against the key's first word) or
+the count (x0+0x2c) says nothing to draw, or when x4+0xc bit 0 is set.
+
+**Its order.** (1) Find the key's entry (compare the hash at +0xc0, then the 0x70 bytes), else take the next one
+(+0x40 grows) and copy the key into it; the entry holds the NVN command buffer object the job records into. (2) Take a
+command-memory slot, give its control and command memory to the command buffer: **Initialize, AddControlMemory,
+AddCommandMemory, SetMemoryCallback(Data), BeginRecording, SetRecordingMode**, two ReportCounters; (3) the view:
+**SetScissor, SetViewport, SetDepthRange**, line width and point size; (4) **the draw loop** over the key's draw list
+(read from the visibility job's lists: their layout is stream V1's `visibility-job.md`), which inlines the draw function
+`0x80681320`'s work: the render-state function three times (its 36 calls each), the render-enable function
+(SetRenderEnable 4), counters (Report / Reset), and the sub-mesh submission's every path: the geometry mode (6),
+pre-recorded lists (CallCommands 4), mesh tasks (3), indexed draws through `0x8029fef0` / `0x8002a5f0` / `0x8008f840`,
+the cluster paths (`0x80029240`, `0x800a7f00`, `0x800a8120`, `0x835b4c50`, `0x814e6dc0`, `0x83607840`, `0x83607e80`,
+`0x83607fc0`, `0x83607730`), and calls the shared preparation `0x8008fc00` (2 sites) and `0x80078fc0` (1 site) itself;
+(5) **EndRecording**, the memory used read back, **Finalize**, the pool range flushed (GetFlags, FlushMappedRange), the
+handle kept in the slot and the entry. NVN sites: 154 of its 173 indirect calls (19 are virtual calls on scene objects).
+
+**What this means for the native loop.** *(Inference, not traced to the calls:)* the job is the producer of pre-recorded
+command lists that the scene pass and the sub-mesh submission call (CallCommands of a handle): a recording per key,
+its entry kept across frames by the key. Its
+draw loop is the draw function and the submission inlined, so a native loop is the native preparation, render state
+and submission composed under one native loop, plus the render-enable function, the counters, the indexed and
+mesh-task draws, with the cluster paths and the scene objects' virtual calls called back. The check is the whole
+item: the NVN calls of one call of `0x80084de0` (Initialize to Finalize) against the translated item's, plus the
+bytes written into the entry, the slot and the manager.
+
+**Not built in this session.** The loop's own body between the inlined pieces (how it walks the list, the per-draw
+keys it compares, the render-enable and counter logic, the 3 to 5 threads' claim: the runner hands out items, each a
+key, so the threads never share an item; the cache's mutex is the one shared step) was not read to the level a native
+version needs; nothing of A is native, `HL_GFX_LOOP` does not exist yet. Next: read the draw loop (from the view's setup to
+EndRecording,  x800855a8 to  x80086788, and the cluster and indexed blocks after it) block by block against `0x80681320` and `0x80078fc0`, whose native halves exist, and write it as one C++
+loop over the list with the leaves inlined, behind an entry gate with the whole-item check.
+
 ## Not established
 
 - Who builds the runner's item lists (R+1244..R+1280), the pass and target objects, the slot table of `0x80364080`
