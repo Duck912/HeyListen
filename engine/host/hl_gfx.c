@@ -61,6 +61,7 @@
 #define HL_GFX_STATE_DEFAULT 1   /* (validated 2026-11-13 on both PCs: the exact check at 0 mismatches over 4.2 M NVN calls in three scenes, native runs clean) */
 #define HL_STATE_FN 0x80077d60ULL      /* (hl::bridge::kApplyRenderState: state_init checks the two agree) */
 
+#define HL_VAR_PREPARE_RETURN 0x8008d8ecULL   /* the key-0xa0 function's call of the preparation (hl_gfx_var_prepare_return) */
 #define HL_LOOP_FN 0x80084de0ULL             /* the recording job's item body (gfx-record-job.md section 11) */
 #define HL_LOOP_SUBMIT_RETURN 0x80085ea4ULL  /* the return address of its call of the sub-mesh submission */
 #define HL_LOOP_KEY64_RETURN 0x80087590ULL   /* ... of its two calls of the shared preparation */
@@ -87,6 +88,15 @@ static _Thread_local int recording;         /* a pass runs on this thread and is
 static _Thread_local int state_recording;   /* the render-state function's translated body runs here, compared */
 static _Thread_local int draw_recording;    /* the sub-mesh submission's translated body runs here, compared (by segment) */
 static _Thread_local int prep_recording;    /* the shared preparation's translated body runs here, compared */
+static _Thread_local int var_recording;     /* the key-0xa0 function's translated body runs here on one entry, recorded */
+static int var_check_wanted(void) {         /* HL_GFX_VAR_CHECK: the taps are needed too */
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("HL_GFX_VAR_CHECK");
+        on = e && atoi(e) != 0;
+    }
+    return on;
+}
 static volatile LONG taps;
 enum { TAP_NAMES = 2048 };
 static const char *tap_names[TAP_NAMES];
@@ -246,7 +256,7 @@ static int loop_report(char *line, size_t size) {
 static void tap(Ctx *c, void *user) {
     const Tap *t = (const Tap *)user;
     if (t_item) t_item_nvn++;
-    if (recording | state_recording | draw_recording | prep_recording) {
+    if (recording | state_recording | draw_recording | prep_recording | var_recording) {
         uint64_t x[8];
         uint32_t f[4];
         memcpy(x, c->x, sizeof x);
@@ -255,6 +265,7 @@ static void tap(Ctx *c, void *user) {
         if (state_recording) hl_gfx_state_check_call(t->proc, x, f);
         if (draw_recording) hl_gfx_draw_check_call(t->proc, x, f);
         if (prep_recording) hl_gfx_prep_check_call(t->proc, t->group, x, f);
+        if (var_recording) hl_gfx_var_check_call(t->proc, x, f);
     }
     t->fn(c, t->user);
 }
@@ -279,7 +290,7 @@ static uint32_t tap_group(const char *name) {
 
 /* (nvn_native.c, for every procedure it hands the game, once a procedure) */
 void hl_gfx_nvn_proc(const char *name, HostFn *fn, void **user) {
-    if (!check_wanted()) return;
+    if (!check_wanted() && !var_check_wanted()) return;
     Tap *t = (Tap *)malloc(sizeof *t);
     t->fn = *fn;
     t->user = *user;
@@ -364,6 +375,7 @@ static void hl_report(void) {
     if (hl_gfx_state_report(line, sizeof line)) hos_log("hl gfx: %s", line);
     if (hl_gfx_draw_report(line, sizeof line)) hos_log("hl gfx: %s", line);
     if (hl_gfx_prep_report(line, sizeof line)) hos_log("hl gfx: %s", line);
+    if (hl_gfx_var_report(line, sizeof line)) hos_log("hl gfx: %s", line);
     char shapes[2048];
     if (hl_gfx_prep_shapes(shapes, sizeof shapes)) hos_log("hl gfx: %s", shapes);
     if (loop_report(shapes, sizeof shapes)) {
@@ -707,7 +719,7 @@ static void prep_checked(Ctx *c) {
 /* The preparation (x0 block, x1 drawable, w2 not read; returns w0, bit 0: go on). Answered natively on its cached path
    (HL_GFX_PREP=1), compared with the check; and the sub-mesh submission check's checkpoint, for the call the checked
    body makes on this thread. */
-HL_GATE(8008fc00, "4df7e218373859d0") {
+static int prep_gate(Ctx *c) {
     if (t_prep_inside) return 0;
     if (t_item && !t_draw_armed && c->x[30] != hl_gfx_draw_prepare_return())
         loop_seen(c->x[30] == HL_LOOP_KEY64_RETURN ? LOOP_ROUTE_KEY64
@@ -745,7 +757,121 @@ HL_GATE(8008fc00, "4df7e218373859d0") {
     draw_recording = 1;
     return 1;
 }
+
+/* (the key-0xa0 function's check records each call it makes of the preparation as a segment of its NVN calls) */
+HL_GATE(8008fc00, "4df7e218373859d0") {
+    const int segment = var_recording && c->x[30] == HL_VAR_PREPARE_RETURN;
+    const uint64_t block = c->x[0];
+    if (segment) hl_gfx_var_prep_begin(block);
+    const int answered = prep_gate(c);
+    if (segment) hl_gfx_var_prep_end(c->x[0], answered);
+    return answered;
+}
 __attribute__((constructor)) static void hl_gfx_prep_gate(void) { hl_gate_on_8008fc00 = 1; }
+
+/* ---- the key-0xa0 draw function (guest 0x8008d640) ----
+   The recording job's item body calls it through the table at 0x84c29878 (no lifted code names it, so it is answered by
+   pointer): the job's own draw loop specialized for one key, 40% of the job's NVN calls (gfx-record-job.md section 13).
+   HL_GFX_VAR=1 answers the entries of its plain path natively and runs every other entry through the translation (the
+   function keeps nothing between entries but the block, so the translated body is called on a sublist of one entry);
+   HL_GFX_VAR=2 only classifies the entries (the line "key loop" says how many take each way) and runs them all
+   translated; 0 (the default) leaves the function to the translation. */
+#define HL_VAR_FN 0x8008d640ULL
+#define HL_VAR_PREPARE 0x8008fc00ULL
+static int var_mode;
+static A64Fn var_translated;
+static volatile LONG var_ready;   /* as state_ready */
+
+static int var_asked(void) {
+    const char *e = getenv("HL_GFX_VAR");
+    var_mode = e && e[0] ? atoi(e) : 0;
+    if (var_check_wanted() && var_mode != 2) var_mode = 1;   /* (the check compares native entries: native on) */
+    return var_mode == 1 || var_mode == 2;
+}
+
+static int var_init(void) {
+    for (;;) {
+        const LONG s = var_ready;
+        if (s == 1 || s == 2) return s == 2;
+        if (s == 0 && InterlockedCompareExchange(&var_ready, 3, 0) == 0) break;
+        Sleep(0);
+    }
+    int on = 0;
+    if (!hl_supported_build()) {
+        hos_log("hl gfx: key loop off: not the supported build");
+    } else if (hl_gfx_var_address() != HL_VAR_FN || !(var_translated = hl_translated(HL_VAR_FN))) {
+        hos_log("hl gfx: key loop off: the bridge answers %#llx", (unsigned long long)hl_gfx_var_address());
+    } else if (nvn_resolve() && hl_gfx_var_start(hl_host(), &gfx_host, var_mode == 1, var_check_wanted())) {
+        on = 1;
+        log_on = 1;
+        hos_log("hl gfx: key loop: %s (HL_GFX_VAR=%d)",
+                var_check_wanted() ? "the check: each plain entry run translated and recorded, then native from the same state"
+                : var_mode == 1    ? "the plain entries native, the others translated"
+                                   : "every entry translated, classified",
+                var_mode);
+    }
+    var_ready = on ? 2 : 1;
+    return on;
+}
+
+typedef struct { Ctx *c; uint64_t block, mask, lr; uint32_t flags; } VarCall;
+
+static void var_translate(void *user, uint64_t list, uint32_t count) {
+    const VarCall *v = (const VarCall *)user;
+    Ctx *c = v->c;
+    c->x[0] = list;
+    c->x[1] = count;
+    c->x[2] = v->block;
+    c->x[3] = v->mask;
+    c->x[5] = v->flags;
+    c->x[30] = v->lr;
+    var_translated(c);
+}
+
+/* The shared preparation as the function calls it: below its frame, the link register its call leaves. */
+static void var_record(void *user, int on) {
+    (void)user;
+    var_recording = on;
+}
+
+static uint64_t var_prepare(void *user, uint64_t block, uint64_t drawable, uint64_t sp) {
+    const VarCall *v = (const VarCall *)user;
+    Ctx *c = v->c;
+    uint64_t result;
+    if (prep_ready == 2 && !prep_check && hl_gfx_prep_apply(block, drawable, sp, &result)) return result;
+    const uint64_t sp0 = c->x[31], fp = c->x[29], lr = c->x[30];
+    c->x[31] = sp;
+    c->x[29] = sp + 336;
+    c->x[0] = block;
+    c->x[1] = drawable;
+    c->x[2] = 0;
+    c->x[30] = hl_gfx_var_prepare_return();
+    a64_icall(c, HL_VAR_PREPARE);
+    result = c->x[0];
+    c->x[31] = sp0;
+    c->x[29] = fp;
+    c->x[30] = lr;
+    return result;
+}
+
+/* x0 the list of draw entries, w1 their count, x2 the block, x3 the key's first word, w5 the item's flags. */
+static void hl_gfx_var(Ctx *A64_NOESC c) {
+    if (var_ready != 2 && !var_init()) {
+        var_translated(c);
+        return;
+    }
+    if ((int32_t)c->x[1] < 1) return;   /* (the function returns at once) */
+    if (prep_ready != 2) prep_init();
+    VarCall v = {c, c->x[2], c->x[3], c->x[30], (uint32_t)c->x[5]};
+    hl_gfx_var_call k = {c->x[0], (uint32_t)c->x[1], c->x[2], c->x[3], (uint32_t)c->x[5], c->x[31]};
+    hl_gfx_var_host h = {&v, var_translate, var_prepare, var_record};
+    Ctx *before = t_ctx;
+    t_ctx = c;
+    hl_gfx_var_run(&k, &h);
+    t_ctx = before;
+    if (log_on) hl_report();
+}
+HL_ANSWER(HL_VAR_FN, hl_gfx_var, var_asked, "the key-0xa0 draw function")
 
 /* ---- the recording job's item (guest 0x80084de0): its map ----
    One call records one NVN command buffer for one key (gfx-record-job.md section 11). Nothing of it is native yet: with

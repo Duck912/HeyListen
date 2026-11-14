@@ -32,6 +32,8 @@ GuestAddr proc_global(uint32_t proc) {
         // (read from the shared preparation)
         0x84d67c60, 0x84d67c78,               // bind program, bind uniform buffer
         0x84d66f50, 0x84d67cd0, 0x84d67ce0,   // texture handle, bind texture, bind textures deferred
+        // (read from the key-0xa0 draw loop)
+        0x84d67f58, 0x84d67f60, 0x84d67f70, 0x84d67f78,   // report counter, reset counter, render enable, conditional
     };
     return proc < gfx::kProcCount ? kGlobals[proc] : 0;
 }

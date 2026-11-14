@@ -12,6 +12,7 @@
 #include "host_runtime.h"
 
 #include "hl/bridge/GfxBridge.h"
+#include "hl/bridge/LoopBridge.h"
 #include "hl/gfx/Nvn.h"
 #include "hl/gfx/PassCheck.h"
 #include "hl/gfx/RecordPass.h"
@@ -599,6 +600,180 @@ extern "C" int hl_gfx_state_report(char* out, size_t cap) {
                            (unsigned long long)r.calls, (unsigned long long)r.commands,
                            (unsigned long long)r.mismatched_calls, (unsigned long long)r.command_mismatches,
                            (unsigned long long)r.block_mismatches, (unsigned long long)r.deferred);
+    }
+    return n < 0 ? 0 : ((size_t)n < cap ? n : (int)cap - 1);
+}
+
+// ---- the key-0xa0 draw function ----
+
+namespace {
+using hl::bridge::EntryWay;
+hl::bridge::KeyLoopBridge* g_var;
+bool g_var_native;
+std::atomic<uint64_t> g_var_calls{0}, g_var_entries{0}, g_var_native_calls{0}, g_var_by[(size_t)EntryWay::Count];
+hl::gfx::StateCheck* g_var_check;
+std::atomic<uint64_t> g_var_unchecked{0};
+// what the native entries do that the translation did as calls out of lifted code: NVN calls (queries included) and
+// calls of the shared preparation
+std::atomic<uint64_t> g_var_commands{0}, g_var_prepares{0};
+
+class CountingSink final : public hl::gfx::CommandSink {
+public:
+    explicit CountingSink(hl::gfx::CommandSink& to) : to_(to) {}
+    void emit(const hl::gfx::Command& c) override {
+        n++;
+        to_.emit(c);
+    }
+    uint64_t n = 0;
+
+private:
+    hl::gfx::CommandSink& to_;
+};
+
+// The check's recording of the translated run of one entry: its NVN calls, and each call of the shared preparation as a
+// segment of them with its result and what it left in the block
+struct PrepSegment {
+    size_t first = 0, last = 0;
+    uint64_t result = 0, block = 0;
+    bool answered = false;
+    uint8_t after[hl::bridge::KeyLoopBridge::kPrepareSize];
+};
+thread_local hl::gfx::PassRecording t_var_translated;
+thread_local std::vector<PrepSegment> t_var_segments;
+}   // namespace
+
+extern "C" void hl_gfx_var_check_call(uint32_t proc, const uint64_t* x, const uint32_t* f) {
+    hl::gfx::Command c;
+    c.op = proc;
+    std::memcpy(c.x, x, sizeof c.x);
+    std::memcpy(c.f, f, sizeof c.f);
+    t_var_translated.emit(c);
+}
+
+extern "C" void hl_gfx_var_prep_begin(uint64_t block) {
+    PrepSegment s;
+    s.first = t_var_translated.calls().size();
+    s.block = block;
+    t_var_segments.push_back(s);
+}
+
+extern "C" void hl_gfx_var_prep_end(uint64_t result, int answered) {
+    if (t_var_segments.empty()) return;
+    PrepSegment& s = t_var_segments.back();
+    s.last = t_var_translated.calls().size();
+    s.result = result;
+    s.answered = answered != 0;
+    uint64_t context, buffer = 0;
+    std::memcpy(&context, g_runtime->ptr(s.block + 40), 8);
+    if (context) std::memcpy(&buffer, g_runtime->ptr(context + 216), 8);
+    g_var->snapshot_prepare(s.block, buffer, s.after);
+}
+
+extern "C" uint64_t hl_gfx_var_address(void) { return hl::bridge::kKeyLoopFn; }
+extern "C" uint64_t hl_gfx_var_prepare_return(void) { return hl::bridge::kKeyLoopPrepareReturn; }
+
+extern "C" int hl_gfx_var_start(const hl_guest_host* host, const hl_gfx_host* gfx, int native, int check) {
+    if (g_var) return 1;
+    if (!gfx_host(host, gfx)) return 0;
+    if (check) g_var_check = new hl::gfx::StateCheck("key loop", state_log, &g_runtime->gfx);
+    g_var_native = native != 0;
+    g_var = new hl::bridge::KeyLoopBridge(*g_runtime);
+    return 1;
+}
+
+namespace {
+// One native entry under the check: the translated run first (recorded), then the native entry from the same state.
+// `slot`: the entry's place in the list (the translated function is run on a list of that one).
+void var_checked(const hl::bridge::KeyLoopCall& call, const hl::bridge::KeyLoopEntry& plan, uint64_t slot,
+                 const hl_gfx_var_host* h) {
+    using hl::bridge::KeyLoopBridge;
+    uint8_t pre[KeyLoopBridge::kSnapshotSize], post_t[KeyLoopBridge::kSnapshotSize], post_n[KeyLoopBridge::kSnapshotSize];
+    g_var->snapshot(call, plan, pre);
+    t_var_translated.clear();
+    t_var_segments.clear();
+    h->recording(h->user, 1);
+    h->translate(h->user, slot, 1);
+    h->recording(h->user, 0);
+    bool replayable = true;
+    for (const PrepSegment& s : t_var_segments) replayable &= s.answered;
+    if (!replayable) {
+        g_var_check->deferred();
+        g_var_unchecked.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    g_var->snapshot(call, plan, post_t);
+    g_var->restore(call, plan, pre);
+    hl::gfx::PassRecording native;
+    size_t next = 0;
+    bool unmatched = false;
+    const KeyLoopBridge::Prepare replay = [&](uint64_t, uint64_t) -> uint64_t {
+        if (next >= t_var_segments.size()) {
+            unmatched = true;
+            return 0;
+        }
+        const PrepSegment& s = t_var_segments[next++];
+        for (size_t i = s.first; i < s.last; i++) native.emit(t_var_translated.calls()[i]);
+        g_var->restore_prepare(call.block, plan.command_buffer, s.after);
+        return s.result;
+    };
+    g_var->run(call, plan, replay, native, g_nvn);
+    unmatched |= next != t_var_segments.size();
+    g_var->snapshot(call, plan, post_n);
+    g_var_check->compare(call.block, 0, native.calls(), t_var_translated.calls(), post_n, post_t, sizeof post_n, unmatched);
+    g_var->restore(call, plan, post_t);
+}
+}   // namespace
+
+extern "C" void hl_gfx_var_run(const hl_gfx_var_call* k, const hl_gfx_var_host* h) {
+    hl::bridge::KeyLoopCall call;
+    call.list = k->list, call.count = k->count, call.block = k->block, call.mask = k->mask, call.flags = k->flags;
+    call.sp = k->sp;
+    const hl::bridge::KeyLoopBridge::Prepare prepare = [&](uint64_t block, uint64_t drawable) {
+        g_var_prepares.fetch_add(1, std::memory_order_relaxed);
+        return h->prepare(h->user, block, drawable, call.sp - hl::bridge::kKeyLoopFrame);
+    };
+    hl::gfx::NvnSink nvn_sink(g_nvn);
+    CountingSink sink(nvn_sink);
+    g_var_calls.fetch_add(1, std::memory_order_relaxed);
+    bool all_native = true;
+    for (uint32_t i = 0; i < call.count; i++) {
+        uint64_t entry;
+        std::memcpy(&entry, g_runtime->ptr(call.list + 8ull * i), 8);
+        hl::bridge::KeyLoopEntry plan;
+        const EntryWay way = g_var->classify(call, entry, plan);
+        g_var_by[(size_t)way].fetch_add(1, std::memory_order_relaxed);
+        if (way == EntryWay::Masked) continue;
+        if (way == EntryWay::Native && g_var_check) {
+            var_checked(call, plan, call.list + 8ull * i, h);
+        } else if (way == EntryWay::Native && g_var_native) {
+            g_var->run(call, plan, prepare, sink, g_nvn);
+        } else {
+            all_native = false;
+            h->translate(h->user, call.list + 8ull * i, 1);
+        }
+    }
+    g_var_entries.fetch_add(call.count, std::memory_order_relaxed);
+    g_var_commands.fetch_add(sink.n, std::memory_order_relaxed);
+    if (all_native && g_var_native) g_var_native_calls.fetch_add(1, std::memory_order_relaxed);
+}
+
+extern "C" int hl_gfx_var_report(char* out, size_t cap) {
+    if (!g_var || !cap) return 0;
+    int n = std::snprintf(out, cap, "key loop: calls %llu (all entries native %llu), entries %llu, native NVN calls %llu, native preparations %llu:",
+                          (unsigned long long)g_var_calls.load(), (unsigned long long)g_var_native_calls.load(),
+                          (unsigned long long)g_var_entries.load(), (unsigned long long)g_var_commands.load(),
+                          (unsigned long long)g_var_prepares.load());
+    for (size_t w = 0; w < (size_t)EntryWay::Count && n > 0 && (size_t)n < cap; w++)
+        n += std::snprintf(out + n, cap - n, " %s %llu", hl::bridge::entry_way_name((EntryWay)w),
+                           (unsigned long long)g_var_by[w].load());
+    if (g_var_check && n > 0 && (size_t)n < cap) {
+        const hl::gfx::StateCheck::Report r = g_var_check->report();
+        n += std::snprintf(out + n, cap - n,
+                           "; check: entries compared %llu, NVN calls compared %llu, mismatched entries %llu (NVN calls "
+                           "%llu, bytes %llu), not compared (a preparation left to the translation) %llu",
+                           (unsigned long long)r.calls, (unsigned long long)r.commands,
+                           (unsigned long long)r.mismatched_calls, (unsigned long long)r.command_mismatches,
+                           (unsigned long long)r.block_mismatches, (unsigned long long)g_var_unchecked.load());
     }
     return n < 0 ? 0 : ((size_t)n < cap ? n : (int)cap - 1);
 }
