@@ -3,7 +3,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -616,6 +618,13 @@ std::atomic<uint64_t> g_var_unchecked{0}, g_var_raced{0};
 // what the native entries do that the translation did as calls out of lifted code: NVN calls (queries included) and
 // calls of the shared preparation
 std::atomic<uint64_t> g_var_commands{0}, g_var_prepares{0};
+// HL_GFX_TIME=1: the time (time stamp counter ticks) each way's entries cost in this function, answered natively or
+// handed to the translation, and the clock they are measured against
+std::atomic<uint64_t> g_var_ticks[(size_t)EntryWay::Count], g_var_timed[(size_t)EntryWay::Count];
+bool g_var_time = false;
+uint64_t g_var_tsc0 = 0;
+std::chrono::steady_clock::time_point g_var_clock0;
+std::atomic<uint64_t> g_var_method[8], g_var_method_count[8];   // (the submission methods the entries declined for, by address)
 
 class CountingSink final : public hl::gfx::CommandSink {
 public:
@@ -677,6 +686,11 @@ extern "C" int hl_gfx_var_start(const hl_guest_host* host, const hl_gfx_host* gf
     if (!gfx_host(host, gfx)) return 0;
     if (check) g_var_check = new hl::gfx::StateCheck("key loop", state_log, &g_runtime->gfx);
     g_var_native = native != 0;
+    if (const char* e = std::getenv("HL_GFX_TIME"); e && std::atoi(e) != 0) {
+        g_var_time = true;
+        g_var_tsc0 = __builtin_ia32_rdtsc();
+        g_var_clock0 = std::chrono::steady_clock::now();
+    }
     g_var = new hl::bridge::KeyLoopBridge(*g_runtime);
     return 1;
 }
@@ -749,7 +763,18 @@ extern "C" void hl_gfx_var_run(const hl_gfx_var_call* k, const hl_gfx_var_host* 
         hl::bridge::KeyLoopEntry plan;
         const EntryWay way = g_var->classify(call, entry, plan);
         g_var_by[(size_t)way].fetch_add(1, std::memory_order_relaxed);
+        if (way == EntryWay::Method) {
+            for (size_t k = 0; k < 8; k++) {
+                uint64_t seen = g_var_method[k].load(std::memory_order_relaxed);
+                if (seen == 0 && g_var_method[k].compare_exchange_strong(seen, plan.method)) seen = plan.method;
+                if (seen == plan.method) {
+                    g_var_method_count[k].fetch_add(1, std::memory_order_relaxed);
+                    break;
+                }
+            }
+        }
         if (way == EntryWay::Masked) continue;
+        const uint64_t t0 = g_var_time ? __builtin_ia32_rdtsc() : 0;
         if (way == EntryWay::Native && g_var_check) {
             var_checked(call, plan, call.list + 8ull * i, h);
         } else if (way == EntryWay::Native && g_var_native) {
@@ -757,6 +782,10 @@ extern "C" void hl_gfx_var_run(const hl_gfx_var_call* k, const hl_gfx_var_host* 
         } else {
             all_native = false;
             h->translate(h->user, call.list + 8ull * i, 1);
+        }
+        if (g_var_time) {
+            g_var_ticks[(size_t)way].fetch_add(__builtin_ia32_rdtsc() - t0, std::memory_order_relaxed);
+            g_var_timed[(size_t)way].fetch_add(1, std::memory_order_relaxed);
         }
     }
     g_var_entries.fetch_add(call.count, std::memory_order_relaxed);
@@ -773,6 +802,20 @@ extern "C" int hl_gfx_var_report(char* out, size_t cap) {
     for (size_t w = 0; w < (size_t)EntryWay::Count && n > 0 && (size_t)n < cap; w++)
         n += std::snprintf(out + n, cap - n, " %s %llu", hl::bridge::entry_way_name((EntryWay)w),
                            (unsigned long long)g_var_by[w].load());
+    if (g_var_time && n > 0 && (size_t)n < cap) {
+        const double ns = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - g_var_clock0).count() /
+                          (double)(__builtin_ia32_rdtsc() - g_var_tsc0 + 1);
+        n += std::snprintf(out + n, cap - n, "; time a call, ns (count):");
+        for (size_t w = 0; w < (size_t)EntryWay::Count && n > 0 && (size_t)n < cap; w++)
+            if (w != (size_t)EntryWay::Masked && g_var_timed[w].load())
+                n += std::snprintf(out + n, cap - n, " %s %.0f (%llu)", hl::bridge::entry_way_name((EntryWay)w),
+                                   (double)g_var_ticks[w].load() * ns / (double)g_var_timed[w].load(),
+                                   (unsigned long long)g_var_timed[w].load());
+    }
+    for (size_t k = 0; k < 8 && n > 0 && (size_t)n < cap; k++)
+        if (g_var_method[k].load())
+            n += std::snprintf(out + n, cap - n, " [method %llx: %llu]", (unsigned long long)g_var_method[k].load(),
+                               (unsigned long long)g_var_method_count[k].load());
     if (g_var_check && n > 0 && (size_t)n < cap) {
         const hl::gfx::StateCheck::Report r = g_var_check->report();
         n += std::snprintf(out + n, cap - n,

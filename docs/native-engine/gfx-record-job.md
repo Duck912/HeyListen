@@ -1369,6 +1369,55 @@ function's own loop work for those entries (about 100 guest instructions an entr
    function's frame; `RenderState` takes the handles, the frame addresses of this copy are not yet read from the code).
 4. The empty items (the whole frame of `0x80084de0`): not started.
 
+## 14. Stream 2j: the cluster entries, the render-enable and render-state changes (native in the key-0xa0 function)
+
+**Cluster entries (kind bits 0x51).** The 34% "indirect" entries of section 13 are not one path. By the kind bits
+(drawable flags met with the item's) in the scenes: indirect draw (bit 4) 0; **a cluster entry holding this sub-mesh's
+index ranges 80% of them (28% of all entries)**; the culling loop (bit 7: frustum and depth-pyramid tests, a numeric
+kernel) 20% (5.5-6% of all entries); other cluster routes 0. The ranges path is plain: the drawable's cluster entry
+(table at drawable +120, 24 bytes an entry, indexed by the block's pass byte; entry +16 the sub-mesh it serves, +0 a
+list, +8 must be 0) points to a list of 6-byte records (first range, range count, descriptor; ended by a count of 0).
+Per record: one indexed draw from the descriptor's index buffer, count = last range's count + ((last offset - first
+offset) >> index shift), address = the buffer's address + the first offset, base vertex from the descriptor, base
+instance 1 and 1 instance (the commands: BufferGetAddress, then DrawElementsInstanced). The block's triangle counter
+gains a third of each count (signed multiply by the reciprocal, the game's rounding). No mark byte is set and the
+inline-write switch plays no part. `draw_clusters` in `LoopBridge.cpp`; a cluster entry whose +8 is not 0 or the culling
+loop is declined (the translation runs it).
+
+**Render enable and render state changes.** The entry's render enable differing from the block's runs the render-enable
+function (`0x80078b10`, inlined here): the enable byte kept, a conditional render in force turned off (SetRenderEnable;
+the block's query pair reset), the derived cull, polygon-mode, depth fields and the "applied last" fields rewritten;
+`apply_enable`. The render state (the sub-key against the block's +90, with bit 7 when the block's mask meets the entry
+and the block's mode bit 19 for the entry's bit 10) is the native `hl::gfx::RenderState`; the inlined copy keeps its five
+NVN state objects in this function's frame (blend at sp+168, colour +144, channel mask +148, depth-stencil +152, polygon
++140 from the function's sp: `StateBridge::Objects`). The enable function rewrites the state key, the mode bits and the
+query pair, so `classify` only decides that the entry may change them and `run` reads the block again between the two;
+the conditional-render decision uses the pair as the enable function leaves it. Declined: a material state callback (guest
+code), and a render-enable change with a conditional render in force while the inline-write switch is set (never seen).
+
+**Entries now** (castle-move / kokiri-idle / hyrule-walk, last report): native 67 / 68 / 66%, masked 4%, left: the
+drawables' submission methods 22% (`0x800955a0` 16-17%, `0x8008f8e0` 4-6%), culling clusters 6%, model-class method 0.8-1%,
+geometry mode 0.4%. `0x8008f8e0` is a method that sets the geometry mode, calls the shared preparation and then makes
+virtual calls on scene objects: mostly guest code. `0x800955a0` (4,652 lines, three preparation calls, 95 indirect calls)
+was not read this session.
+
+**Check** (`HL_GFX_VAR_CHECK=1`, valid.sh, build `s2j-var`): entries compared / NVN calls compared / mismatched:
+kokiri-idle 1,085,405 / 12,141,480 / 0; castle-move 491,274 / 5,645,920 / 0 (a first castle-move run stayed on its loading
+screen: start-up after a new build); hyrule-walk 776,902 / 8,875,130 / 0. Not compared (the preparation went to the
+translation): 2%.
+
+**Cost per entry (`HL_GFX_TIME=1`, castle-move, the same function timed per way).** An entry classified native costs 1,557 ns
+translated (`HL_GFX_VAR=2`, 1.03 M entries) and 1,565 ns answered natively (`HL_GFX_VAR=1`, 1.36 M entries; 9.5 NVN
+calls and one preparation an entry). **The native entry is not cheaper per call**: the time is the shared preparation (its
+native answer is the same in both) and the NVN calls, which go through the same table whether lifted or native code makes
+them. Entries are about 1,340 a frame, so 2.1 ms a frame either way. What would pay is emitting records straight into the
+back end (as the native state function can) instead of calling the NVN table, and the preparation itself. The coordinator's
+PC 3050 measurement of section 13's build (no difference) agrees.
+
+**Not done.** Culling clusters (a port of the frustum test `0x80029240`, the depth-pyramid test with its floating-point
+arithmetic and the run merging), `0x800955a0`, `0x8008f8e0`, geometry mode, the model-class case, and the empty items
+(the frame of `0x80084de0`: neither read nor whether an empty recording's memory used is non-zero measured).
+
 ## Not established
 
 - Who builds the runner's item lists (R+1244..R+1280), the pass and target objects, the slot table of `0x80364080`

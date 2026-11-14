@@ -44,11 +44,12 @@ int main() {
     // a masked entry does nothing
     w32(0x2000 + 8, 2);
     CHECK(loop.classify(call, 0x2000, plan) == bridge::EntryWay::Masked);
-    // a differing render enable and state are left
+    // a render enable or state change is answered natively, but not when the material has a state callback (guest
+    // code): this block has no material
     w32(0x2000 + 8, 1);
     uint16_t h = 1u << 4;
     std::memcpy(m.ptr(0x2000 + 14), &h, 2);
-    CHECK(loop.classify(call, 0x2000, plan) == bridge::EntryWay::EnableChange);
+    CHECK(loop.classify(call, 0x2000, plan) == bridge::EntryWay::StateChange);
     h = 3;
     std::memcpy(m.ptr(0x2000 + 14), &h, 2);
     CHECK(loop.classify(call, 0x2000, plan) == bridge::EntryWay::StateChange);

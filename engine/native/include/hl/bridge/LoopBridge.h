@@ -69,6 +69,7 @@ struct KeyLoopEntry {
     uint16_t bits = 0;         ///< the entry's flag bits (+14): the state sub-key, the render enable, the sub-mesh
     uint32_t kind = 0;         ///< the entry's kind mask (+8)
     bool enable_changes = false;   ///< the render enable differs from the block's: the render-enable function runs
+    GuestAddr method = 0;      ///< the drawable's submission method (the way Method: which one)
     GuestAddr cluster_list = 0;   ///< the cluster path's list of (range, count, descriptor) records (0: not that path)
     uint32_t pass = 0;       ///< the block's pass slot
     uint32_t index = 0;      ///< the query slot the entry uses

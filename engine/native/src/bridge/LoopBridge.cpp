@@ -104,7 +104,8 @@ EntryWay KeyLoopBridge::classify(const KeyLoopCall& call, GuestAddr entry, KeyLo
         }
     }
     plan.sub_mesh = (h >> 6) & 0xf;
-    if (m.rd<uint64_t>(m.rd<uint64_t>(drawable) + 88) != m.rd<uint64_t>(kSubmitMethodSlot)) return EntryWay::Method;
+    plan.method = m.rd<uint64_t>(m.rd<uint64_t>(drawable) + 88);
+    if (plan.method != m.rd<uint64_t>(kSubmitMethodSlot)) return EntryWay::Method;
     plan.in_range = plan.sub_mesh < ((m.rd<uint16_t>(drawable + 30) >> 4) & 0xfu);
     if (plan.in_range) {
         plan.resource = m.rd<uint64_t>(drawable + 104);
