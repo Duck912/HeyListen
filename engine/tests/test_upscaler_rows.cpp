@@ -111,6 +111,17 @@ int main() {
         CHECK("FSR 4's native AA does not step", ur::step(FSR4_AA, 3, 1) == 3 && ur::snap(FSR4_AA, 5) == 5);
         CHECK("the model row waits with FSR 4", ur::model_fixed(FSR4, false) && ur::model_fixed(FSR4_AA, false));
     }
+    {   // (a saved Balanced 58% through every Upscaler: each draws its nearest step, none changes the saved value, and it comes back)
+        const int saved = 5;
+        CHECK("Balanced is a step of FSR 3.1, FSR 4 and DLSS", ur::snap(ur::FSR3, saved) == saved && ur::snap(ur::FSR4, saved) == saved &&
+                                                                 ur::snap(ur::DLSS, saved) == saved);
+        CHECK("the game's own draws the nearest step", ur::snap(ur::GAME, saved) == 4);
+        CHECK("Native keeps it for the return", ur::snap(ur::DLAA, saved) == saved && ur::snap(ur::FSR4_AA, saved) == saved);
+        int shown = saved;
+        for (int up : {ur::GAME, ur::FSR3, ur::DLAA, ur::FSR4, ur::FSR4_AA, ur::DLSS, ur::GAME, ur::FSR3}) shown = ur::snap(up, saved);   // (the row never writes back)
+        CHECK("back on an Upscaler with the step, the choice is whole", shown == saved);
+        CHECK("a step from the shown value", ur::step(ur::GAME, ur::snap(ur::GAME, saved), 1) == 0 && ur::step(ur::GAME, ur::snap(ur::GAME, saved), -1) == 3);
+    }
     CHECK("upscaler fixed where DLSS cannot run", ur::upscaler_fixed(false) && !ur::upscaler_fixed(true));
     CHECK("render resolution fixed at full scale only", ur::resolution_fixed(DLAA) && ur::resolution_fixed(ur::FSR4_AA) &&
                                                              !ur::resolution_fixed(DLSS) && !ur::resolution_fixed(ur::FSR4) &&

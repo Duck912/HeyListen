@@ -116,6 +116,17 @@ def main():
         raise SystemExit("upscalers_available does not ask vk_fsr4.cpp whether FSR 4 runs here")
     if "upscalers_available()" not in function(menu, "void set_row(") or "upscalers_available()" not in function(menu, "bool row_fixed("):
         raise SystemExit("the Upscaler row does not step over (or fix on) what runs here")
+    # the saved Render resolution is the player's: another Upscaler does not overwrite it with its nearest step (Balanced 58%
+    # came back from the game's own as Performance 50%); what draws and what the row shows is that nearest step
+    if "opts.resolution = ur::snap(" in function(menu, "void set_row("):
+        raise SystemExit("set_row saves the nearest step over the Render resolution when the Upscaler changes")
+    for name, text in (("int resolution_scale() {", "upscaler_rows::snap(upscaler(), opts.resolution)"),
+                       ("bool resolution_auto() {", "upscaler_rows::snap(upscaler(), opts.resolution)"),
+                       ("const char* tx_resolution(int v) {", "v = ur::snap(up, v)")):
+        if text not in function(menu, name):
+            raise SystemExit("%s does not read the saved Render resolution through the Upscaler's steps" % name)
+    if "ur::step(upscaler(), ur::snap(upscaler(), *r.value), dir)" not in function(menu, "void set_row("):
+        raise SystemExit("set_row steps the Render resolution from the saved value, not from the step the row shows")
     with tempfile.TemporaryDirectory(prefix="upscaler-rows-") as tmp:
         exe = Path(tmp) / "upscaler-rows"
         subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror",

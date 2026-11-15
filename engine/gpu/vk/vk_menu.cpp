@@ -299,6 +299,7 @@ void game_size(float scale, uint32_t& w, uint32_t& h) {
 const char* tx_resolution(int v) {
     static char b[48];
     const int up = upscaler();
+    v = ur::snap(up, v);   // (the saved choice, as the Upscaler shown draws it: ur::snap)
     if (up == ur::DLAA) return "Native (DLAA)";
     if (up == ur::FSR4_AA) return "Native (FSR 4)";
     if (!ur::percent(v)) return "Auto (dynamic)";
@@ -321,6 +322,7 @@ const char* hn_resolution(int v, int variant) {
     if (up == ur::FSR4_AA)
         return "FSR 4's native AA draws the 3D at full size: nothing to set here. Choose FSR 4 or the game's own upscaler "
                "to draw it smaller.";
+    if (variant < 0) v = ur::snap(up, v);
     const int p = ur::percent(v);
     if (up == ur::DLSS) {
         switch (p) {
@@ -1092,7 +1094,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     if (row_fixed(r.value)) return;
     // (the scaling rows: only what can run here; the Render resolution row through the Upscaler's own steps)
     if (r.value == &opts.dlss) v = ur::step_upscaler(upscaler(), dir, upscalers_available());
-    if (r.value == &opts.resolution) v = ur::step(upscaler(), *r.value, dir);
+    if (r.value == &opts.resolution) v = ur::step(upscaler(), ur::snap(upscaler(), *r.value), dir);   // (from the step the row shows)
     if (r.value == &opts.output_res) {   // (smallest to largest: kOutputOrder)
         v = step_output_choice(*r.value, dir);
         if (v == *r.value) return;
@@ -1108,8 +1110,8 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         apply_preset(*r.value);
     } else {
         *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
-        // (another Upscaler: the Render resolution moves to the nearest of its steps, DLSS's modes or the game's)
-        if (r.value == &opts.dlss) opts.resolution = ur::snap(upscaler(), opts.resolution);
+        // (another Upscaler: the saved Render resolution stays, and the nearest of the new Upscaler's steps is what draws and shows,
+        // so Balanced 58% comes back on return from an Upscaler that has no such step: resolution_scale, tx_resolution)
         if (!r.preset_exempt) {   // (the controls, the window and the counter are not the preset's)
             opts.preset = 0; // Custom
             sync_preset_budgets(0);
@@ -2025,9 +2027,9 @@ void menu_init() {
     restart_init();   // (what this run started with: the rows that take a restart differ from it once changed)
 }
 
-bool resolution_auto() { return opts.resolution == 0; }
+bool resolution_auto() { return upscaler_rows::snap(upscaler(), opts.resolution) == 0; }
 int resolution_scale() {
-    const float s = upscaler_rows::percent(opts.resolution) / 100.0f;
+    const float s = upscaler_rows::percent(upscaler_rows::snap(upscaler(), opts.resolution)) / 100.0f;
     return s > 0 ? (int)(twelfths(s) * 10000.0f / 12.0f + 0.5f) : 0;   // (the twelfth game_size labels)
 }
 
