@@ -1257,12 +1257,14 @@ bool shipped_list_pending() {
 }
 /// (prepare_run, the seed open) every pipeline of the state lists (the player's own and the shipped one): its program translated
 /// when the program cache lacks it, then noted in hookshot_pipelines.bin for precompile_run to build. RX_VK_NO_STATE_LIST=1: off
-void state_list_prepare(void (*progress)(size_t done, size_t total)) {
+/// background (a lazy update, in play): only the programs are made, to the program cache and the memory, on a few workers at idle
+/// priority; no pipeline is noted and the shipped list is not marked as gone through, so that the next start does it before the game
+void state_list_prepare(void (*progress)(size_t done, size_t total), bool background = false) {
     if (getenv("RX_VK_NO_STATE_LIST")) return;
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<StateRec> recs = state_list_read(state_list_path("hookshot_pipeline_states_shipped.bin"));
     const size_t shipped = recs.size();
-    if (const uint64_t h = shipped ? shipped_list_hash() : 0) {   // (gone through: state_list_pending is false until it changes)
+    if (const uint64_t h = shipped && !background ? shipped_list_hash() : 0) {   // (gone through: state_list_pending is false until it changes)
         if (FILE* f = fopen(state_list_path("hookshot_pipeline_states_shipped.done").c_str(), "wb")) fwrite(&h, 8, 1, f), fclose(f);
     }
     for (const StateRec& r : state_list_read(state_list_path("hookshot_pipeline_states.bin"))) recs.push_back(r);
@@ -1290,7 +1292,7 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
     std::atomic<size_t> next{0}, made{0}, missing{0};
     const auto worker = [&] {
         ub_thread_off();   // (a background thread: see ub_thread_off; the pipeline state list's builds raced the replay's updates)
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        SetThreadPriority(GetCurrentThread(), background ? THREAD_PRIORITY_IDLE : THREAD_PRIORITY_BELOW_NORMAL);
         for (;;) {
             const size_t i = next++;
             if (i >= want.size()) return;
@@ -1309,14 +1311,16 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
     };
     std::vector<std::thread> threads;
     const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
-    for (unsigned i = 0; i < std::clamp(cpus / 2, 1u, 32u); i++) threads.emplace_back(worker);
+    const unsigned workers = background ? std::clamp(cpus / 4, 2u, 4u) : std::clamp(cpus / 2, 1u, 32u);
+    for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     for (std::thread& t : threads) t.join();
     // then each pipeline, noted as a draw would note it
     std::unordered_set<uint64_t> keys;
     for (const Want& w : want)
         if (w.key) keys.insert(w.key);
-    // (these keys only: the kept compute programs stay on disk for precompile_run, which builds their pipelines)
-    program_cache_load_some(keys, [](Program& p) { ensure_layout(p); }, false);
+    // (these keys only: the kept compute programs stay on disk for precompile_run, which builds their pipelines. In play they are
+    // not read in: the draws that need one read it, and the programs a draw is using are not ours to make layouts for)
+    if (!background) program_cache_load_some(keys, [](Program& p) { ensure_layout(p); }, false);
     // the variants made by other textures (the seed's are for nothing bound): translated with the answers the game's gave
     std::vector<size_t> variant_of;   // (a record of each variant the cache lacks)
     {
@@ -1324,14 +1328,14 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
         for (size_t i = 0; i < recs.size(); i++) {
             const StateRec& r = recs[i];
             const uint64_t key = want[rec_program[i]].key;
-            if (key && (r.nanswers || r.nquestions) && !program_find(key, r.variant) && seen.insert(mix(key, r.variant)).second)
+            if (key && (r.nanswers || r.nquestions) && !(background ? program_variant_kept(key, r.variant) : program_find(key, r.variant) != nullptr) && seen.insert(mix(key, r.variant)).second)
                 variant_of.push_back(i);
         }
     }
     std::atomic<size_t> variants_made{0};
     next = 0;
     const auto variant_worker = [&] {
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        SetThreadPriority(GetCurrentThread(), background ? THREAD_PRIORITY_IDLE : THREAD_PRIORITY_BELOW_NORMAL);
         for (;;) {
             const size_t i = next++;
             if (i >= variant_of.size()) return;
@@ -1343,13 +1347,19 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
                               (r.answers[k] >> 8 & 1) != 0};
             if (const Program* p = seed_variant_of(r.code, r.mesh != 0, r.vattr, r.color_types, questions, answers)) {
                 if (p->variant == r.variant) variants_made++;
-                ensure_layout(const_cast<Program&>(*p));
+                if (!background) ensure_layout(const_cast<Program&>(*p));
             }
         }
     };
     threads.clear();
-    for (unsigned i = 0; i < std::clamp(cpus / 2, 1u, 32u); i++) threads.emplace_back(variant_worker);
+    for (unsigned i = 0; i < workers; i++) threads.emplace_back(variant_worker);
     for (std::thread& t : threads) t.join();
+    if (background) {
+        logf("vk: state list (in play): %zu pipelines, %zu programs (%zu translated now, %zu with stages not in the seed), %zu variants by "
+             "their textures translated, in %.1f s on %u workers", recs.size(), want.size(), made.load(), missing.load(), variants_made.load(),
+             std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), workers);
+        return;
+    }
     size_t noted_n = 0, no_variant = 0;
     auto s = std::make_unique<NvnState>();
     for (size_t i = 0; i < recs.size(); i++) {
@@ -1603,6 +1613,11 @@ bool ledger_has(uint64_t id) {
     std::lock_guard lk(ledger_mu);
     ledger_open_locked();
     return ledger_have.count(id) != 0;
+}
+size_t ledger_size() {
+    std::lock_guard lk(ledger_mu);
+    ledger_open_locked();
+    return ledger_have.size();
 }
 void ledger_add(uint64_t id) {
     if (!id) return;
@@ -7461,6 +7476,12 @@ void prepared_write(const std::string& path, const PreparedFor& now) {
     const uint64_t r[6] = {now.stamp, now.seed_hash, now.seed_size, (uint64_t)now.seed_time, (uint64_t)file_clock_now(), now.kept};
     if (FILE* f = fopen(path.c_str(), "wb")) fwrite(r, 8, 6, f), fclose(f);
 }
+/// A preparation began here: the record says no translator (stamp 0), so that the next start prepares again whichever way this one
+/// ends. Not removed: a start that finds no record is a first start, and drops what the driver's ledger lists
+void prepared_mark_running(const std::string& path, PreparedFor now) {
+    now.stamp = 0, now.kept = 0;
+    prepared_write(path, now);
+}
 /// Whether to prepare (and why), and what for: *now, written once the prepare is done. No seed: the translator alone, as before.
 /// *hash_ms: how long the seed's hash took (0: not taken)
 PrepareWhy prepare_check(const std::string& path, const std::string& seed, uint64_t stamp, PreparedFor* now, double* hash_ms) {
@@ -7496,20 +7517,41 @@ PrepareWhy prepare_check(const std::string& path, const std::string& seed, uint6
     return PrepareWhy::None;
 }
 } // namespace
+namespace { std::atomic<bool> lazy_update{false}; }
+bool prepare_is_lazy_update() { return lazy_update.load(); }
 /// (hookshot) An update: every shader was prepared once here, for another translator. Each release changes the translator, and every
 /// update then held the game's start for the whole seed again (116k variants, minutes on most PCs: "shaders need to be prepared every
-/// update"). With RX_VK_PREPARE_BACKGROUND=1 only what the notes name is built before the game (precompile_run), the rest in play
-/// behind it (prepare_background)
+/// update"). Now only what the notes name is built before the game (precompile_run), the rest in play behind it (prepare_background):
+/// with a lazy update (RX_VK_SHADER_KEY on, see below) nothing is translated before the game, a program a draw needs is translated by that
+/// draw, and the rest behind it, the driver given only what its fingerprint says it has not built
 bool prepare_is_update() {
-    // (opt-in, RX_VK_PREPARE_BACKGROUND=1: when the translator changed, the program cache is gone too, and the first area then
-    // translated thousands of programs in play: 1 fps and black frames for minutes, which looked broken. Before the game is the default)
-    if (getenv("RX_VK_PREPARE_AGAIN") || !getenv("RX_VK_PREPARE_BACKGROUND")) return false;
+    // (RX_VK_PREPARE_BACKGROUND=1: the old opt-in, whatever the driver's caches hold. Otherwise, with RX_VK_SHADER_KEY on, an update
+    // is lazy by itself when the last preparation here was whole and the driver's caches are what it left: RX_VK_LAZY_UPDATE=0 off.
+    // The first start, a wiped cache and a preparation cut short are never one: they prepare before the game, as a first start does)
+    if (getenv("RX_VK_PREPARE_AGAIN")) return false;
+    const char* bg = getenv("RX_VK_PREPARE_BACKGROUND");
+    const bool forced = bg && atoi(bg) != 0;
+    const bool lazy = !bg && shader_key_on() && (!getenv("RX_VK_LAZY_UPDATE") || atoi(getenv("RX_VK_LAZY_UPDATE")) != 0);
+    if (!forced && !lazy) return false;
     FILE* f = fopen(prepared_path().c_str(), "rb");
     if (!f) return false;
     uint64_t have = 0;
     const bool read = fread(&have, 8, 1, f) == 1;
     fclose(f);
-    return read && have != program_cache_stamp();
+    // (a record of stamp 0 is the mark of a preparation that began and did not end, prepared_mark_running)
+    if (!read || !have || have == program_cache_stamp()) return false;
+    if (forced) return true;
+    pcache_init();
+    if (!pcache_loaded) {   // (the driver's data is not here: what the ledger lists is not in it, and the ledger is dropped with it)
+        logf("vk: the pipeline cache has no data of the last start's: the shaders are prepared before the game");
+        return false;
+    }
+    if (!ledger_size()) {   // (nothing listed as built: the last preparation was before the key, or its ledger is gone)
+        logf("vk: no driver builds are listed (hookshot_compiled.bin): the shaders are prepared before the game");
+        return false;
+    }
+    lazy_update.store(true);
+    return true;
 }
 /// Every shader of the game, before its first start (vk_shader.cpp, the seed): once for this translator. True: prepared now.
 /// background: in play, behind the game: a few workers at idle priority, translation only (the driver's part is left to first use:
@@ -7535,22 +7577,34 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     if (why == PrepareWhy::Cache)
         logf("vk: the program cache holds %zu program keys of the %llu the last preparation left: preparing again",
              program_cache_kept(), (unsigned long long)prepared_for.kept);
+    if (why == PrepareWhy::First && shader_key_on()) {
+        // (no record at all: a first start, or the record was wiped with whatever else was. What the ledger lists as built may be in a
+        // driver cache that is gone too, and nothing can tell, so it is trusted no more: every driver build is made again, which the
+        // driver's own cache answers at once where it still has them)
+        pcache_init();
+        ledger_drop_all();
+    }
     const size_t programs = seed_open();
     if (!programs) return false;
-    // (the record goes while the shaders are prepared and is written again when they are: a preparation closed or killed part
-    // way left the old record standing, and the next start trusted it whenever the cache held more than half of what it had held,
-    // or anything at all under a record from before the count: thousands of programs were then translated in play. With no
-    // record the next start prepares again, and only what the cache does not hold yet)
-    remove(path.c_str());
+    // (the record says no translator while the shaders are prepared and is written again when they are: a preparation closed or
+    // killed part way left the old record standing, and the next start trusted it whenever the cache held more than half of what it
+    // had held, or anything at all under a record from before the count: thousands of programs were then translated in play. With
+    // that record the next start prepares again, and only what the cache does not hold yet)
+    // (an update's preparation behind the game leaves the record as it is: closed before it ended, the next start is an update again)
+    if (!background) prepared_mark_running(path, prepared_for);
     const size_t total = programs * 3;   // (each program for float, one and two integer bone inputs)
     // The driver's part: each program's stage libraries, built once and let go, for the driver's own disk cache. What stays with us is
     // nothing: a kept library costs memory, and our pipeline cache would be read in whole at every start. A driver whose compiler
     // crashes on one of them (it happens: TotK Recomp's issue 30) would crash here at every start: the file says this step began and
     // did not end, and the next start goes without it. Those libraries are then built when a draw first needs them
     const std::string warming = path + ".warming";
-    bool warm = gpl_wanted() && !getenv("RX_VK_NO_WARM") && !background;
-    bool warm_cs = !getenv("RX_VK_NO_WARM") && !background;
-    if (background) {
+    // (a lazy update's preparation behind the game does it too, and only for what the ledger does not list: a few programs, whose
+    // fingerprint is not one the driver has built. The others are left out as in any preparation with the key on)
+    const bool lazy = background && lazy_update.load();
+    const bool driver_part = !background || lazy;
+    bool warm = gpl_wanted() && !getenv("RX_VK_NO_WARM") && driver_part;
+    bool warm_cs = !getenv("RX_VK_NO_WARM") && driver_part;
+    if (!driver_part) {
     } else if (FILE* f = fopen(warming.c_str(), "rb")) {
         fclose(f);
         warm = warm_cs = false;
@@ -7669,12 +7723,14 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
     // (in play: a quarter of the CPUs, two to four, the game's own threads before them)
     const unsigned workers = background ? std::clamp(cpus / 4, 2u, 4u) : std::clamp(cpus / 2, 1u, 32u);
+    // (a lazy update: first the programs the pipeline state lists name, the ones the game draws with, then the rest of the seed)
+    if (lazy) state_list_prepare(nullptr, true);
     for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     auto stat_at = std::chrono::steady_clock::now();
     while (done.load() < total && !prepare_stopped()) {
         if (progress) progress(done.load() / 3, programs);   // (in programs, as the log counts them, not programs times variants)
         Sleep(100);
-        if (!background && std::chrono::steady_clock::now() - stat_at > std::chrono::seconds(10)) {
+        if ((!background || lazy) && std::chrono::steady_clock::now() - stat_at > std::chrono::seconds(background ? 30 : 10)) {
             // (every 10 s: what a run cut short by its time limit still says, and what the driver built so far is listed already)
             stat_at = std::chrono::steady_clock::now();
             if (shader_key_on()) ledger_commit();
@@ -7702,7 +7758,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     logf("vk: shader key %s: %lld driver builds left out (the same SPIR-V and layout were built before), %lld built and listed; "
              "translation %.1f s and the driver's part %.1f s of work, on %u workers",
              shader_key_on() ? "on" : "off", (long long)ledger_reused.load(), (long long)ledger_built.load(), shader_translate_ms() / 1000.0, warm_us.load() / 1e6, workers);
-    if (!background) remove(warming.c_str());
+    if (driver_part) remove(warming.c_str());
     if (const size_t kept = program_cache_kept(); kept != SIZE_MAX) prepared_for.kept = kept;
     prepared_write(path, prepared_for);
     return true;
@@ -7718,9 +7774,9 @@ void state_list_run() {
 void prepare_background() {
     std::thread([] {
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE);
-        Sleep(20000);   // (past the title screen's own loading)
-        logf("vk: an update: the shaders not met yet are translated in play, behind the game");
-        prepare_run(nullptr, true);
+        if (!lazy_update.load()) Sleep(20000);   // (past the title screen's own loading; a lazy update has the draws' programs to make now)
+        logf("vk: an update%s: the shaders not met yet are translated in play, behind the game", lazy_update.load() ? " (lazy: nothing was made before the game)" : "");
+        if (prepare_run(nullptr, true) && lazy_update.load() && !prepare_stopped()) predict_run(nullptr, true);
     }).detach();
 }
 
@@ -7922,7 +7978,7 @@ void precompile_run(void (*progress)(size_t done, size_t total), bool wait) {
 // (hookshot) The pipelines the notes predict for the programs no note names (vk_predict.cpp), after a prepare that prepared: each built
 // once for the driver's own cache and let go. Not into ours (mkw_vk_pipelines.bin, read whole at every start: ~40000 more pipelines made
 // it 1.7 GB), nor kept: each program is borrowed from hookshot_programs.bin for its pipelines and let go
-void predict_run(void (*progress)(size_t done, size_t total)) {
+void predict_run(void (*progress)(size_t done, size_t total), bool background) {
     const auto t0 = std::chrono::steady_clock::now();
     const std::vector<std::unique_ptr<PipeNote>> notes = pipe_notes_read();
     if (notes.empty() || getenv("RX_VK_NO_PREDICT")) return;
@@ -7940,11 +7996,11 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     std::atomic<bool> out_of_time{false};
     const auto worker = [&] {
         ub_thread_off();   // (a background thread: see ub_thread_off)
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);   // (as prepare_run's)
+        SetThreadPriority(GetCurrentThread(), background ? THREAD_PRIORITY_IDLE : THREAD_PRIORITY_BELOW_NORMAL);   // (as prepare_run's)
         driver_cache_only = true;
         for (;;) {
             if (prepare_stopped()) return;
-            if (budget_s > 0 && std::chrono::steady_clock::now() - t0 > std::chrono::seconds(budget_s)) {
+            if (!background && budget_s > 0 && std::chrono::steady_clock::now() - t0 > std::chrono::seconds(budget_s)) {
                 out_of_time = true;
                 return;
             }
@@ -7969,15 +8025,18 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     };
     std::vector<std::thread> threads;
     const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
-    for (unsigned i = 0; i < std::clamp(cpus / 2, 1u, 32u); i++) threads.emplace_back(worker);
+    // (in play: a quarter of the CPUs, two to four, at idle priority, and no time budget: with the ledger it builds only what changed)
+    const unsigned workers = background ? std::clamp(cpus / 4, 2u, 4u) : std::clamp(cpus / 2, 1u, 32u);
+    for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     while (next.load() < keys.size() + threads.size() && !prepare_stopped() && !out_of_time.load()) {
         if (progress) progress(done.load(), predicted.size());
         Sleep(100);
     }
     for (std::thread& t : threads) t.join();
     if (shader_key_on()) ledger_commit();
-    logf("vk: predicted %zu pipelines from %zu notes for %zu program variants no note names: %zu made in %.1f s%s", predicted.size(),
-         notes.size(), programs, made.load(), std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
+    logf("vk: predicted%s %zu pipelines from %zu notes for %zu program variants no note names: %zu made, %lld left out (listed as built), in %.1f s on %u workers%s",
+         background ? " (in play)" : "", predicted.size(), notes.size(), programs, made.load(), (long long)ledger_reused.load(),
+         std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), workers,
          out_of_time.load() ? " (the time budget, RX_VK_PREDICT_S, ran out: the rest are built in play)" : "");
 }
 

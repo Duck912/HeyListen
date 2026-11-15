@@ -122,6 +122,8 @@ struct KeptProgram {
 void program_cache_each(const std::function<void(const KeptProgram&)>& fn);
 void program_cache_borrow(uint64_t key, const std::function<void(Program&)>& fn);   // (made for fn, then let go; still kept)
 const Program* program_find(uint64_t key, uint64_t variant);
+/// (hookshot) Whether the program cache or memory holds this variant of key already (the records are read as far as their answers)
+bool program_variant_kept(uint64_t key, uint64_t variant);
 /// (hookshot) The pipeline state list (vk_draw.cpp): a program by its stages' code keys (graphics: vertex, fragment; mesh: mesh,
 /// fragment, task) and the vertex inputs and colour output types it was drawn with, from the seed (seed_open first): translated
 /// and kept unless kept already (null then, or when it does not translate). *key_out: its key, 0 when a stage is not in the seed
