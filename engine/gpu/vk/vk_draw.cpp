@@ -7637,6 +7637,14 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
         std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
         ~WarmClock() { sum += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count(); }
     };
+    // (in play the workers run at idle priority, and a thread inside the driver's compiler holds locks the game's own pipeline builds
+    // wait on: starved by the game's threads it kept them waiting for seconds, up to 80 s in one run on the PC 3050. The driver's part
+    // runs one step above, as a full preparation's does)
+    struct DriverTurn {
+        const bool on;
+        explicit DriverTurn(bool lift) : on(lift) { if (on) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL); }
+        ~DriverTurn() { if (on) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE); }
+    };
     const auto warm_compute = [&](Program& p) {
         if (!warm_cs || taau_key(p.key)) return;
         WarmClock wc{warm_us};
@@ -7645,6 +7653,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
             ledger_reused++;
             return;
         }
+        const DriverTurn turn{background};
         ensure_layout(p);
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -7701,6 +7710,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
                     ledger_reused++;
                 } else if (!p->failed && warm && !p->compute) {
                     WarmClock wc{warm_us};
+                    const DriverTurn turn{background};
                     ensure_layout(*p);
                     Targets at{};
                     int built = 0;
@@ -8002,7 +8012,7 @@ void predict_run(void (*progress)(size_t done, size_t total), bool background, b
     std::atomic<bool> out_of_time{false};
     const auto worker = [&] {
         ub_thread_off();   // (a background thread: see ub_thread_off)
-        SetThreadPriority(GetCurrentThread(), background ? THREAD_PRIORITY_IDLE : THREAD_PRIORITY_BELOW_NORMAL);   // (as prepare_run's)
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);   // (as prepare_run's: these are the driver's compiles, see DriverTurn)
         driver_cache_only = !noted;
         for (;;) {
             if (prepare_stopped()) return;
@@ -8031,7 +8041,7 @@ void predict_run(void (*progress)(size_t done, size_t total), bool background, b
     };
     std::vector<std::thread> threads;
     const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
-    // (in play: a quarter of the CPUs, two to four, at idle priority, and no time budget: with the ledger it builds only what changed)
+    // (in play: a quarter of the CPUs, two to four, below normal priority, and no time budget: with the ledger it builds only what changed)
     const unsigned workers = background ? std::clamp(cpus / 4, 2u, 4u) : std::clamp(cpus / 2, 1u, 32u);
     for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     while (next.load() < keys.size() + threads.size() && !prepare_stopped() && !out_of_time.load()) {
