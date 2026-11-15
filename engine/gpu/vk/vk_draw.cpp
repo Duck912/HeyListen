@@ -7670,9 +7670,18 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     // (in play: a quarter of the CPUs, two to four, the game's own threads before them)
     const unsigned workers = background ? std::clamp(cpus / 4, 2u, 4u) : std::clamp(cpus / 2, 1u, 32u);
     for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
+    auto stat_at = std::chrono::steady_clock::now();
     while (done.load() < total && !prepare_stopped()) {
         if (progress) progress(done.load() / 3, programs);   // (in programs, as the log counts them, not programs times variants)
         Sleep(100);
+        if (!background && std::chrono::steady_clock::now() - stat_at > std::chrono::seconds(10)) {
+            // (every 10 s: what a run cut short by its time limit still says, and what the driver built so far is listed already)
+            stat_at = std::chrono::steady_clock::now();
+            if (shader_key_on()) ledger_commit();
+            logf("vk: prepare: %.0f s, %zu of %zu steps; translation %.0f s and the driver's part %.0f s of work so far; %lld driver builds left "
+                 "out, %lld listed", std::chrono::duration<double>(stat_at - t0).count(), done.load(), total, shader_translate_ms() / 1000.0,
+                 warm_us.load() / 1e6, (long long)ledger_reused.load(), (long long)ledger_built.load());
+        }
         if (next.load() >= total + threads.size()) break;
     }
     for (std::thread& t : threads) t.join();
