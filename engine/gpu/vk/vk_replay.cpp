@@ -59,6 +59,7 @@
 #include "vk_tl_clock.h"   // (RX_VK_TL: the timeline's host time domain)
 #include "vk_lag.h"   // (RX_VK_LAG_LOG)
 #include "readback_late.h"   // (RX_VK_READBACK_LATE)
+#include "exe_base.h"   // (RX_VK_RB_PROF's call sites: offsets in the exe)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -4295,7 +4296,7 @@ struct RbScope {
         if (!on) return;
         void* bt[14];
         const USHORT n = CaptureStackBackTrace(1, 14, bt, nullptr);
-        const uintptr_t base = (uintptr_t)GetModuleHandleA(nullptr);
+        static const uintptr_t base = exe_base();
         int w = 0, seen = 0;
         for (USHORT i = 0; i < n && seen < 5; i++) {
             const uintptr_t a = (uintptr_t)bt[i];
