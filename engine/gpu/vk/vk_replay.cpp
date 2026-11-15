@@ -4981,6 +4981,9 @@ void log_frame_stats() {
              shader_translate_ms(), jobs_pending(), libs);
         l_fresh = fresh;
         const double overlay_wait_ms = (pwait_ms - l_pwait_ms) / 120.0;   // (the overlay's lines: vk_overlay.cpp)
+        static double l_swait_ms;
+        const double swait_ms = draw_shader_wait_ms(), overlay_shader_wait_ms = (swait_ms - l_swait_ms) / 120.0;
+        l_swait_ms = swait_ms;
         double overlay_replay_ms = -1;
         l_pskip = pskip, l_pwaits = pwaits, l_pwait_ms = pwait_ms, l_links = links, l_link_ms = link_ms;
         {
@@ -5088,7 +5091,9 @@ void log_frame_stats() {
             PerfWaits w;
             w.replay_ms = (float)overlay_replay_ms;
             w.gpu_ms = (float)((st_gpu_ns - l_gpu) / 120.0 / 1e6);
-            w.pipe_wait_ms = (float)overlay_wait_ms;   // (the waits for shaders and pipelines are counted together)
+            // (the waits for a program's translation, and the rest of them, for its pipeline's build)
+            w.pipe_wait_ms = (float)std::max(0.0, overlay_wait_ms - overlay_shader_wait_ms);
+            w.shader_wait_ms = (float)overlay_shader_wait_ms;
             w.tex_uploads = (float)((up - l_up) / 120.0);
             perf_set_waits(w);
         }
