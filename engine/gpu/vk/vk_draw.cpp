@@ -7723,8 +7723,10 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
     // (in play: a quarter of the CPUs, two to four, the game's own threads before them)
     const unsigned workers = background ? std::clamp(cpus / 4, 2u, 4u) : std::clamp(cpus / 2, 1u, 32u);
-    // (a lazy update: first the programs the pipeline state lists name, the ones the game draws with, then the rest of the seed)
+    // (a lazy update: first the programs the pipeline state lists name, the ones the game draws with, and the pipelines the notes name
+    // for them, the driver's only for those whose ledger id is missing, then the rest of the seed)
     if (lazy) state_list_prepare(nullptr, true);
+    if (lazy && !prepare_stopped()) predict_run(nullptr, true, true);
     for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     auto stat_at = std::chrono::steady_clock::now();
     while (done.load() < total && !prepare_stopped()) {
@@ -7978,12 +7980,16 @@ void precompile_run(void (*progress)(size_t done, size_t total), bool wait) {
 // (hookshot) The pipelines the notes predict for the programs no note names (vk_predict.cpp), after a prepare that prepared: each built
 // once for the driver's own cache and let go. Not into ours (mkw_vk_pipelines.bin, read whole at every start: ~40000 more pipelines made
 // it 1.7 GB), nor kept: each program is borrowed from hookshot_programs.bin for its pipelines and let go
-void predict_run(void (*progress)(size_t done, size_t total), bool background) {
+/// noted (a lazy update, in play): the pipelines the notes name themselves, not those they predict, built into our pipeline cache too:
+/// what precompile_run would have built before the game, for the programs the state list has made by now, so that the draws that
+/// meet a changed shader find the driver's compile done
+void predict_run(void (*progress)(size_t done, size_t total), bool background, bool noted) {
     const auto t0 = std::chrono::steady_clock::now();
     const std::vector<std::unique_ptr<PipeNote>> notes = pipe_notes_read();
-    if (notes.empty() || getenv("RX_VK_NO_PREDICT")) return;
+    if (notes.empty() || (!noted && getenv("RX_VK_NO_PREDICT"))) return;
     size_t programs = 0;
-    const std::vector<std::unique_ptr<PipeNote>> predicted = predict_pipelines(notes, &programs);
+    const std::vector<std::unique_ptr<PipeNote>> made_up = noted ? std::vector<std::unique_ptr<PipeNote>>{} : predict_pipelines(notes, &programs);
+    const std::vector<std::unique_ptr<PipeNote>>& predicted = noted ? notes : made_up;
     std::unordered_map<uint64_t, std::vector<const PipeNote*>> by_program;
     for (const auto& n : predicted) by_program[n->prog].push_back(n.get());
     std::vector<uint64_t> keys;
@@ -7997,7 +8003,7 @@ void predict_run(void (*progress)(size_t done, size_t total), bool background) {
     const auto worker = [&] {
         ub_thread_off();   // (a background thread: see ub_thread_off)
         SetThreadPriority(GetCurrentThread(), background ? THREAD_PRIORITY_IDLE : THREAD_PRIORITY_BELOW_NORMAL);   // (as prepare_run's)
-        driver_cache_only = true;
+        driver_cache_only = !noted;
         for (;;) {
             if (prepare_stopped()) return;
             if (!background && budget_s > 0 && std::chrono::steady_clock::now() - t0 > std::chrono::seconds(budget_s)) {
@@ -8034,8 +8040,8 @@ void predict_run(void (*progress)(size_t done, size_t total), bool background) {
     }
     for (std::thread& t : threads) t.join();
     if (shader_key_on()) ledger_commit();
-    logf("vk: predicted%s %zu pipelines from %zu notes for %zu program variants no note names: %zu made, %lld left out (listed as built), in %.1f s on %u workers%s",
-         background ? " (in play)" : "", predicted.size(), notes.size(), programs, made.load(), (long long)ledger_reused.load(),
+    logf("vk: %s%s %zu pipelines from %zu notes for %zu program variants no note names: %zu made, %lld left out (listed as built), in %.1f s on %u workers%s",
+         noted ? "noted pipelines warmed" : "predicted", background ? " (in play)" : "", predicted.size(), notes.size(), programs, made.load(), (long long)ledger_reused.load(),
          std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), workers,
          out_of_time.load() ? " (the time budget, RX_VK_PREDICT_S, ran out: the rest are built in play)" : "");
 }
