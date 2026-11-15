@@ -7585,8 +7585,8 @@ bool prepare_is_update() {
     size_t measured = 0;
     const double share = update_changed_share(&measured);
     static const double limit = getenv("RX_VK_LAZY_MAX_CHANGED") ? atof(getenv("RX_VK_LAZY_MAX_CHANGED")) / 100.0 : 0.10;
-    logf("vk: update: %.0f%% of %zu sampled programs translate differently than the last start's (more than %.0f%%: the shaders are "
-         "prepared before the game)", share * 100, measured, limit * 100);
+    logf("vk: update: %.0f%% of %zu sampled programs translate differently than the last start's (the limit is %.0f%%, over it the "
+         "shaders are prepared before the game)", share * 100, measured, limit * 100);
     if (measured >= 16 && share > limit) return false;
     lazy_update.store(true);
     return true;

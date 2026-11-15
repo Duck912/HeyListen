@@ -144,11 +144,25 @@ built is compiled by the driver when first drawn, as before the prediction exist
 pipeline, once (the pipeline cache is saved again with it). Nothing is wrong or missing, only late. Deleting `hookshot_compiled.bin` or
 `hookshot_prepared.bin` by hand is the supported way to have everything built again.
 
-**Not measured yet** (the game was not run for this section: the main PC's queue was open and the PC 3050 held by another stream's
-whole-machine lock for the whole session): the time to play after a translator change, the frames in play while the work runs behind,
-and the background's total time. The code compiles (a syntax pass of `vk_draw.cpp`, `vk_shader.cpp`, `vk_main.cpp` with the
-back end's flags), and the record's rules are tested without the game (`tests/test_prepare_seed_stamp.py`: a preparation cut short is
-not a first start, a missing or empty record is). What to expect, from K1's numbers: the start no longer waits for the 55-75 s of
-translation; the 6,800 noted pipelines are built by the draws that meet them (each a program translated, about 12 ms of CPU on average,
-and a pipeline the driver's cache answers) instead of before the game, so the first minutes show hitches where the old start showed a
-progress screen; whether they are acceptable is what the measurement is for.
+**The guard.** A translator change that alters many shaders must not be lazy: the game would compile them as it meets them. `prepare_is_update`
+translates about 80 evenly spread seed graphics programs (a second or two), and the ledger, which now also lists the fingerprint of every
+program translated (`ledger_id_seen`), says how many come out differently. Over `RX_VK_LAZY_MAX_CHANGED` percent (default 10), or a ledger
+from before the seen ids: the preparation runs before the game as in K1 (which still leaves out the driver builds of what did not change).
+
+**Measured (PC 3050, i5-10400F 6c/12t, RTX 3050; slot b; kokiri-idle; a stamp change by an environment variable, shaders unchanged).**
+* Time to play: the shaders step of the start took 1.0-1.4 s (3.4 s with the sample), against 66-80 s for the preparation before the game
+  (K1's own flow on this PC: 69 s of translation, then the prediction).
+* Frames in play, update against a normal start of the same scene: over 50 ms 41 against 24 in the scene load, longest 1.56 s against
+  2.06 s; the 60-120 s part of this scene is slow (13-34 fps) in both. No hitch attributable to the work behind the game.
+* Work behind the game, 3 workers (a quarter of 12 threads) at idle priority: the state-list programs (1,841 programs, 63 variants) in
+  11-12 s, the noted pipelines checked against the ledger in 0.5 s (2,852 found, 0 built), then the seed: 95,955 steps, about 8 minutes
+  of wall clock over five 110 s starts (each start goes on from the program cache), the last 52 s; then the prediction in 14 s
+  (6,550 pipelines, 0 built, all listed). Driver builds in the unchanged case: 0.
+* A change of many shaders (`RX_VK_NAN_GUARD=0`, `RX_VK_NO_F16=1`) run lazily, before the guard existed: frames of 4-21 s while the scene
+  loaded, and in one start no frame for 80 s. That is what the guard is for; with the guard such a start prepares first. The guard was
+  checked both ways (0% of 81 programs: lazy; 100% with no seen ids: prepared first; the prepared start then went on to a normal one).
+* A driver thread at idle priority starved by the game was suspected for those stalls and the driver's part now runs one step higher
+  (`DriverTurn`); the stalls came from compiles in play and were not shown to be the priority.
+* Not verified: pictures of an update's scene (the shot option did not write on this harness except in one run, and those shots were
+  not looked at); the main PC (no run, by the owner's rule); a real translator change (Longshot's commit) rather than an environment
+  stamp; a lazy start on a slot with the driver's own cache wiped.
