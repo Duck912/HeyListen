@@ -62,6 +62,7 @@ ARGS = {
     "tests/test_prof_sampling.py": ["--cxx", "{cxx}"],
     "tests/test_present_geometry_trace.py": ["--cxx", "{cxx}"],
     "tests/test_screensaver.py": ["--cc", "gcc"],
+    "tests/test_update_order.py": ["--cc", "gcc"],
     "tests/test_guestpages.py": ["--cc", "gcc"],
     "tests/test_hl_trace.py": ["--cc", "gcc"],
     "tests/test_windows_display_startup.py": ["--cc", "gcc"],
