@@ -8004,7 +8004,7 @@ void predict_run(void (*progress)(size_t done, size_t total), bool background, b
     for (const auto& n : predicted) by_program[n->prog].push_back(n.get());
     std::vector<uint64_t> keys;
     for (const auto& kv : by_program) keys.push_back(kv.first);
-    std::atomic<size_t> next{0}, done{0}, made{0};
+    std::atomic<size_t> next{0}, done{0}, made{0}, read_in{0}, matched{0};
     // (hookshot) A time budget, RX_VK_PREDICT_S (90 s by default; 0: none): once #1051 let the prediction find its programs again it
     // predicted ~28000 pipelines, and a first start after an update spent many minutes on them before the game's first frame (20 with
     // the CPU busy). Those not built by then are built in play when first drawn, as before the prediction worked
@@ -8025,8 +8025,10 @@ void predict_run(void (*progress)(size_t done, size_t total), bool background, b
             const auto& list = by_program[keys[i]];
             program_cache_borrow(keys[i], [&](Program& p) {
                 ensure_layout(p);
+                read_in++;
                 for (const PipeNote* n : list)
                     if (n->variant == p.variant) {
+                        matched++;
                         const uint64_t id = shader_key_on() ? ledger_id_pipeline(p, n->s, note_targets(*n), (VkPrimitiveTopology)n->topo) : 0;
                         if (id && ledger_has(id)) {   // (RX_VK_SHADER_KEY: the driver has this SPIR-V and state already)
                             ledger_reused++;
@@ -8050,8 +8052,10 @@ void predict_run(void (*progress)(size_t done, size_t total), bool background, b
     }
     for (std::thread& t : threads) t.join();
     if (shader_key_on()) ledger_commit();
-    logf("vk: %s%s %zu pipelines from %zu notes for %zu program variants no note names: %zu made, %lld left out (listed as built), in %.1f s on %u workers%s",
-         noted ? "noted pipelines warmed" : "predicted", background ? " (in play)" : "", predicted.size(), notes.size(), programs, made.load(), (long long)ledger_reused.load(),
+    logf("vk: %s%s %zu pipelines from %zu notes for %zu program variants no note names (%zu of %zu programs read, %zu pipelines had their variant): "
+         "%zu made, %lld left out (listed as built, all steps so far), in %.1f s on %u workers%s",
+         noted ? "noted pipelines warmed" : "predicted", background ? " (in play)" : "", predicted.size(), notes.size(), programs, read_in.load(),
+         keys.size(), matched.load(), made.load(), (long long)ledger_reused.load(),
          std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), workers,
          out_of_time.load() ? " (the time budget, RX_VK_PREDICT_S, ran out: the rest are built in play)" : "");
 }
