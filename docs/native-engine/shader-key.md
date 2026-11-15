@@ -166,3 +166,21 @@ from before the seen ids: the preparation runs before the game as in K1 (which s
 * Not verified: pictures of an update's scene (the shot option did not write on this harness except in one run, and those shots were
   not looked at); the main PC (no run, by the owner's rule); a real translator change (Longshot's commit) rather than an environment
   stamp; a lazy start on a slot with the driver's own cache wiped.
+
+## K2: the bundle (K1 + K1b + Longshot #444 + #252's compiler part), PC 3050, slot a, 2026-11-15
+
+**The real update: a build of main (no ledger), then the bundle on the same slot.** main's build prepared the slot from nothing
+(four starts), then the bundle started on it: the translator's stamp differs (#444 and #252 are translator-source changes, off on
+NVIDIA), and main wrote no `hookshot_compiled.bin`, so `prepare_is_update` finds an empty ledger and **the preparation runs before
+the game**, K1's flow, not the lazy one: "no driver builds are listed (hookshot_compiled.bin): the shaders are prepared before the game".
+Three starts went to the preparation (the 110 s harness limit cuts each one), the fourth played, "the shaders took 3.0 s" (the noted
+pipelines, from the app cache). Driver builds: the driver's cache was hot (the same SPIR-V), so the driver's part was 5 s of work at
+most (40 builds left out and 24,102 pipelines listed in the first start; 11,919 listed and 0 built in the third, "0 driver builds left
+out" counting only the compute variants of the later steps). The lazy path first applies to the update after this one, when the
+ledger exists: it was measured in K1b above (environment-driven stamp change). The preparation was 4 starts of the harness, as main's
+own was; the machine was loaded by the owner's builds during this time, so no wall time here is a measurement.
+
+**Pictures** (bundle, slot a, update path; the machine was loaded, 1-20 fps): the title screen and the castle-move scene's night
+sky and grass look right; kokiri-idle and the Market save (`hyrule-walk`, `--save market`) were still loading when the 110 s run
+ended, so their shots are loading screens only. Frame log (22 s windows): no flash (events of 1-8 blocks; a flash is over 50).
+Not done: the cold slot's pictures and a baseline of main's frame log in the same conditions.
