@@ -934,6 +934,14 @@ void gpu_time_end(Recording& r, bool uploads) {
     ts_pending[r.slot] = true;
     ts_up_pending[r.slot] = uploads;
 }
+/// A segment's submission (its own vkQueueSubmit2, dev.present_mu held), counted with submit_recording's when it carries timestamps:
+/// gpu_time_collect numbers every timed slot it collects, segments too, and a blit's place among them (blit_ts_mark,
+/// ts_last_end_seen) is this count. Without it the count fell behind by every segment, and the blit's gaps read 0 after a few frames
+void gpu_time_segment_submitted(const Recording& r) {
+    if (!ts_pool || !ts_pending[r.slot]) return;
+    std::lock_guard lk(ts_mu);
+    ts_seq_submitted++;
+}
 
 /// The next recording slot, begun, for the submission that will signal value
 Recording& begin_recording(uint64_t value) {
@@ -2710,6 +2718,10 @@ const uint8_t* replay_handle_early(VkCommandBuffer& cmd, const uint8_t* h, bool 
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vkResetCommandPool(dev.device, j->r->upload_pool, 0);
         vkBeginCommandBuffer(j->r->upload, &bi);
+        // (the segments' GPU time too, as replay_handle's (TICK-057). Without it these segments were in no GPU-time count: the log's
+        // "GPU time" ~3.8 ms a frame instead of ~6.3 on an RX 9070 XT in Kokiri, and its gaps and RX_VK_TL's GPU side showed the GPU
+        // idle 3-5 ms before each present while it ran them. A slot never used (a boundary not reached) is never ended: not collected)
+        gpu_time_begin(*j->r);
         j->order = base + (uint64_t)k;
         j->index = k;
         jobs.push_back(std::move(j));
@@ -2747,6 +2759,7 @@ const uint8_t* replay_handle_early(VkCommandBuffer& cmd, const uint8_t* h, bool 
         j->uploads = texture_uploads_recorded();
         j->inits = texture_segment_end(j->index);
         texture_segment_worker(-1);
+        gpu_time_end(*j->r, j->uploads);   // (as replay_handle's)
         vkEndCommandBuffer(j->r->upload);
         vkEndCommandBuffer(j->r->cmd);
         work_seg_end();   // (TICK-061, D6)
@@ -2826,6 +2839,7 @@ const uint8_t* replay_handle_early(VkCommandBuffer& cmd, const uint8_t* h, bool 
     Job* last = jobs[open].get();
     last->g.end = stop;
     submit_recording(r, false);   // (what came before, its uploads with the pre-sync: ahead of every segment in the queue)
+    for (size_t k = 0; k < used; k++) ts_recseq[jobs[k]->r->slot] = rec_seq;   // (RX_VK_TL: shown with r, the recording they follow)
     jt_mark(20, 0);
     early_wall.mark(6);
     const auto t_seg0 = std::chrono::steady_clock::now();
@@ -2871,6 +2885,7 @@ const uint8_t* replay_handle_early(VkCommandBuffer& cmd, const uint8_t* h, bool 
         late_fix_wait_unlocked();   // (TICK-060)
         std::lock_guard lk(dev.present_mu);
         queue_flush_locked();
+        gpu_time_segment_submitted(*j->r);   // (the blits' places among the timed recordings)
         const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, j->r->fence);
         j->r->submitted = res == VK_SUCCESS;
         if (res != VK_SUCCESS) logf("vk: segment submit %llu failed (%d)", (unsigned long long)j->r->value, (int)res);
@@ -3193,6 +3208,7 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
             vkBeginCommandBuffer(j->r->upload, &bi);
             gpu_time_begin(*j->r);   // (TICK-057: the segments' GPU time too, in the trace's gpu_ms and gaps and the late waits' tail)
         }
+        ts_recseq[j->r->slot] = rec_seq;   // (RX_VK_TL: shown with r, the recording they follow, submitted above)
         j->g = seg[k];
         j->order = base + k;
         j->index = (int)k;
@@ -3327,6 +3343,7 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
         late_fix_wait_unlocked();   // (TICK-060)
         std::lock_guard lk(dev.present_mu);
         queue_flush_locked();
+        gpu_time_segment_submitted(*j->r);   // (the blits' places among the timed recordings)
         const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, j->r->fence);
         j->r->submitted = res == VK_SUCCESS;
         if (res != VK_SUCCESS) logf("vk: segment submit %llu failed (%d)", (unsigned long long)j->r->value, (int)res);
