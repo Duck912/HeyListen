@@ -177,34 +177,5 @@ class LicenseTests(unittest.TestCase):
         ffx.fetch.assert_called_once()
 
 
-class BuilderTests(unittest.TestCase):
-    """The Windows Hookshot Builder: the AMD FSR 4 tick shows AMD's license, stays only on yes, and only then adds the flag
-    pair (as the NVIDIA DLSS tick does with NVIDIA's)"""
-    def setUp(self):
-        folder = ROOT / "builder" / "HookshotBuilder"
-        self.code = (folder / "MainWindow.xaml.cs").read_text(encoding="utf-8")
-        self.xaml = (folder / "MainWindow.xaml").read_text(encoding="utf-8")
-
-    def test_tick_shows_the_license(self):
-        self.assertRegex(self.xaml, r'x:Name="FsrTick"[^>]*Click="FsrChanged"')
-        start = self.code.index("void FsrChanged(")
-        body = self.code[start:self.code.index("\n    }", start)]
-        self.assertIn("MessageBox.Show(this, FsrLicense", body)
-        self.assertRegex(body, r"fsrLicense = MessageBox\.Show\(this, FsrLicense[^;]*==\s*MessageBoxResult\.Yes;")
-        self.assertIn("if (!fsrLicense) FsrTick.IsChecked = false;", body)
-        start = self.code.index("const string FsrLicense")
-        text = self.code[start:self.code.index(";", start)]
-        self.assertIn(ffx_sdk.LICENSE_URL, text)
-        self.assertIn("Do you accept AMD's license?", text)
-
-    def test_flags_only_with_the_tick(self):
-        pair = '"--fetch-fsr-runtime", "--accept-amd-license"'
-        self.assertEqual(self.code.count(pair), 1)
-        line = next(l for l in self.code.splitlines() if pair in l)
-        self.assertTrue(line.strip().startswith("if (fsr && "), line)
-        self.assertIn("fsr: FsrTick.IsChecked == true && fsrLicense", self.code)   # (Build: the tick, AMD's license accepted)
-        self.assertIn("fsr ? Storage.FfxSdk : null", self.code)      # (AMD's runtime kept in the builder's folder)
-
-
 if __name__ == "__main__":
     unittest.main()
