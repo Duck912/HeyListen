@@ -2334,7 +2334,19 @@ int64_t part_work = 0;
 // which a wait on the timeline value it signals at its end kept them from. A parallel replay's segments are recorded
 // at once, kMaxBatch of them at most: fewer than the slots)
 constexpr int kMaxParts = 32;
-constexpr int kMaxBatch = 6;   // (three recording threads: more segments only took slots and submits)
+constexpr int kMaxBatch = 12;   // (the arrays' size; seg_cap() is the number a command buffer is cut into at most)
+/// (stream R6, RX_VK_SEG_MAX=<n>, default 6: three recording threads, more segments only took slots and submits) at most that many
+/// segments a command buffer. With RX_VK_PARALLEL_ROUNDS=0 and a smaller RX_VK_PARALLEL_SEG there can be more than recorders: the
+/// last ones are short, and a recorder that is done takes the next, so the replay thread's own (last) segment is a smaller share
+int seg_cap() {
+    static const int v = [] {
+        const char* e = getenv("RX_VK_SEG_MAX");
+        const int n = e ? std::clamp(atoi(e), 2, kMaxBatch) : 6;
+        if (n != 6) logf("vk: a command buffer is cut into at most %d segments (RX_VK_SEG_MAX)", n);
+        return n;
+    }();
+    return v;
+}
 
 void maybe_split(VkCommandBuffer& cmd) {
     static const int64_t every = getenv("RX_VK_CHUNK") ? atoll(getenv("RX_VK_CHUNK")) : 120;
@@ -3044,7 +3056,7 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
         // size, another draw count) moves the boundaries or leaves planned ones unreached (those slots unused, the last segment
         // the rest); none reached: the whole buffer recorded on this thread. Too small a last count: the old path)
         const int64_t last_total = pk_total[pk_this];
-        const int nplan = mkwvk::segment_plan::segment_count(last_total, per, recorders, kMaxBatch, one_round);
+        const int nplan = mkwvk::segment_plan::segment_count(last_total, per, recorders, seg_cap(), one_round);
         if (nplan >= 2) {
             int64_t plan[kMaxBatch] = {};
             mkwvk::segment_plan::balanced_targets(pk_profile[pk_this], nplan, last_total, plan);
@@ -3081,7 +3093,7 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
     if (dry_lean_on() && !only_boundary) {
         const int64_t pe = par_point_every();
         const int64_t T = count_work(h);
-        const int nplan = mkwvk::segment_plan::segment_count(T, per, recorders, kMaxBatch, one_round);
+        const int nplan = mkwvk::segment_plan::segment_count(T, per, recorders, seg_cap(), one_round);
         // (RX_VK_DRY_LEAN=1: the one-segment case only, exact whatever the dry pass finds. =2: the planned boundaries too, which
         // is exact only when the dry pass reaches the counted end; measured (TICK-061 screen 2) the segments came out other than
         // with every point (the first ~280 draws against ~180), the replay thread's own segment +0.8 ms: so =2 is not for play)
@@ -3122,7 +3134,7 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
     static int64_t timed;
     dry_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_dry0).count();
     if (wall_fine_on()) rwall.dry_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t_dry0).count();
-    const int nseg = mkwvk::segment_plan::segment_count(total, per, recorders, kMaxBatch, one_round);
+    const int nseg = mkwvk::segment_plan::segment_count(total, per, recorders, seg_cap(), one_round);
     int64_t wants[kMaxBatch] = {};
     if (balance) mkwvk::segment_plan::balanced_targets(profile, nseg, total, wants);
     std::vector<Segment> seg;
