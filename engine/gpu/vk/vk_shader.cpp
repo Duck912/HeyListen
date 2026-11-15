@@ -1234,6 +1234,48 @@ void disk_init() {
     });
 }
 
+/// (hookshot, RX_VK_SHADER_KEY) The fingerprint of a program: what the driver compiles it from, field by field (never a struct's bytes,
+/// whose padding and heap pointers differ from one run to the next): the stages' SPIR-V, what the pipeline layout is made from (the
+/// descriptor counts of each kind, the push constant range, the flags that decide whether the layout pushes), the vertex attributes the
+/// vertex stage reads, and the mesh fallback's sizes. A translated program and the same one read back from the cache give the same
+/// value. 0: not known (a program whose SPIR-V was not kept for each stage)
+uint64_t program_fingerprint(const Program& p, const std::vector<std::vector<uint32_t>>& spirv) {
+    if (spirv.size() != p.stages.size() || spirv.empty()) return 0;
+    uint64_t h = 0x9E3779B97F4A7C15ull;
+    const auto add = [&h](uint64_t w) {
+        h = (h ^ w) * 0xFF51AFD7ED558CCDull;
+        h ^= h >> 32;
+    };
+    add(1);   // (the fingerprint's own version)
+    add(Shader::Backend::SPIRV::MESH_FALLBACK_PUSH_END);
+    add((p.compute ? 1u : 0u) | (p.mesh ? 2u : 0u) | (p.fallback ? 4u : 0u) | (p.fallback_task ? 8u : 0u));
+    add(p.workgroup[0]), add(p.workgroup[1]), add(p.workgroup[2]), add(p.shared_memory);
+    add((uint64_t)p.fallback_topology), add(p.fallback_vertices_per_workgroup), add(p.fallback_record_words);
+    add(p.fallback_payload_words), add(p.fallback_task_threads);
+    add(p.stages.size());
+    for (size_t k = 0; k < p.stages.size(); k++) {
+        const Stage& st = p.stages[k];
+        const Shader::Info& i = st.info;
+        add((uint64_t)(uint32_t)st.nvn_stage << 32 | (uint32_t)st.vk_stage);
+        const auto counts = [&](const auto& list) {
+            add(list.size());
+            for (const auto& d : list) add(d.count);
+        };
+        counts(i.constant_buffer_descriptors), counts(i.storage_buffers_descriptors), counts(i.texture_buffer_descriptors);
+        counts(i.image_buffer_descriptors), counts(i.texture_descriptors), counts(i.image_descriptors);
+        add((i.uses_render_area ? 1u : 0u) | (i.uses_rescaling_uniform ? 2u : 0u) | (i.uses_global_memory ? 4u : 0u));
+        uint64_t loads = 0;
+        for (uint32_t g = 0; g < 32; g++) loads |= (uint64_t)i.loads.Generic(g) << g;
+        add(loads);
+        add(spirv[k].size());
+        const uint32_t* w = spirv[k].data();
+        size_t n = spirv[k].size();
+        for (; n >= 2; n -= 2, w += 2) add((uint64_t)w[1] << 32 | w[0]);
+        if (n) add(w[0]);
+    }
+    return h ? h : 1;
+}
+
 void put_bytes(std::vector<uint8_t>& o, const void* d, size_t n) {
     o.insert(o.end(), (const uint8_t*)d, (const uint8_t*)d + n);
 }
@@ -1346,55 +1388,6 @@ void get_info(Reader& r, Shader::Info& i) {
     }
     i.handle_programs.resize((size_t)r.count(sizeof(uint64_t)));   // (each at least its own count)
     for (auto& h : i.handle_programs) r.list(h);
-}
-
-}   // namespace
-bool shader_key_on() {
-    static const bool on = getenv("RX_VK_SHADER_KEY") && atoi(getenv("RX_VK_SHADER_KEY")) != 0;
-    return on;
-}
-namespace {
-
-/// (hookshot, RX_VK_SHADER_KEY) The fingerprint of a program: what the driver compiles it from, field by field (never a struct's bytes,
-/// whose padding and heap pointers differ from one run to the next): the stages' SPIR-V, what the pipeline layout is made from (the
-/// descriptor counts of each kind, the push constant range, the flags that decide whether the layout pushes), the vertex attributes the
-/// vertex stage reads, and the mesh fallback's sizes. A translated program and the same one read back from the cache give the same
-/// value. 0: not known (a program whose SPIR-V was not kept for each stage)
-uint64_t program_fingerprint(const Program& p, const std::vector<std::vector<uint32_t>>& spirv) {
-    if (spirv.size() != p.stages.size() || spirv.empty()) return 0;
-    uint64_t h = 0x9E3779B97F4A7C15ull;
-    const auto add = [&h](uint64_t w) {
-        h = (h ^ w) * 0xFF51AFD7ED558CCDull;
-        h ^= h >> 32;
-    };
-    add(1);   // (the fingerprint's own version)
-    add(Shader::Backend::SPIRV::MESH_FALLBACK_PUSH_END);
-    add((p.compute ? 1u : 0u) | (p.mesh ? 2u : 0u) | (p.fallback ? 4u : 0u) | (p.fallback_task ? 8u : 0u));
-    add(p.workgroup[0]), add(p.workgroup[1]), add(p.workgroup[2]), add(p.shared_memory);
-    add((uint64_t)p.fallback_topology), add(p.fallback_vertices_per_workgroup), add(p.fallback_record_words);
-    add(p.fallback_payload_words), add(p.fallback_task_threads);
-    add(p.stages.size());
-    for (size_t k = 0; k < p.stages.size(); k++) {
-        const Stage& st = p.stages[k];
-        const Shader::Info& i = st.info;
-        add((uint64_t)(uint32_t)st.nvn_stage << 32 | (uint32_t)st.vk_stage);
-        const auto counts = [&](const auto& list) {
-            add(list.size());
-            for (const auto& d : list) add(d.count);
-        };
-        counts(i.constant_buffer_descriptors), counts(i.storage_buffers_descriptors), counts(i.texture_buffer_descriptors);
-        counts(i.image_buffer_descriptors), counts(i.texture_descriptors), counts(i.image_descriptors);
-        add((i.uses_render_area ? 1u : 0u) | (i.uses_rescaling_uniform ? 2u : 0u) | (i.uses_global_memory ? 4u : 0u));
-        uint64_t loads = 0;
-        for (uint32_t g = 0; g < 32; g++) loads |= (uint64_t)i.loads.Generic(g) << g;
-        add(loads);
-        add(spirv[k].size());
-        const uint32_t* w = spirv[k].data();
-        size_t n = spirv[k].size();
-        for (; n >= 2; n -= 2, w += 2) add((uint64_t)w[1] << 32 | w[0]);
-        if (n) add(w[0]);
-    }
-    return h ? h : 1;
 }
 
 void program_cache_save(Program& p, const std::vector<std::vector<uint32_t>>& spirv) {
@@ -2243,6 +2236,10 @@ bool key_listed(const char* hex, const char* var) {
         q = e ? e + 1 : q + len;
     }
     return false;
+}
+bool shader_key_on() {
+    static const bool on = getenv("RX_VK_SHADER_KEY") && atoi(getenv("RX_VK_SHADER_KEY")) != 0;
+    return on;
 }
 uint64_t program_cache_stamp() { return disk_stamp(); }
 /// (hookshot) How many program keys the program cache holds now (SIZE_MAX: it is off). vk_draw.cpp's prepare check compares it with

@@ -85,6 +85,8 @@ std::mutex disk_mu;
 std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_records;
 std::atomic<int64_t> st_cache_hits{0};
 #define PROF_EXACT()   // (vk_prof.h's exact-timing scope, since #989: nothing to time here)
+bool shader_key_on() { return false; }   // (RX_VK_SHADER_KEY: its fingerprint is not under test here)
+uint64_t program_fingerprint(const Program&, const std::vector<std::vector<uint32_t>>&) { return 0; }
 #include "cache_functions.inc"
 
 void save(uint64_t key, bool empty_second = false, int bad_answer = 0) {

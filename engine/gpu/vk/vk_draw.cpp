@@ -675,7 +675,7 @@ void ensure_layout(Program& p) {
 
 // ---- the pipeline cache, on disk ----
 VkPipelineCache pcache = VK_NULL_HANDLE;
-namespace { void ledger_drop_all(); void ledger_commit(); }
+namespace { void ledger_drop_all(); }
 bool pcache_loaded = false;   // (TICK-038: it began with this device's and driver's data from the file)
 std::string pcache_path;
 std::atomic<int64_t> pcache_built_since_save{0};
@@ -7864,7 +7864,6 @@ void precompile_run(void (*progress)(size_t done, size_t total), bool wait) {
                 if (guarded_compute(pcache, &ci, &made) != VK_SUCCESS) made = VK_NULL_HANDLE;
                 if (made) {
                     p.compute_pipeline = made;
-                    if (shader_key_on()) ledger_add(ledger_id_compute(p));
                     cs_module_release(p);   // (TICK-038)
                     p.compute_state.store(2, std::memory_order_release);
                 } else {
@@ -8549,6 +8548,10 @@ bool pcache_save_mapped(const std::string& tmp, size_t n) {
 #endif
 }
 
+void shader_key_commit() {
+    if (shader_key_on()) ledger_commit();
+}
+
 void pipeline_cache_save(bool force) {
     if (!pcache || (!force && pcache_built_since_save < 32)) return;
     pcache_built_since_save = 0;
@@ -8567,7 +8570,6 @@ void pipeline_cache_save(bool force) {
             if (vkGetPipelineCacheData(dev.device, pcache, &n, nullptr) == VK_SUCCESS && n) {
                 if (pcache_save_mapped(pcache_path + ".tmp", n)) {
                     MoveFileExA((pcache_path + ".tmp").c_str(), pcache_path.c_str(), MOVEFILE_REPLACE_EXISTING);
-                    if (shader_key_on()) ledger_commit();
                     return;
                 }
                 const auto fetch_t0 = std::chrono::steady_clock::now();
@@ -8580,7 +8582,7 @@ void pipeline_cache_save(bool force) {
                     if (FILE* f = fopen(tmp.c_str(), "wb")) {
                         const bool ok = fwrite(data.data(), 1, n, f) == n;
                         fclose(f);
-                        if (ok && MoveFileExA(tmp.c_str(), pcache_path.c_str(), MOVEFILE_REPLACE_EXISTING) && shader_key_on()) ledger_commit();
+                        if (ok) MoveFileExA(tmp.c_str(), pcache_path.c_str(), MOVEFILE_REPLACE_EXISTING);
                     }
                 }
             }
