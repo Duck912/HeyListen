@@ -1391,7 +1391,7 @@ void get_info(Reader& r, Shader::Info& i) {
 }
 
 void program_cache_save(Program& p, const std::vector<std::vector<uint32_t>>& spirv) {
-    if (shader_key_on()) p.fp = program_fingerprint(p, spirv);
+    if (shader_key_on()) p.fp = program_fingerprint(p, spirv), program_fingerprinted(p.fp);
     disk_init();
     if (!disk_on || spirv.size() != p.stages.size()) return;
     std::vector<uint8_t> o;

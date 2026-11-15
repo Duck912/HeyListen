@@ -1643,12 +1643,19 @@ void ledger_commit() {
     fflush(ledger_out);
     ledger_pending.clear();
 }
+uint64_t ledger_id_seen(uint64_t fp) { return fp ? mix(fp, 0x7365656Eull) : 0; }
+thread_local std::vector<uint64_t>* fingerprint_probe = nullptr;   // (update_changed_share: the fingerprints met, not listed)
 uint64_t ledger_id_libs(const Program& p) { return p.fp ? mix(p.fp, 0x6C6962ull) : 0; }
 uint64_t ledger_id_compute(const Program& p) { return p.fp ? mix(p.fp, 0x6373ull) : 0; }
 uint64_t ledger_id_pipeline(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo) {
     return p.fp ? mix(pipeline_key_from(mix(p.fp, 0x706970ull), p, s, at, topo), 1) : 0;
 }
 }  // namespace
+
+void program_fingerprinted(uint64_t fp) {
+    if (fingerprint_probe) fingerprint_probe->push_back(fp);
+    else ledger_add(ledger_id_seen(fp));
+}
 
 PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, const uint8_t color_types[8]) {
     // the key: what is baked into it (the rest is dynamic state)
@@ -7517,7 +7524,35 @@ PrepareWhy prepare_check(const std::string& path, const std::string& seed, uint6
     return PrepareWhy::None;
 }
 } // namespace
-namespace { std::atomic<bool> lazy_update{false}; }
+namespace {
+std::atomic<bool> lazy_update{false};
+/// The guard of a lazy update: ninety-odd of the seed's graphics programs, evenly spread, are translated now (the program cache they go to
+/// is the new translator's, empty), and how many have a fingerprint the ledger has not seen is counted. *measured: how many were
+/// translated (the others were kept already, from an earlier start of this update, or do not translate)
+double update_changed_share(size_t* measured) {
+    *measured = 0;
+    const size_t programs = seed_open();
+    if (!programs) return 0;
+    std::vector<uint64_t> fps;
+    fingerprint_probe = &fps;
+    const size_t want = 96, stride = std::max<size_t>(1, programs / want);
+    for (size_t i = stride / 2; i < programs && fps.size() < want; i += stride) {
+        if (seed_is_compute(i)) continue;
+        if (std::unique_ptr<Program> p = seed_program(i, 0))
+            for (Stage& st : p->stages)
+                if (st.module) vkDestroyShaderModule(dev.device, st.module, nullptr);
+    }
+    fingerprint_probe = nullptr;
+    size_t changed = 0;
+    for (const uint64_t fp : fps) {
+        if (!ledger_has(ledger_id_seen(fp))) changed++;
+        ledger_add(ledger_id_seen(fp));
+    }
+    seed_close();
+    *measured = fps.size();
+    return fps.empty() ? 0 : (double)changed / fps.size();
+}
+}  // namespace
 bool prepare_is_lazy_update() { return lazy_update.load(); }
 /// (hookshot) An update: every shader was prepared once here, for another translator. Each release changes the translator, and every
 /// update then held the game's start for the whole seed again (116k variants, minutes on most PCs: "shaders need to be prepared every
@@ -7550,6 +7585,14 @@ bool prepare_is_update() {
         logf("vk: no driver builds are listed (hookshot_compiled.bin): the shaders are prepared before the game");
         return false;
     }
+    // (a translator change that alters many shaders would have the game compile them as it meets them: stalls of seconds, with the
+    // driver at its slowest, where a start that prepares first spends the same time before the game. A sample says which this is)
+    size_t measured = 0;
+    const double share = update_changed_share(&measured);
+    static const double limit = getenv("RX_VK_LAZY_MAX_CHANGED") ? atof(getenv("RX_VK_LAZY_MAX_CHANGED")) / 100.0 : 0.10;
+    logf("vk: update: %.0f%% of %zu sampled programs translate differently than the last start's (more than %.0f%%: the shaders are "
+         "prepared before the game)", share * 100, measured, limit * 100);
+    if (measured >= 16 && share > limit) return false;
     lazy_update.store(true);
     return true;
 }

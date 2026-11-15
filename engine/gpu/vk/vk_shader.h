@@ -97,6 +97,9 @@ size_t program_cache_kept();   // (hookshot) program keys in the cache now, SIZE
 /// (hookshot) RX_VK_SHADER_KEY (default on, 0: off): programs get a fingerprint of what the driver compiles, and a start after a translator
 /// change builds again only what the fingerprints say the driver has not seen (vk_draw.cpp, the compiled ledger)
 bool shader_key_on();
+/// (hookshot, RX_VK_SHADER_KEY) A program was translated here and has this fingerprint (vk_draw.cpp: the ledger lists it as seen, so that
+/// the next start after a translator change can tell by a sample of programs how many of them come out differently)
+void program_fingerprinted(uint64_t fp);
 size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const std::function<void(Program&)>& fn,
                                bool computes = true);   // (computes: and every kept compute program)
 /// The precompile of every shader of the game (hookshot_shaders.bin, from nx2/shader_census.py): how many programs it names, 0: none
