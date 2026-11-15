@@ -675,6 +675,7 @@ void ensure_layout(Program& p) {
 
 // ---- the pipeline cache, on disk ----
 VkPipelineCache pcache = VK_NULL_HANDLE;
+namespace { void ledger_drop_all(); void ledger_commit(); }
 bool pcache_loaded = false;   // (TICK-038: it began with this device's and driver's data from the file)
 std::string pcache_path;
 std::atomic<int64_t> pcache_built_since_save{0};
@@ -721,6 +722,7 @@ void pcache_init() {
         vkCreatePipelineCache(dev.device, &ci, nullptr, &pcache);
     }
     pcache_loaded = pcache && ci.initialDataSize >= 32;
+    if (!pcache_loaded && shader_key_on()) ledger_drop_all();   // (what the ledger lists was built into a cache that is not this one)
     logf("vk: pipeline cache %s (%zu KB)", pcache_path.c_str(), data.size() >> 10);
 }
 
@@ -1500,10 +1502,11 @@ const Shader::Info* vertex_info(const Program& p) {
 
 /// (TICK-008) The identity of a graphics pipeline: what is baked into it (the rest is dynamic state). The precompile makes it again from a note's
 /// state and does not trust the key the note was written with
-uint64_t pipeline_key(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo) {
+/// (the key from the program's own seed: pipeline_key's, or the ledger's, whose seed is the program's fingerprint)
+static uint64_t pipeline_key_from(uint64_t seed, const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo) {
     if (at.n < 0 || at.n > 8) return 0;   // (hookshot: at most 8 colour targets)
     const int topo_c = topology_class(topo);
-    uint64_t key = mix(mix(p.key, p.variant), (uint64_t)topo_c << 8 | (uint64_t)at.samples);
+    uint64_t key = mix(seed, (uint64_t)topo_c << 8 | (uint64_t)at.samples);
     const Shader::Info& vs = *vertex_info(p);
     if (!p.mesh && !p.fallback) {
         for (int i = 0; i < 16; i++)
@@ -1529,6 +1532,108 @@ uint64_t pipeline_key(const Program& p, const NvnState& s, const Targets& at, Vk
     if (!dev.eds3_a2c) key = mix(key, (uint64_t)s.ms.a2c);
     return key;
 }
+uint64_t pipeline_key(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo) {
+    return pipeline_key_from(mix(p.key, p.variant), p, s, at, topo);
+}
+
+// ---- (hookshot, RX_VK_SHADER_KEY) What the driver has compiled, hookshot_compiled.bin ----
+// A change of the shader translation drops every kept program (the stamp, vk_shader.cpp disk_stamp), and every program is translated
+// again; most of the change's programs come out the same. What the driver was handed for them last time (stage libraries, compute
+// pipelines, predicted pipelines) is still in its own cache (the driver keys that on the SPIR-V and the state, not on our stamp) and
+// in mkw_vk_pipelines.bin, so building it again only to find it there is time spent for nothing: the ledger lists, by a hash of
+// what the driver sees (Program::fp, plus the state of a pipeline), the things already built here. An entry is the 64-bit id; the
+// file's header says what the ids are good for (the device, the driver, the layout of the pipeline's state: kStateStamp and
+// kPipeKeyVersion, the pipeline cache's own data being there); anything else starts the list again. An entry added is written when
+// the prepare or the pipeline cache save commits it (ledger_commit): the cache's data is on disk by then too
+namespace {
+std::mutex ledger_mu;
+std::unordered_set<uint64_t> ledger_have;
+std::vector<uint64_t> ledger_pending;
+FILE* ledger_out = nullptr;
+bool ledger_ready = false;
+std::atomic<int64_t> ledger_reused{0}, ledger_built{0};
+constexpr char kLedgerMagic[8] = {'H', 'K', 'C', 'O', 'M', 'P', 'L', '1'};
+std::string ledger_path() {
+    char exe[MAX_PATH];
+    const DWORD n = game_module_path(exe, MAX_PATH);
+    std::string dir(exe, n);
+    return dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_compiled.bin";
+}
+uint64_t ledger_context() {
+    uint64_t h = 0xCBF29CE484222325ull;
+    const auto add = [&h](const void* d, size_t n) {
+        for (size_t i = 0; i < n; i++) h = (h ^ ((const uint8_t*)d)[i]) * 1099511628211ull;
+    };
+    const uint64_t fixed[] = {kStateStamp, kPipeKeyVersion, dev.props.vendorID, dev.props.deviceID, dev.props.driverVersion,
+                              dev.props.apiVersion, (uint64_t)dev.mesh_shader | (uint64_t)dev.mesh_fallback << 1 |
+                              (uint64_t)dev.eds3_blend << 2 | (uint64_t)dev.eds3_polygon << 3 | (uint64_t)dev.eds3_clamp << 4 |
+                              (uint64_t)dev.eds3_a2c << 5 | (uint64_t)dev.push_descriptor << 6};
+    add(fixed, sizeof fixed);
+    add(dev.props.pipelineCacheUUID, VK_UUID_SIZE);
+    return h;
+}
+/// (ledger_mu held) the file read, or started again when it is another device's, driver's or layout's
+void ledger_open_locked() {
+    if (ledger_ready) return;
+    ledger_ready = true;
+    const std::string path = ledger_path();
+    const uint64_t context = ledger_context();
+    int64_t good = 0;
+    if (FILE* f = fopen(path.c_str(), "rb")) {
+        char magic[8];
+        uint64_t ctx = 0;
+        if (fread(magic, 8, 1, f) == 1 && !memcmp(magic, kLedgerMagic, 8) && fread(&ctx, 8, 1, f) == 1 && ctx == context) {
+            uint64_t id;
+            good = 16;
+            while (fread(&id, 8, 1, f) == 1) ledger_have.insert(id), good += 8;
+        }
+        fclose(f);
+    }
+    if (good) {
+        if (FILE* f = fopen(path.c_str(), "r+b")) _chsize_s(_fileno(f), good), fclose(f);   // (a half entry cut off)
+        ledger_out = fopen(path.c_str(), "ab");
+    } else {
+        ledger_out = fopen(path.c_str(), "wb");
+        if (ledger_out) fwrite(kLedgerMagic, 8, 1, ledger_out), fwrite(&context, 8, 1, ledger_out), fflush(ledger_out);
+    }
+    logf("vk: shader key: %zu things the driver has built are listed (hookshot_compiled.bin)", ledger_have.size());
+}
+bool ledger_has(uint64_t id) {
+    if (!id) return false;
+    std::lock_guard lk(ledger_mu);
+    ledger_open_locked();
+    return ledger_have.count(id) != 0;
+}
+void ledger_add(uint64_t id) {
+    if (!id) return;
+    std::lock_guard lk(ledger_mu);
+    ledger_open_locked();
+    if (ledger_have.insert(id).second) ledger_pending.push_back(id), ledger_built++;
+}
+/// The pipeline cache has no data of ours (a new file, or another driver's): what the list says was built is not in it
+void ledger_drop_all() {
+    std::lock_guard lk(ledger_mu);
+    ledger_open_locked();
+    if (ledger_have.empty() && ledger_pending.empty()) return;
+    ledger_have.clear(), ledger_pending.clear();
+    if (ledger_out) fclose(ledger_out), ledger_out = nullptr;
+    ledger_out = fopen(ledger_path().c_str(), "wb");
+    const uint64_t context = ledger_context();
+    if (ledger_out) fwrite(kLedgerMagic, 8, 1, ledger_out), fwrite(&context, 8, 1, ledger_out), fflush(ledger_out);
+}
+void ledger_commit() {
+    std::lock_guard lk(ledger_mu);
+    if (!ledger_out || ledger_pending.empty()) return;
+    fwrite(ledger_pending.data(), 8, ledger_pending.size(), ledger_out);
+    fflush(ledger_out);
+    ledger_pending.clear();
+}
+uint64_t ledger_id_libs(const Program& p) { return p.fp ? mix(p.fp, 0x6C6962ull) : 0; }
+uint64_t ledger_id_compute(const Program& p) { return p.fp ? mix(p.fp, 0x6373ull) : 0; }
+uint64_t ledger_id_pipeline(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo) {
+    return p.fp ? mix(pipeline_key_from(mix(p.fp, 0x706970ull), p, s, at, topo), 1) : 0;
+}
+}  // namespace
 
 PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, const uint8_t color_types[8]) {
     // the key: what is baked into it (the rest is dynamic state)
@@ -1849,6 +1954,7 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
         pl = VK_NULL_HANDLE;
     }
     st_pipelines++;
+    if (pl && shader_key_on()) ledger_add(ledger_id_pipeline(p, s, at, topo));
     if (!driver_cache_only &&
         !(pcache_misses_only() && (feedback.flags & VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT) &&
           (feedback.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT)))
@@ -7471,8 +7577,20 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     }
     // (hookshot) compute pipelines too, for the driver's own cache: built in play they stopped the game while the driver compiled
     // them, seconds each for the culling programs (53caac5f: 6.5 s, 41 s inlined), which looked like a hang
+    std::atomic<int64_t> warm_us{0};   // (the driver's part, the workers' time added up)
+    struct WarmClock {
+        std::atomic<int64_t>& sum;
+        std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+        ~WarmClock() { sum += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count(); }
+    };
     const auto warm_compute = [&](Program& p) {
         if (!warm_cs || taau_key(p.key)) return;
+        WarmClock wc{warm_us};
+        const uint64_t id = shader_key_on() ? ledger_id_compute(p) : 0;
+        if (id && ledger_has(id)) {   // (RX_VK_SHADER_KEY: the driver has this very compute shader and layout already)
+            ledger_reused++;
+            return;
+        }
         ensure_layout(p);
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -7489,6 +7607,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
             vkDestroyPipeline(dev.device, pl, nullptr);
             libs++;
             pcache_built_since_save++;
+            if (id) ledger_add(id);
         }
         if (p.layout) vkDestroyPipelineLayout(dev.device, p.layout, nullptr), p.layout = VK_NULL_HANDLE;
         if (p.set_layout) vkDestroyDescriptorSetLayout(dev.device, p.set_layout, nullptr), p.set_layout = VK_NULL_HANDLE;
@@ -7523,14 +7642,20 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
             }
             if (std::unique_ptr<Program> p = std::move(seeded)) {
                 if (!p->failed) made++;
-                if (!p->failed && warm && !p->compute) {
+                const uint64_t lib_id = shader_key_on() && !p->failed && warm && !p->compute ? ledger_id_libs(*p) : 0;
+                if (lib_id && ledger_has(lib_id)) {   // (RX_VK_SHADER_KEY: the driver has these stage libraries already)
+                    ledger_reused++;
+                } else if (!p->failed && warm && !p->compute) {
+                    WarmClock wc{warm_us};
                     ensure_layout(*p);
                     Targets at{};
+                    int built = 0;
                     for (int part = 1; part <= 2; part++)
                         if (const VkPipeline lib = build_graphics(*p, *blank, at, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, part)) {
                             vkDestroyPipeline(dev.device, lib, nullptr);
-                            libs++;
+                            libs++, built++;
                         }
+                    if (lib_id && built == 2) ledger_add(lib_id);
                 }
                 for (Stage& st : p->stages)
                     if (st.module) vkDestroyShaderModule(dev.device, st.module, nullptr);
@@ -7551,6 +7676,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
         if (next.load() >= total + threads.size()) break;
     }
     for (std::thread& t : threads) t.join();
+    if (shader_key_on()) ledger_commit();
     if (!background) state_list_prepare(nullptr);   // (in play it is too late for the precompile: an update's is state_list_run, before)
     if (!getenv("RX_VK_SEED_CHECK")) seed_close();
     if (prepare_stopped()) {   // (closed: what was made is in the program cache already, the rest is made at the next start)
@@ -7564,6 +7690,9 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     logf("vk: prepared %zu shader programs%s (%zu new, %lld failed, %zu stage libraries; %zu compute variants, %zu programs with "
          "texture variants, %zu at the limit) in %.1f s", programs, background ? " in play" : "", made.load(), (long long)failed, libs.load(), variants.load(),
          asking.load(), capped.load(), std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    logf("vk: shader key %s: %lld driver builds left out (the same SPIR-V and layout were built before), %lld built and listed; "
+             "translation %.1f s and the driver's part %.1f s of work, on %u workers",
+             shader_key_on() ? "on" : "off", (long long)ledger_reused.load(), (long long)ledger_built.load(), shader_translate_ms() / 1000.0, warm_us.load() / 1e6, workers);
     if (!background) remove(warming.c_str());
     if (const size_t kept = program_cache_kept(); kept != SIZE_MAX) prepared_for.kept = kept;
     prepared_write(path, prepared_for);
@@ -7735,6 +7864,7 @@ void precompile_run(void (*progress)(size_t done, size_t total), bool wait) {
                 if (guarded_compute(pcache, &ci, &made) != VK_SUCCESS) made = VK_NULL_HANDLE;
                 if (made) {
                     p.compute_pipeline = made;
+                    if (shader_key_on()) ledger_add(ledger_id_compute(p));
                     cs_module_release(p);   // (TICK-038)
                     p.compute_state.store(2, std::memory_order_release);
                 } else {
@@ -7816,9 +7946,15 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
             program_cache_borrow(keys[i], [&](Program& p) {
                 ensure_layout(p);
                 for (const PipeNote* n : list)
-                    if (n->variant == p.variant)
+                    if (n->variant == p.variant) {
+                        const uint64_t id = shader_key_on() ? ledger_id_pipeline(p, n->s, note_targets(*n), (VkPrimitiveTopology)n->topo) : 0;
+                        if (id && ledger_has(id)) {   // (RX_VK_SHADER_KEY: the driver has this SPIR-V and state already)
+                            ledger_reused++;
+                            continue;
+                        }
                         if (const VkPipeline pl = build_graphics(p, n->s, note_targets(*n), (VkPrimitiveTopology)n->topo))
                             vkDestroyPipeline(dev.device, pl, nullptr), made++;
+                    }
             });
             done += list.size();
         }
@@ -7831,6 +7967,7 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
         Sleep(100);
     }
     for (std::thread& t : threads) t.join();
+    if (shader_key_on()) ledger_commit();
     logf("vk: predicted %zu pipelines from %zu notes for %zu program variants no note names: %zu made in %.1f s%s", predicted.size(),
          notes.size(), programs, made.load(), std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
          out_of_time.load() ? " (the time budget, RX_VK_PREDICT_S, ran out: the rest are built in play)" : "");
@@ -7982,6 +8119,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                     q.failed = true;
                 } else {
                     q.compute_pipeline = made;
+                    if (shader_key_on()) ledger_add(ledger_id_compute(q));
                     cs_module_release(q);   // (TICK-038)
                 }
                 const int64_t ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
@@ -8429,6 +8567,7 @@ void pipeline_cache_save(bool force) {
             if (vkGetPipelineCacheData(dev.device, pcache, &n, nullptr) == VK_SUCCESS && n) {
                 if (pcache_save_mapped(pcache_path + ".tmp", n)) {
                     MoveFileExA((pcache_path + ".tmp").c_str(), pcache_path.c_str(), MOVEFILE_REPLACE_EXISTING);
+                    if (shader_key_on()) ledger_commit();
                     return;
                 }
                 const auto fetch_t0 = std::chrono::steady_clock::now();
@@ -8441,7 +8580,7 @@ void pipeline_cache_save(bool force) {
                     if (FILE* f = fopen(tmp.c_str(), "wb")) {
                         const bool ok = fwrite(data.data(), 1, n, f) == n;
                         fclose(f);
-                        if (ok) MoveFileExA(tmp.c_str(), pcache_path.c_str(), MOVEFILE_REPLACE_EXISTING);
+                        if (ok && MoveFileExA(tmp.c_str(), pcache_path.c_str(), MOVEFILE_REPLACE_EXISTING) && shader_key_on()) ledger_commit();
                     }
                 }
             }

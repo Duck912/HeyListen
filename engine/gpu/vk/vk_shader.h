@@ -75,6 +75,10 @@ struct Program {
     // bound (the pipeline state list, vk_draw.cpp)
     std::vector<uint8_t> questions;
     uint64_t codes[4]{};   // (hookshot) its stages' code keys: vertex (mesh), fragment, task, the header-only stage (the state list)
+    // (hookshot, RX_VK_SHADER_KEY) a hash of what the driver compiles for this program: each stage's SPIR-V, the descriptor counts the
+    // layout is made from, the push and vertex-input facts the pipeline reads. 0: not taken (switch off). The same program, translated by
+    // another translator to the same SPIR-V, has the same one: vk_draw.cpp's ledger of what the driver compiled goes by it
+    uint64_t fp = 0;
 };
 
 enum class ProgramKind { Graphics, Compute, Mesh };
@@ -90,6 +94,9 @@ const Program* program_pick(const NvnState& s, ProgramKind kind, const uint8_t c
 void program_wait(const Program* p);
 uint64_t program_cache_stamp();   // (what the kept programs and pipelines are good for)
 size_t program_cache_kept();   // (hookshot) program keys in the cache now, SIZE_MAX: no cache
+/// (hookshot) RX_VK_SHADER_KEY (default off): programs get a fingerprint of what the driver compiles, and a start after a translator
+/// change builds again only what the fingerprints say the driver has not seen (vk_draw.cpp, the compiled ledger)
+bool shader_key_on();
 size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const std::function<void(Program&)>& fn,
                                bool computes = true);   // (computes: and every kept compute program)
 /// The precompile of every shader of the game (hookshot_shaders.bin, from nx2/shader_census.py): how many programs it names, 0: none
