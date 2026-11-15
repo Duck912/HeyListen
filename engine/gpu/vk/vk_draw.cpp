@@ -2836,13 +2836,15 @@ TLS_OBJECT(prog_slots, std::unordered_map<const Program*, ProgSlots>)
 // instead of the null descriptor, so every write of a draw or dispatch lands in memory (or past its 64 bytes, where the robust access
 // drops it) and no descriptor has base address 0. 64 bytes only: a program's search of its bindings takes the binding's length as the
 // end of the range it serves, and a longer one would take over reads the page table serves better.
-// RX_VK_NULL_WRITE=0: the null descriptor as before
+// RX_VK_NULL_WRITE=1: the scratch buffer; unset or 0: the null descriptor as before (the cases still counted and logged)
 enum NullWriteWhy { kNwAddressZero, kNwNotBuffer, kNwNotBound, kNwWhys };
 std::atomic<int64_t> null_writes[kNwWhys];
 constexpr uint64_t kNullScratchBytes = 64;
 VkBuffer null_scratch = VK_NULL_HANDLE;
 bool null_write_on() {
-    static const bool on = !getenv("RX_VK_NULL_WRITE") || atoi(getenv("RX_VK_NULL_WRITE")) != 0;
+    // (off by default for now: a slot a program also reads would read the scratch's last writes instead of the null
+    // descriptor's zeros, and it is not shown yet to cure the RADV hang; RX_VK_NULL_WRITE=1 for the Deck's test)
+    static const bool on = getenv("RX_VK_NULL_WRITE") && atoi(getenv("RX_VK_NULL_WRITE")) != 0;
     return on;
 }
 /// The scratch buffer (made on first use, host-visible and zeroed, never read back), or no buffer if it could not be made
