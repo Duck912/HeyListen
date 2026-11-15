@@ -33,6 +33,65 @@ predicted pipelines built for the driver's own cache), and `precompile_run` (eve
 The notes, the state lists, `hookshot_computes.bin` and `mkw_vk_pipelines.bin` survive; the driver's data in the last one is
 good as long as the SPIR-V and the state it was made for come out the same.
 
-## Times on the main PC
+## Times on the main PC (Ryzen 7 7800X3D, 16 threads, RTX 5070; a full preparation after a stamp change, RX_VK_SHADER_KEY=0)
 
-(see the end of this file)
+| Step | Work (CPU time added up over the workers) | Wall |
+|---|---|---|
+| Translation of the guest shaders to SPIR-V (31,985 programs, 39,842 variants; `prepare_run`, 8 workers) | 410-580 s | 55-75 s (62 s with the driver part off) |
+| The driver's part of `prepare_run` (7,781 compute variants built into the pipeline cache; no stage libraries are built on this GPU) | 80 s | folded into the above (the whole preparation ends at 75-95 s) |
+| `predict_run`: 25,575 predicted pipelines built for the driver's cache (driver cache hot) | | 34.6 s (of its 90 s budget) |
+| `precompile_run`: the ~6,800 noted pipelines, from the app cache | | 1.4-2 s hot; 71 s when the SPIR-V really changed (cold driver) |
+
+So translation is 85% of the work of a preparation, not "cheap": on a 4-6 core PC it is minutes. The driver's part is the rest.
+
+## What RX_VK_SHADER_KEY does (default on; 0: exactly the old behaviour)
+
+The key of a thing the driver built is a hash of what the driver sees, not the stamp:
+
+* `Program::fp` (vk_shader.cpp `program_fingerprint`): the SPIR-V words of each stage, the stage kinds, the descriptor counts of each of the
+  six kinds (what `ensure_layout` makes the set layout from), the push constant range, the flags that make a program push
+  (`uses_render_area`, `uses_rescaling_uniform`, `uses_global_memory`), the generic vertex attributes the vertex stage reads, the
+  workgroup and shared memory size, the mesh fallback's sizes. Field by field, never a struct's bytes. A program translated now and
+  the same one read back from `hookshot_programs.bin` have the same `fp`.
+* The ledger `hookshot_compiled.bin` (vk_draw.cpp): 8-byte ids, `fp` mixed with what was built from it (stage libraries; a compute
+  pipeline; a graphics pipeline, with `pipeline_key`'s state: topology class, samples, vertex formats, targets, blend and so on).
+  Its header holds a hash of what those ids are good for and nothing else: `HOOKSHOT_STATE_STAMP` (vk_state.h, vk_api.h, vk_draw.h,
+  rx_nvn.h: the renderer's interface), `kPipeKeyVersion`, vendor, device, driver version, API version, `pipelineCacheUUID`, mesh
+  shader mode, which extended-dynamic-state-3 parts the device has, push descriptors. A different header, a file that is not one, or a
+  `mkw_vk_pipelines.bin` that did not load (new driver, missing file): the list starts again. A half entry at the end is cut off.
+  Entries are written by `ledger_commit` (every 10 s of a preparation, at its end, at the end of the prediction, and every 300 presents
+  in play), so a run closed half way keeps what the driver finished.
+* What it skips, after the translation (which always runs: the stamp is unchanged): `prepare_run`'s stage libraries and compute
+  pipelines, and `predict_run`'s pipelines. `precompile_run` still makes every noted pipeline (it needs the handles), from the app's
+  pipeline cache; a hit is 0.2 ms.
+
+What the stamp protected that the fingerprint covers: descriptor layouts (counts), push constants (`kPushSize`, the push flags), vertex
+input (`loads`, with the vertex formats in the pipeline id), the specialisation (none is used), the stage set. What stays coarse: the
+renderer's interface (`HOOKSHOT_STATE_STAMP`) and the pipeline key's meaning (`kPipeKeyVersion`, bumped by hand), both in the ledger's header.
+A change of how `build_graphics` makes its create info that does not change `pipeline_key` needs `kPipeKeyVersion` bumped, as for the notes.
+
+What the driver gives for free: `vkCreate*Pipelines` keys its own cache (and `mkw_vk_pipelines.bin`) on the SPIR-V and the state,
+so a rebuild of an unchanged shader is a cache hit, not a compile. What the ledger saves is the calls themselves and the walk:
+80 s of work for the compute variants, and the prediction's 25,575 `vkCreateGraphicsPipelines`, 35 s (13 s of it reading the
+programs back, which remains). The ledger also covers the case where the driver's cache is *not* hot (a driver that only keeps
+its own disk cache): a skipped build is then compiled when first drawn, as before the prediction existed.
+
+Not covered: the translation itself. Nothing knows a program's SPIR-V without translating it, so a translator change still
+translates every program (55-75 s here). Making that lazy (translate what the notes name before the start, the rest behind the game)
+is the next step; it is `RX_VK_PREPARE_BACKGROUND`'s idea, now without a driver cost behind it.
+
+## Proof (main PC, slot c, RX_VK_SHADER_KEY=1; numbers in the stream report)
+
+Each line is a start in a slot, 110 s at most, so a long preparation is several starts that go on from where the last stopped.
+
+| Case | Driver builds in `prepare_run` | Predicted pipelines (`predict_run`) | Wall of the preparation |
+|---|---|---|---|
+| Main today, stamp changed (switch 0) | 7,781 compute variants built, 80 s of work | 25,528 built, 34.6 s | 62-95 s |
+| Switch on, ledger empty (first run) | 7,741 built and listed, 40 same-SPIR-V repeats left out | 25,528 built, listed | 93 s |
+| Stamp changed, nothing in the shaders changed (env stamp change, twice) | 0 built, 7,781 left out | 0 built, 25,575 left out | 75 s (translation only) |
+| The real change: Longshot e9d25a36 cherry-picked (translator sources changed, off on NVIDIA) | 0 built, 7,781 left out | 0 built, 25,575 left out (13-25 s reading programs back) | 71 s |
+| A change of many shaders (`RX_VK_NAN_GUARD=0`: every fragment output) | compute left out (7,781: they did not change) | the changed graphics pipelines were really compiled (71 s for the 6,809 noted ones, cold driver) | 98 s |
+| Cold slot (no caches at all) | everything built (564 s of work in the first 104 s), as before | built | several starts |
+
+Pictures (the slot, switch on, new build): Hyrule citadel in kokiri-idle and a saved zone in hyrule-walk look right; castle-move
+only reached its load menu in the run's time (three games ran at once, 160 fps instead of 360).
