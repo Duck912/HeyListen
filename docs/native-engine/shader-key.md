@@ -95,3 +95,60 @@ Each line is a start in a slot, 110 s at most, so a long preparation is several 
 
 Pictures (the slot, switch on, new build): Hyrule citadel in kokiri-idle and a saved zone in hyrule-walk look right; castle-move
 only reached its load menu in the run's time (three games ran at once, 160 fps instead of 360).
+
+## K1b: lazy translation on an update (RX_VK_LAZY_UPDATE, on with the key)
+
+K1 skips the driver's part of a preparation, not the translation: 55-75 s of the 62-95 s on the main PC, before the game's first
+frame. An update (the translator's stamp changed, everything else as the last start left it) now starts the game at once and does the
+work behind it.
+
+**Which start is which** (`prepare_is_update`, vk_draw.cpp):
+
+| Start | What happens |
+|---|---|
+| First start: no `hookshot_prepared.bin` (missing, empty), or no ledger | Full preparation before the game, with its progress screen, as today: it builds the driver's caches properly. A missing record also drops the ledger (`ledger_drop_all`): what it lists cannot be trusted when the record went with whatever else was wiped |
+| A preparation that began and did not end (closed, killed) | `prepared_mark_running` writes the record with stamp 0 while a full preparation runs (it used to remove it). The next start prepares again, goes on from what the program cache holds and the ledger lists, and is **not** a first start, so progress is not thrown away |
+| Update: a whole record of another stamp, the pipeline cache (`mkw_vk_pipelines.bin`) loaded, the ledger not empty | **Lazy update** |
+| Update, but the pipeline cache is missing, empty, of another device or driver, or did not load | `pcache_init` drops the ledger (K1: the list is not good for a cache that is not this one); the start is a full preparation |
+| Update, ledger empty (the last preparation was made before the key, or its list is gone) | Full preparation: nothing says what the driver has |
+
+`RX_VK_LAZY_UPDATE=0`: the old behaviour (a full preparation before the game). `RX_VK_PREPARE_BACKGROUND=1`: the old opt-in, whatever
+the caches hold (no driver builds in play, no ledger needed). `RX_VK_SHADER_KEY=0` leaves everything as before K1.
+
+**The lazy update.**
+* Before the game: nothing but `precompile_run` (it finds no program for its notes, the program cache having started again under the
+  new stamp, and returns at once; the notes are carried to the new stamp as for any update).
+* In play: a draw that needs a program not made yet translates it as it always did (on the calling thread; the program is saved to the
+  cache and its fingerprint `Program::fp` is computed there). The pipeline is built as a draw builds one: the driver's own cache
+  answers a SPIR-V and state it has seen, so a program whose fingerprint did not change costs no driver compile, only the lookup.
+  The ledger adds the pipeline's id when it is made, so the walk behind the game skips it.
+* Behind the game (`prepare_background`, no 20 s wait: the draws' programs are wanted now), on `clamp(cpus/4, 2, 4)` workers at
+  idle priority, in this order:
+  1. the programs of the pipeline state lists (the shipped one and the player's), and the variants those lists have by their
+     textures: translated into the program cache, not noted and not read in (`state_list_prepare(..., background=true)`; the shipped
+     list stays "pending", so the next start notes its pipelines before the game; no layout is made for a program a draw may be
+     using, and variants already on disk are not translated twice: `program_variant_kept`);
+  2. the rest of the seed (`prepare_run(background=true)`): compute programs first, then graphics. A compute pipeline or stage library
+     is handed to the driver only when its ledger id is missing (a changed shader), under the same `.warming` marker as a full
+     preparation (a crash in the driver's compiler is not repeated at every start);
+  3. `predict_run(background=true)`: the predicted pipelines, each through the ledger: only those whose id is not listed are built,
+     on the same few idle workers and with no time budget.
+  The record keeps the old stamp until step 2 ends, so a game closed half way starts lazily again and goes on from the program cache;
+  the ledger is committed every 30 s, with the pipeline cache saves, and at each step's end.
+
+**What cannot be detected.** The ledger says "built into `mkw_vk_pipelines.bin` and into the driver's cache". What is checked: the
+pipeline cache file is there, holds more than its header and is this device's and driver's (`pcache_init`); `hookshot_prepared.bin`
+is there and whole. What is not: the driver's own disk cache (NVIDIA's, Mesa's), which a driver cleans by itself or a user empties by
+hand, and a `mkw_vk_pipelines.bin` that is the right size and header with its data damaged. In either case a shader the ledger lists as
+built is compiled by the driver when first drawn, as before the prediction existed: one stall at that draw, longer for a heavy
+pipeline, once (the pipeline cache is saved again with it). Nothing is wrong or missing, only late. Deleting `hookshot_compiled.bin` or
+`hookshot_prepared.bin` by hand is the supported way to have everything built again.
+
+**Not measured yet** (the game was not run for this section: the main PC's queue was open and the PC 3050 held by another stream's
+whole-machine lock for the whole session): the time to play after a translator change, the frames in play while the work runs behind,
+and the background's total time. The code compiles (a syntax pass of `vk_draw.cpp`, `vk_shader.cpp`, `vk_main.cpp` with the
+back end's flags), and the record's rules are tested without the game (`tests/test_prepare_seed_stamp.py`: a preparation cut short is
+not a first start, a missing or empty record is). What to expect, from K1's numbers: the start no longer waits for the 55-75 s of
+translation; the 6,800 noted pipelines are built by the draws that meet them (each a program translated, about 12 ms of CPU on average,
+and a pipeline the driver's cache answers) instead of before the game, so the first minutes show hitches where the old start showed a
+progress screen; whether they are acceptable is what the measurement is for.
