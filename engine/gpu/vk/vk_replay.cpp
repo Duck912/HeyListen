@@ -1267,7 +1267,16 @@ struct UbGrowGuard {
     }
 };
 // (the dry pass calls on_point at each point it keeps while an early replay_handle runs; the replay thread's only)
-struct SegEarlyHook { std::function<void(const ParPoint&)> on_point; };
+struct SegEarlyHook {
+    std::function<void(const ParPoint&)> on_point;
+    /// (stream R5) whether on_point would take the point at this work count and place: the point's state (NvnState, ~27 KB) is copied
+    /// only for those (RX_VK_DRY_WANTED, default on, =0: every point's, as before)
+    std::function<bool(int64_t, const uint8_t*)> wants;
+};
+bool dry_wanted_only() {
+    static const bool on = !getenv("RX_VK_DRY_WANTED") || atoi(getenv("RX_VK_DRY_WANTED")) != 0;
+    return on;
+}
 SegEarlyHook* seg_early_hook = nullptr;
 size_t ub_first_of_recording = 0;  // (the current recording's first entry)
 uint64_t rec_value_now = 0;
@@ -2247,8 +2256,14 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                     st_lean_left++;   // (TICK-061: a point no boundary can be at, RX_VK_DRY_LEAN: its state not copied)
                 } else if (dry_work % point_every == 0) {
                     if (lean_points) st_lean_kept++;
-                    par_points.push_back({p + h.size, s, ub_updates.size(), par_conds.size(), dry_work});
-                    if (seg_early_hook) seg_early_hook->on_point(par_points.back());   // (TICK-056, RX_VK_SEG_EARLY)
+                    // (the early path takes one point a boundary, the first at or after its planned place: a point none takes was a
+                    // copy of the whole state, 58 of them a big command buffer, the vector growing by moves of the same)
+                    if (seg_early_hook && dry_wanted_only() && !seg_early_hook->wants(dry_work, p + h.size)) {
+                        // (not a boundary)
+                    } else {
+                        par_points.push_back({p + h.size, s, ub_updates.size(), par_conds.size(), dry_work});
+                        if (seg_early_hook) seg_early_hook->on_point(par_points.back());   // (TICK-056, RX_VK_SEG_EARLY)
+                    }
                 }
                 if (dry_work == presync_kick_at) presync_early_start();   // (TICK-056: a command buffer big enough to be cut, likely)
             } else if (!worker) {
@@ -2776,8 +2791,9 @@ const uint8_t* replay_handle_early(VkCommandBuffer& cmd, const uint8_t* h, bool 
     jobs[0]->s = state;
     jobs[0]->g = {h, nullptr, &jobs[0]->s, ub0, 0, serial0};
     SegEarlyHook hook;
+    hook.wants = [&](int64_t work, const uint8_t* at) { return (int)open + 1 < nplan && work >= plan[open] && at != jobs[open]->g.p; };
     hook.on_point = [&](const ParPoint& q) {
-        if ((int)open + 1 >= nplan || q.work < plan[open] || q.p == jobs[open]->g.p) return;
+        if (!hook.wants(q.work, q.p)) return;
         Job* j = jobs[open].get();
         j->g.end = q.p;
         {
