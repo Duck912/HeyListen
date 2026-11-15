@@ -1652,11 +1652,6 @@ uint64_t ledger_id_pipeline(const Program& p, const NvnState& s, const Targets& 
 }
 }  // namespace
 
-void program_fingerprinted(uint64_t fp) {
-    if (fingerprint_probe) fingerprint_probe->push_back(fp);
-    else ledger_add(ledger_id_seen(fp));
-}
-
 PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, const uint8_t color_types[8]) {
     // the key: what is baked into it (the rest is dynamic state)
     // (hookshot: and which variant: p.key is the same for all the variants of a program by its textures' types, and a draw of
@@ -8679,6 +8674,10 @@ bool pcache_save_mapped(const std::string& tmp, size_t n) {
 #endif
 }
 
+void program_fingerprinted(uint64_t fp) {
+    if (fingerprint_probe) fingerprint_probe->push_back(fp);
+    else ledger_add(ledger_id_seen(fp));
+}
 void shader_key_commit() {
     if (shader_key_on()) ledger_commit();
 }
