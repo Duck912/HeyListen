@@ -2657,6 +2657,51 @@ struct ProgSlots {
 };
 TLS_OBJECT(prog_slots, std::unordered_map<const Program*, ProgSlots>)
 
+// (hookshot, issue 14, RX_VK_NULL_WRITE) A storage buffer a program writes through whose address resolved to nothing: the descriptor was
+// a null one (Vulkan drops its writes). RADV hangs the graphics ring on a submission that writes at a tiny GPU address (0 or 0x5000:
+// "GPUVM fault", a texture-unit write, Steam Deck and RX 9070 XT), where NVIDIA's driver drops such a write silently. Counted by why
+// it resolved to nothing, one log line for each program and descriptor. With the switch on, a buffer of our own is bound there
+// instead of the null descriptor, so every write of a draw or dispatch lands in memory (or past its 64 bytes, where the robust access
+// drops it) and no descriptor has base address 0. 64 bytes only: a program's search of its bindings takes the binding's length as the
+// end of the range it serves, and a longer one would take over reads the page table serves better.
+// RX_VK_NULL_WRITE=0: the null descriptor as before
+enum NullWriteWhy { kNwAddressZero, kNwNotBuffer, kNwNotBound, kNwWhys };
+std::atomic<int64_t> null_writes[kNwWhys];
+constexpr uint64_t kNullScratchBytes = 64;
+VkBuffer null_scratch = VK_NULL_HANDLE;
+bool null_write_on() {
+    static const bool on = !getenv("RX_VK_NULL_WRITE") || atoi(getenv("RX_VK_NULL_WRITE")) != 0;
+    return on;
+}
+/// The scratch buffer (made on first use, host-visible and zeroed, never read back), or no buffer if it could not be made
+VkDescriptorBufferInfo null_write_binding() {
+    static std::once_flag once;
+    static VmaAllocation mem = nullptr;
+    std::call_once(once, [] {
+        void* mapped = nullptr;
+        if (!create_buffer(kNullScratchBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, null_scratch, mem, &mapped) || !mapped)
+            null_scratch = VK_NULL_HANDLE;
+        else std::memset(mapped, 0, kNullScratchBytes);
+    });
+    return {null_scratch, 0, kNullScratchBytes};
+}
+void null_write_note(const Program& p, int stage, uint32_t cbuf, uint32_t off, uint32_t k, uint32_t count, uint64_t addr, uint64_t size,
+                     NullWriteWhy why) {
+    null_writes[why]++;
+    static std::mutex mu;
+    static std::unordered_set<uint64_t> told;
+    std::lock_guard lk(mu);
+    if (!told.insert(p.key ^ ((uint64_t)off << 40) ^ ((uint64_t)cbuf << 32) ^ ((uint64_t)k << 24) ^ ((uint64_t)stage << 56)).second ||
+        told.size() > 200)
+        return;
+    static const char* const names[kNwWhys] = {"its address is 0 (the slot was never set)",
+                                               "its address and size do not name a buffer (not guest memory, or a table entry past its table)",
+                                               "its pool has no buffer for it yet (not imported, or the range does not fit)"};
+    logf("vk: written storage buffer resolves to nothing: program %016llx stage %d ssbo %u of %u (c%u+%#x) addr %#llx size %#llx: %s; %s",
+         (unsigned long long)p.key, stage, k, count, cbuf, off, (unsigned long long)addr, (unsigned long long)size, names[why],
+         null_write_on() ? "a scratch buffer is bound" : "left null");
+}
+
 void build_descriptors(const NvnState& s, const Program& p) {
     dw().reset();
     dw().prog = &p;
@@ -2921,7 +2966,13 @@ void build_descriptors(const NvnState& s, const Program& p) {
                              "%#llx%s", (unsigned long long)p.key, ns, (unsigned)d.cbuf_index, off,
                              (unsigned long long)addr, (unsigned long long)size, d.is_written ? " (written)" : "");
                 }
+                if (!b && d.is_written && !(d.count == 1 && d.cbuf_index == 0 && d.cbuf_offset == 0xff0))
+                    null_write_note(p, ns, d.cbuf_index, off, k, d.count, addr, size,
+                                    !addr ? kNwAddressZero : plausible ? kNwNotBound : kNwNotBuffer);
+                VkDescriptorBufferInfo scratch{};
+                if (!b && d.is_written && null_write_on()) scratch = null_write_binding();
                 dw().bufs.push_back(b ? VkDescriptorBufferInfo{b.buffer, b.offset, n}
+                                    : scratch.buffer ? scratch
                                     : VkDescriptorBufferInfo{dev.null_descriptor ? VK_NULL_HANDLE : zero_buffer, 0,
                                                              dev.null_descriptor ? VK_WHOLE_SIZE : 16});
                 {   // (RX_VK_LOG_WRITTEN=1: every storage buffer range a program writes, once, 300 of them)
@@ -7344,6 +7395,9 @@ void res_pipeline_counts(size_t* graphics, size_t* used, int64_t* modules_droppe
     *modules_dropped = cs_modules_dropped.load();
     logf("vk: compute pipelines built in play: %lld from the pipeline cache (or under 30 ms), %lld compiled", (long long)cs_cache_hits.load(),
          (long long)cs_cache_misses.load());
+    if (const int64_t z = null_writes[kNwAddressZero].load(), nb = null_writes[kNwNotBuffer].load(), np = null_writes[kNwNotBound].load(); z + nb + np)
+        logf("vk: written storage buffers that resolved to nothing (RX_VK_NULL_WRITE %s): %lld in all, address 0 %lld, not a buffer %lld, pool not bound %lld",
+             null_write_on() ? "on: scratch bound" : "off", (long long)(z + nb + np), (long long)z, (long long)nb, (long long)np);
 }
 void cs_module_release(Program& p) {
     if (!cs_module_drop() || !p.compute || !p.compute_pipeline || p.stages.empty() || !p.stages[0].module) return;
