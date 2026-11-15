@@ -46,6 +46,7 @@ struct TextureDefinition {
 
 struct TextureBufferDefinition {
     Id id;
+    Id pointer_type;
     u32 count;
 };
 
