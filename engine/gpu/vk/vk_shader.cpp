@@ -612,7 +612,10 @@ VkShaderModule make_module(const std::vector<uint32_t>& spirv_in) {
     ci.codeSize = spirv.size() * 4;
     ci.pCode = spirv.data();
     VkShaderModule m = VK_NULL_HANDLE;
-    vkCreateShaderModule(dev.device, &ci, nullptr, &m);
+    // (longshot #252: one thread at a time in Intel's compiler on Windows, and a fault in the driver leaves this program out: no
+    // module, and the translation of the program fails as it does when the driver refuses one)
+    IntelDriverGate gate;
+    if (extern_guarded_shader_module(&ci, &m) != VK_SUCCESS) return VK_NULL_HANDLE;
     return m;
 }
 

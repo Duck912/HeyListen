@@ -99,6 +99,43 @@ struct Device {
 };
 extern Device dev;
 
+/// (longshot #252) Windows Intel's compiler (igvk64, UHD and Arc) faults when two threads hand it shaders at once: an Arc A750
+/// froze the PC on four compute pipelines, and an Intel UHD read address 0x170 inside igvk64 during the first scene's compiles.
+/// One thread at a time enters vkCreateShaderModule and vkCreate*Pipelines (a pipeline or module the renderer makes for itself, a
+/// translated program's module, a graphics or compute pipeline of the game's). Other vendors, and Intel on Linux, are not held:
+/// the gate is a no-op there, so nothing changes. The Debug tab's Intel shader compiles row (shown on Intel under Windows), or
+/// RX_VK_NO_INTEL_SERIAL=1 over it, lets them build side by side again.
+/// ask: a create that compiles nothing (VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT), made for a draw on the replay
+/// thread, which must never wait for a compile: it only tries the gate, and while a worker holds it, `busy` is set and the caller
+/// answers VK_PIPELINE_COMPILE_REQUIRED (cold) without asking the driver.
+bool intel_compiles_side_by_side();   // (vk_draw.cpp: the row or the environment, read once)
+inline bool intel_gate_on() {
+#ifdef _WIN32
+    static const bool on = dev.props.vendorID == 0x8086 && !intel_compiles_side_by_side();
+    return on;
+#else
+    return false;
+#endif
+}
+struct IntelDriverGate {
+    std::unique_lock<std::mutex> hold;
+    bool busy = false;
+    explicit IntelDriverGate(bool ask = false) {
+        if (!intel_gate_on()) return;
+        static std::mutex mu;
+        static std::once_flag once;
+        std::call_once(once, [] {
+            logf("vk: Intel's compiler is entered by one thread (Intel shader compiles row, RX_VK_NO_INTEL_SERIAL=1: side by side)");
+        });
+        if (ask) {
+            hold = std::unique_lock<std::mutex>(mu, std::try_to_lock);
+            busy = !hold.owns_lock();
+        } else {
+            hold = std::unique_lock<std::mutex>(mu);
+        }
+    }
+};
+
 /// A range of guest memory as the GPU sees it: a buffer (an imported pool), the offset in it, and its device address
 struct BufferRef {
     VkBuffer buffer = VK_NULL_HANDLE;
