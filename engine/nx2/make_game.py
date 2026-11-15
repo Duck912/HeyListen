@@ -1350,9 +1350,9 @@ def main(a=None):
             print("--fetch-fsr-runtime: AMD publishes this runtime for Windows only; on Linux see the readme "
                   "(amd_fidelityfx_upscaler_vk.so)", flush=True)
         open(os.path.join(out, FSR_MARK), "w").close()
-        if os.environ.get("HOOKSHOT_VK_PREBUILT"):   # (the AppImage's back end, built without FSR 4)
-            print("--fsr: this build uses the prebuilt Vulkan back end (HOOKSHOT_VK_PREBUILT), which has no AMD FSR 4: the "
-                  "Upscaler row will not offer it", flush=True)
+        if os.environ.get("HOOKSHOT_VK_PREBUILT"):   # (the AppImage's back end: built with AMD FSR 4, scripts/linux/appimage.sh)
+            print("--fsr: the prebuilt Vulkan back end (HOOKSHOT_VK_PREBUILT) has AMD FSR 4; AMD's library "
+                  "(amd_fidelityfx_upscaler_vk.so) is the player's, beside the game (the readme)", flush=True)
     else:
         os.environ.pop("HOOKSHOT_FSR", None)
         if os.path.isfile(os.path.join(out, FSR_MARK)):
