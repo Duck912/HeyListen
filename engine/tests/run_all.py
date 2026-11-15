@@ -43,6 +43,7 @@ ARGS = {
     "tests/test_readback_ticket.py": ["--cxx", "{cxx}"],
     "tests/test_capture_claim.py": ["--cxx", "{cxx}"],
     "tests/test_pcie_link.py": ["--cxx", "{cxx}"],
+    "tests/test_amdgpu_stats.py": ["--cxx", "{cxx}"],
     "tests/test_sparse_queue.py": ["--cxx", "{cxx}"],
     "tests/test_shadow_fast.py": ["--cxx", "{cxx}"],
     "tests/test_collect_fast.py": ["--cc", "{cxx}"],
@@ -141,6 +142,7 @@ ARGS = {
     "tests/test_evict_reason.py": ["--cxx", "{cxx}"],
     "tests/test_tl_time_domain.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_jt_mark_export.py": ["--cxx", "{cxx}"],
+    "tests/test_vcore_video_acquire.py": ["--cxx", "{cxx}"],
 }
 
 # Python packages some tests import (CI installs them; the runner itself needs none)
