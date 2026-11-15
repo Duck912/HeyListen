@@ -4688,6 +4688,10 @@ bool write_png(const char* path, const uint8_t* rgba, uint32_t w, uint32_t h) {
     }
 }
 
+// (do_present: the game's picture is already HDR10, Native HDR taken. Read by present_image, and by vk_fsr4.cpp, whose context is
+// made for HDR colour while it is)
+std::atomic<bool> present_native_pq{false};
+
 namespace {
 
 int64_t fps_n = 0;
@@ -4984,7 +4988,6 @@ void status_tick() {
     slowest_ns = 0;
 }
 
-std::atomic<bool> present_native_pq{false};   // (do_present: the game's picture is already HDR10)
 uint64_t present_value = 0;   // (the present job's value, handed out as it came; 0: the next one)
 struct PendingShot {
     bool on = false;
