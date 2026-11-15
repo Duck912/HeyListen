@@ -2238,7 +2238,7 @@ bool key_listed(const char* hex, const char* var) {
     return false;
 }
 bool shader_key_on() {
-    static const bool on = getenv("RX_VK_SHADER_KEY") && atoi(getenv("RX_VK_SHADER_KEY")) != 0;
+    static const bool on = !getenv("RX_VK_SHADER_KEY") || atoi(getenv("RX_VK_SHADER_KEY")) != 0;
     return on;
 }
 uint64_t program_cache_stamp() { return disk_stamp(); }
