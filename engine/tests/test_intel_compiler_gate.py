@@ -77,12 +77,12 @@ def main():
     build = block(draw, "VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part,")
     need("IntelDriverGate gate(cold != nullptr);" in build and "if (gate.busy) return intel_gate_busy(), *cold = true, VK_NULL_HANDLE;" in build,
          "build_graphics makes an ask wait for a compile")
-    need(build.index("IntelDriverGate gate") < build.index("guarded_graphics("), "build_graphics compiles before it takes the lock")
+    need(build.index("IntelDriverGate gate") < build.index("guarded_graphics_held("), "build_graphics compiles before it takes the lock")
     busy = block(draw, "void intel_gate_busy()")
     need("++st_intel_gate_busy" in busy and "logf(" in busy, "an ask answered cold for a busy gate is not counted")
     gated = block(draw, "VkResult gated_compute(")
-    need(gated.index("IntelDriverGate") < gated.index("guarded_compute("), "a compute pipeline is made before the lock is taken")
-    need("guarded_compute(pcache" not in draw.replace("return guarded_compute(cache, ci, pl);", ""),
+    need(gated.index("IntelDriverGate") < gated.index("guarded_compute_held("), "a compute pipeline is made before the lock is taken")
+    need("guarded_compute_held(pcache" not in draw.replace("return guarded_compute_held(cache, ci, pl);", ""),
          "a compute pipeline of the game's still calls the driver with no lock")
     link = block(draw, "VkPipeline gpl_link(")
     need(link.index("IntelDriverGate") < link.index("guarded_graphics"), "gpl_link's pipeline is not guarded")

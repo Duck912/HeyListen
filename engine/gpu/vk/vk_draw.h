@@ -81,6 +81,8 @@ void ub_thread_off();
 /// The pipeline cache to disk (force: whatever was built since the last save; else only after a few new ones)
 void pipeline_cache_save(bool force);
 void shader_key_commit();   // (RX_VK_SHADER_KEY: what the driver built so far goes to hookshot_compiled.bin)
+/// (longshot #404) the serial builds' thread between two builds: a save put off for builds under way, run there (vk_jobs.cpp)
+void pipeline_cache_between_builds();
 
 /// The stream's uniform updates (UPDATE_UB, vk_replay.cpp) that overlap [addr, addr + n) and may not be in guest
 /// memory yet when the GPU reads it: a copy of the range with them applied, at the offset alloc returns in the
