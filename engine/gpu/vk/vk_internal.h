@@ -59,6 +59,7 @@ struct Device {
          coop_matrix = false,   // (VK_KHR_cooperative_matrix with its feature)
          native_mma = false,    // (HMMA on it: the cooperative matrix test passed, vk_coopmat.cpp)
          pci_bus_info = false;  // (VK_EXT_pci_bus_info supported, not enabled: its properties name the card's sysfs node, vk_memory.cpp pcie_link_gbps)
+    bool float_atomic_add = false;   // (longshot #2306) VK_EXT_shader_atomic_float's shaderBufferFloat32AtomicAdd: the translator's float adds
     bool eds3_polygon = false, eds3_clamp = false, eds3_blend = false, eds3_a2c = false;
     bool swapchain_colorspace = false;   // (hookshot) VK_EXT_swapchain_colorspace: HDR10 surfaces are listed
     bool hdr = false;                    // (hookshot) the swapchain is HDR10 (ST 2084, Rec. 2020): framegen_hdr writes it

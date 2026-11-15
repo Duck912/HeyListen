@@ -519,6 +519,7 @@ Shader::Profile make_profile() {
     p.support_typeless_image_loads = true;
     p.support_demote_to_helper_invocation = true;
     p.support_int64_atomics = true;
+    p.support_float32_atomic_add = dev.float_atomic_add;   // (one OpAtomicFAddEXT for a float add, not a compare-exchange loop: vk_main.cpp)
     p.support_derivative_control = true;
     p.support_native_ndc = false;   // (the vertex stage converts NVN's -1..1 depth: RuntimeInfo::convert_depth_mode)
     p.support_scaled_attributes = false;   // (*_UI2F / *_I2F read as integers, converted in the shader: R32 has no scaled format)
@@ -1086,6 +1087,12 @@ uint64_t disk_stamp() {
         add(mma_order_a.data(), sizeof(uint32_t) * mma_order_a.size());
         add(mma_order_b.data(), sizeof(uint32_t) * mma_order_b.size());
         add(mma_order_c.data(), sizeof(uint32_t) * mma_order_c.size());
+    }
+    // (longshot #2306: and whether a float add is the GPU's own atomic (make_profile): a program made with OpAtomicFAddEXT is no use
+    // to a GPU without it. Added only when it is, so that the stamp of every GPU that keeps the loop is what it was)
+    if (dev.float_atomic_add) {
+        const uint32_t float_add = 1;
+        add(&float_add, sizeof float_add);
     }
     for (char** e = _environ; e && *e; e++)
         for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH", "RX_VK_NO_INVARIANT", "RX_VK_NO_NAN_GUARD", "RX_VK_MARKERS", "EDEN_"})
