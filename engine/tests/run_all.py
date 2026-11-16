@@ -56,6 +56,7 @@ ARGS = {
     "tests/test_pending_guest_import.py": ["--cxx", "{cxx}"],
     "tests/test_vk_collect_window.py": ["--cxx", "{cxx}"],
     "tests/test_astc_cpu.py": ["--cxx", "{cxx}"],
+    "tests/test_capture_past_end.py": ["--cxx", "{cxx}"],
     "tests/test_shadow_fast.py": ["--cxx", "{cxx}"],
     "tests/test_collect_fast.py": ["--cc", "{cxx}"],
     "tests/test_late_fix_order.py": ["--cxx", "{cxx}"],
