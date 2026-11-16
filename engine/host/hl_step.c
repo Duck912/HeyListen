@@ -94,9 +94,14 @@ uint32_t hos_movie_frames(uint64_t player) {
      the seconds of the day (+40, a day of 86400, then the day count +44). Cut, it added 1 a frame below 120 fps (the day
      slower: 83% at 100) and 0 above 120, where the clock stood still and the sun swung back and forth over the frozen hour.
      The function cuts into x8 the same way once more, in the branch that sets the time from another source: that one stays
-     the game's (the hook's anchor is the cut stored to +60). */
+     the game's (the hook's anchor is the cut stored to +60).
+   - f_800672e0, the water renderer (after upstream 6df80a8d, #2409): its ripple simulation runs (int)step times the water's
+     substeps (+76 of the pass) each frame. Cut to 0, the rings Link and the actors make in water stood still above 60 fps.
+     Its remainder is kept per water object (x21). Found by atk3001 for Lichii (zortos293/Lichii#1152), ported to Fritchii
+     by Frizti (Frizti/Fritchii d389685a4, 063dbb741), then to Hookshot by hckrman101. */
 HL_WHOLE_HOOK(80a87e50, "7464f66dbdfb2fd2", 12, "c->x[19] + 864");
 HL_WHOLE_HOOK(803edf70, "29ce7b235d0d6bfd", 8, "c->x[19] + 60");
+HL_WHOLE_HOOK(800672e0, "feef3d08fe1f642d", 9, "c->x[21]");
 
 uint32_t hos_frame_whole(uint64_t at, uint32_t amount_bits, uint32_t game) {
     static FrameWhole state;   /* (these two under the lock: the game's update threads) */

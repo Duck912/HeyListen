@@ -4,7 +4,9 @@ Hookshot f915af93: host/frame_whole.h, host/hl_step.c hos_frame_whole; the hooks
 The pick-up indicator above Link's head (f_80a87e50) moves the count it shows toward the wallet's by (int)(step * per) and fades
 when they meet; the time of day (f_803edf70, after upstream f0c40fc96) adds (int)(2 * step) game seconds a frame. Under a
 Frame rate cap above 60 the step is the frame's own time, under 1 (0.42 at 144 fps): cut to 0 every frame, the count never
-moved and the indicator stayed, and the clock stood still. With the frames' own time as the step (carry), frame_whole adds the
+moved and the indicator stayed, and the clock stood still. The water renderer (f_800672e0, after upstream 6df80a8d) runs its
+ripple simulation (int)step times a frame the same way, its remainder kept per water object: forty surfaces stepped in turn
+each still count their 60 frames a second (64 slots). With the frames' own time as the step (carry), frame_whole adds the
 amount to the counter's own remainder and hands out its whole frames: 144 frames of 60/144 are 60; an amount of 1 or more keeps
 its fraction too; two counters keep their own remainders; NaN and amounts below zero give 0. Without it, the amount is cut as
 the game cuts it (60 fps as before).
@@ -36,6 +38,7 @@ import hl_gates  # noqa: E402
 SITES = {
     "80a87e50": (12, "c->x[19] + 864", False),   # the pick-up indicator's shown count
     "803edf70": (8, "c->x[19] + 60", True),      # the time of day's seconds added a frame (its cut once more elsewhere)
+    "800672e0": (9, "c->x[21]", False),          # the water's ripple steps a frame, per water object
 }
 HOST_ANCHOR = "uint32_t hos_frame_whole(uint64_t at, uint32_t amount_bits, uint32_t game) {"
 
@@ -87,8 +90,18 @@ static void helper(void) {
     CHECK(n == 120 || n == 119);   /* (a second at 144 fps: the 120 game seconds of one at 60) */
     CHECK(frame_whole(&w, a, bits(0.42f), 0) == 0 && frame_whole(&w, a, bits(1.5f), 0) == 1 && frame_whole(&w, a, bits(2.0f), 0) == 2);
     CHECK(frame_whole(&w, a, bits(-1.0f), 1) == 0 && frame_whole(&w, a, bits(NAN), 1) == 0 && frame_whole(&w, a, bits(0.0f), 1) == 0);
-    for (uint64_t k = 0; k < 40; k++) frame_whole(&w, 0x9000 + k, bits(0.5f), 1);   /* (more counters than slots: the oldest go) */
-    CHECK(frame_whole(&w, 0x9000 + 39, bits(0.5f), 1) == 1);   /* (a slot still held: 0.5 + 0.5) */
+    for (uint64_t k = 0; k < 100; k++) frame_whole(&w, 0x9000 + k, bits(0.5f), 1);   /* (more counters than slots: the oldest go) */
+    CHECK(frame_whole(&w, 0x9000 + 99, bits(0.5f), 1) == 1);   /* (a slot still held: 0.5 + 0.5) */
+    CHECK(frame_whole(&w, 0x9000, bits(0.5f), 1) == 0);   /* (the oldest's slot was reused: it starts again from 0) */
+    /* (a scene's water surfaces, each stepped once a frame at 144 fps: 40 of them, more than the old 16 slots, each still counts
+       its 60 frames a second) */
+    {
+        static FrameWhole water;
+        uint32_t passes[40] = {0};
+        for (int f = 0; f < 144; f++)
+            for (int k = 0; k < 40; k++) passes[k] += frame_whole(&water, 0x7000000 + (uint64_t)k * 0x400, bits(60.0f / 144.0f), 1);
+        for (int k = 0; k < 40; k++) CHECK(passes[k] == 60 || passes[k] == 59);
+    }
 }
 """
 
