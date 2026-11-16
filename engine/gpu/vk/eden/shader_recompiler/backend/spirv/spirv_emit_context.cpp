@@ -1448,9 +1448,13 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         // the wall of trees in the sky. The culling's compute programs, with hundreds of global loads, keep the helper
         // (NVIDIA took 41 s on one inlined, above)
         static const bool gm_inline{!getenv("EDEN_NX2_GM_INLINE") || getenv("EDEN_NX2_GM_INLINE")[0] != '0'};
+        // (RX_VK_MESH_NOINLINE=task|mesh|both, diagnosis, off by default: those stages' helpers not inlined; the stamp has it)
+        static const char* const noinline_env{getenv("RX_VK_MESH_NOINLINE")};
+        const bool noinline_here{noinline_env && ((stage == Stage::Task && (strstr(noinline_env, "task") || strstr(noinline_env, "both"))) ||
+                                                   (stage == Stage::Mesh && (strstr(noinline_env, "mesh") || strstr(noinline_env, "both"))))};
         const bool inline_here{gm_inline && (stage == Stage::Task || stage == Stage::Mesh ||
                                             (shift == 4 && runtime_info.inline_global_128_loads))};
-        const Id func_id{OpFunction(type, inline_here ? spv::FunctionControlMask::Inline : spv::FunctionControlMask::DontInline,
+        const Id func_id{OpFunction(type, inline_here && !noinline_here ? spv::FunctionControlMask::Inline : spv::FunctionControlMask::DontInline,
                                     function_type)};
         const Id addr{OpFunctionParameter(U64)};
         define_body(ssbo_member, addr, element_pointer, shift,
