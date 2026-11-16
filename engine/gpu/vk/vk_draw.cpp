@@ -4384,6 +4384,25 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
     d.sops[1][0] = stencil_op(s.ds.fail_b), d.sops[1][1] = stencil_op(s.ds.zpass_b), d.sops[1][2] = stencil_op(s.ds.zfail_b);
     d.scmpop[0] = compare_op(s.ds.sf_f), d.scmpop[1] = compare_op(s.ds.sf_b);
     d.discard = s.raster_discard && !sw().ignore_discard;
+    {   // (diagnosis, default off) RX_VK_DISCARD_PROG=<key start>[,...]: those programs' draws run their geometry stages only (rasterizer
+        // discard), so with RX_VK_PASS_TIMING=2 the run's time minus the normal run's is the pixel work: the picture is wrong
+        static const std::vector<std::string> keys = [] {
+            std::vector<std::string> v;
+            for (const char* q = getenv("RX_VK_DISCARD_PROG"); q && *q;) {
+                const char* e = q;
+                while (*e && *e != ',') e++;
+                v.emplace_back(q, e);
+                q = *e ? e + 1 : e;
+            }
+            return v;
+        }();
+        if (!keys.empty() && cur_program) {
+            char k[20];
+            snprintf(k, sizeof k, "%016llx", (unsigned long long)cur_program->key);
+            for (const std::string& w : keys)
+                if (!w.empty() && strncmp(k, w.c_str(), w.size()) == 0) d.discard = VK_TRUE;
+        }
+    }
     d.poly = s.poly.mode == 0 ? VK_POLYGON_MODE_POINT : s.poly.mode == 1 ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
     static const bool fp_lines = getenv("RX_VK_FOOTPRINT_LINES") != nullptr;   // (the footprints as wireframes)
     if (fp && fp_lines) d.poly = VK_POLYGON_MODE_LINE;
