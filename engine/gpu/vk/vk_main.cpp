@@ -20,6 +20,7 @@
 #include "vk_internal.h"
 #include "gpu_choice.h"
 #include "sparse_queue.h"
+#include "radv_submit_thread.h"
 #include "vk_menu.h"
 #include "vk_dlss.h"
 #include "vk_fsr4.h"
@@ -544,7 +545,32 @@ bool create_device() {
     ci.pQueueCreateInfos = qs;
     ci.enabledExtensionCount = (uint32_t)want.size();
     ci.ppEnabledExtensionNames = want.data();
-    if (vkCreateDevice(dev.physical, &ci, nullptr, &dev.device) != VK_SUCCESS) {
+#ifndef _WIN32
+    // (RADV) Mesa's submit thread, read by Mesa in this vkCreateDevice (radv_submit_thread.h): set for it unless the user set
+    // MESA_VK_ENABLE_SUBMIT_THREAD or RX_VK_RADV_SUBMIT_THREAD=0, and taken out again once the device is made
+    const auto submit_thread = radv_submit_thread::decide(fadd_driver.driverID == VK_DRIVER_ID_MESA_RADV,
+                                                          getenv("MESA_VK_ENABLE_SUBMIT_THREAD"), getenv("RX_VK_RADV_SUBMIT_THREAD"));
+    switch (submit_thread) {
+    case radv_submit_thread::Choice::set_on:
+        setenv("MESA_VK_ENABLE_SUBMIT_THREAD", "1", 0);
+        logf("vk: RADV: Mesa's submit thread on (MESA_VK_ENABLE_SUBMIT_THREAD unset; RX_VK_RADV_SUBMIT_THREAD=0: off)");
+        break;
+    case radv_submit_thread::Choice::user_set:
+        logf("vk: RADV: Mesa's submit thread left as the user set it (MESA_VK_ENABLE_SUBMIT_THREAD=%s)",
+             getenv("MESA_VK_ENABLE_SUBMIT_THREAD"));
+        break;
+    case radv_submit_thread::Choice::switch_off:
+        logf("vk: RADV: Mesa's submit thread off by the switch (RX_VK_RADV_SUBMIT_THREAD=0: Mesa's own choice)");
+        break;
+    case radv_submit_thread::Choice::not_radv:
+        break;
+    }
+#endif
+    const VkResult created = vkCreateDevice(dev.physical, &ci, nullptr, &dev.device);
+#ifndef _WIN32
+    if (submit_thread == radv_submit_thread::Choice::set_on) unsetenv("MESA_VK_ENABLE_SUBMIT_THREAD");
+#endif
+    if (created != VK_SUCCESS) {
         logf("vk: vkCreateDevice failed");
         return false;
     }

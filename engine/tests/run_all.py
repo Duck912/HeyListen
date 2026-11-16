@@ -49,6 +49,7 @@ ARGS = {
     "tests/test_cpu_temp.py": ["--cxx", "{cxx}"],
     "tests/test_exe_base.py": ["--cxx", "{cxx}"],
     "tests/test_sparse_queue.py": ["--cxx", "{cxx}"],
+    "tests/test_radv_submit_thread.py": ["--cxx", "{cxx}"],
     "tests/test_shadow_fast.py": ["--cxx", "{cxx}"],
     "tests/test_collect_fast.py": ["--cc", "{cxx}"],
     "tests/test_late_fix_order.py": ["--cxx", "{cxx}"],
