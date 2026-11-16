@@ -1459,8 +1459,8 @@ an address outside the NVN table). Direct calls: the preparation 3 times, `0x857
 conditions hold (mask, model-class test, no virtual hook); any other entry keeps calling the method translated, as for
 `0x80078fc0` today. The check is the one of section 13. To size it first: with `HL_GFX_VAR=2` count, for each entry that
 declines because of this method, the table entry address (which of the bodies it selects). **That census, the table's
-index bits, regions 3-6 line by line, and the 14 calls through vtable +40 are not done**: this session did not get a
-whole-machine slot in time, and the bodies were mapped by their call structure, not read instruction by instruction.
+index bits, regions 3-6 line by line, and the 14 calls through vtable +40 are not done**: the session used its game time for the merge validation,
+and the bodies were mapped by their call structure, not read instruction by instruction.
 Nothing is built.
 
 ## Not established
