@@ -1199,7 +1199,17 @@ uint64_t cap_ranges_ver = 1;   // (any of the captures' range lists changed: cap
 std::vector<std::pair<uint64_t, uint64_t>> pool_cap_ranges;   // (merged; cap_ranges_mu)
 uint32_t pool_cap_gen = 0;
 uint64_t captures_made = 0, pool_cap_built = 0;              // (cap_ranges_mu)
-std::unordered_map<uint64_t, uint64_t> pool_first_seen;     // (a pool's start -> the capture it was first seen at)
+// (the pools' starts are 64 KB aligned, and std::hash<uint64_t> is the identity in libc++ and libstdc++. With the list full,
+// seen.reserve(8192) asks for a power of two, which libc++ keeps and masks: every start fell in bucket 0, and each find and
+// insert walked the whole chain. ~20 ms a refresh in the Market, on the replay thread and on the game's main thread waiting
+// for cap_ranges_mu at its submits (the slow submits' "memory sync". tests/test_pool_start_hash.py). Their bits mixed first)
+struct PoolStartHash {
+    size_t operator()(uint64_t k) const {
+        k *= 0x9E3779B97F4A7C15ull;
+        return (size_t)(k ^ (k >> 32));
+    }
+};
+std::unordered_map<uint64_t, uint64_t, PoolStartHash> pool_first_seen;     // (a pool's start -> the capture it was first seen at)
 uint64_t capture_pool_max() {
     static const uint64_t v = (getenv("RX_VK_CAPTURE_POOL_MB") ? (uint64_t)atoll(getenv("RX_VK_CAPTURE_POOL_MB")) : 64) << 20;
     return v;
@@ -1265,7 +1275,7 @@ void refresh_pool_ranges_locked() {   // (cap_ranges_mu held)
     static std::vector<std::array<uint64_t, 2>> list(8192);
     const int n = host->gpu_pools(reinterpret_cast<uint64_t(*)[2]>(list.data()), (int)list.size());
     std::vector<std::pair<uint64_t, uint64_t>> v, every;
-    std::unordered_map<uint64_t, uint64_t> seen;
+    std::unordered_map<uint64_t, uint64_t, PoolStartHash> seen;
     seen.reserve((size_t)std::max(n, 0));
     for (int i = 0; i < n; i++) {
         if (list[i][1] && list[i][0] < (1ull << 40))
