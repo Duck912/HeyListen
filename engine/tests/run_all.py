@@ -75,6 +75,7 @@ ARGS = {
     "tests/test_present_geometry_trace.py": ["--cxx", "{cxx}"],
     "tests/test_screensaver.py": ["--cc", "gcc"],
     "tests/test_update_order.py": ["--cc", "gcc"],
+    "tests/test_sdl_audio_reopen.py": ["--cc", "gcc"],
     "tests/test_guestpages.py": ["--cc", "gcc"],
     "tests/test_hl_trace.py": ["--cc", "gcc"],
     "tests/test_windows_display_startup.py": ["--cc", "gcc"],
@@ -192,6 +193,7 @@ SKIP = {
     "tests/test_oot_saves.py": ({"windows"}, "the save script's folder discovery is the Linux one (on Windows Hookshot's saves are in the game folder: --hookshot)"),
     "tests/test_linux_driver_fault_guard.py": ({"windows"}, "POSIX signals: the Linux guard"),
     "tests/test_jt_mark_export.py": ({"windows"}, "the Linux exe's dynamic exports (on Windows the mark is a DLL export)"),
+    "tests/test_sdl_audio_reopen.py": ({"windows"}, "Linux's waveOut on SDL (host/posix): Windows plays through its own"),
 }
 # (spirv-val: SPIRV-Tools comes with the Linux runner's packages, not on Windows)
 for _name in ("nx2/test_texture_phi_dominance.py", "nx2/test_unsigned_image_types.py", "nx2/test_depth_sample_types.py", "nx2/test_default_point_size.py", "nx2/test_draw_parameters.py", "nx2/test_coop_spirv.py",
