@@ -135,7 +135,8 @@ case-sensitive, and an unknown one is ignored.
 | `HOS_SAMPLE_ALL=<file>` | Every game and renderer thread every 2 ms while `<file>.go` exists (needs `HOS_PROFILE`); `scripts/crit.py`, `scripts/vkprof.py` and `scripts/hotlist.py` read it |
 | `HOS_THREAD_TIMES=<seconds>` | Every interval, the threads that used over 5% of a core |
 | `HOS_FPS_LOG` (set), `HOS_PRESENT_TRACE=<csv>` | The game's frame limiter, VRR flags and nominal rate every 300 presents; a CSV line per game present |
-| `RX_VK_FRAME_LOG=<csv>` | A CSV line per present: frame, seconds, frame time in ms |
+| `RX_VK_FRAME_LOG=<csv>` | A CSV line per present: frame, seconds, frame time in ms, QueryPerformanceCounter ticks (Windows) |
+| `HOS_LOG_QPC=1` | Every log line ends with ` @qpc <ticks>`, the clock of PresentMon's `TimeInQPC` and of the frame log's last column |
 | `RX_VK_PASS_TIMING=1` or `2` | GPU time per pass (2: per program too), logged every 600 presents |
 | `RX_VK_SLOW_LOG=<ms>` | The replay's times for each frame that took longer than this |
 | `HOS_PGO=<file>` | In a run of an `RX_PGO=gen` build: `<file>.reset` clears the counters, `<file>.dump` writes them to `<file>`. It is read before `hookshot_env.txt`, so set it in the environment |

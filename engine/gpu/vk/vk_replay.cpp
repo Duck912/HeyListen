@@ -6096,11 +6096,18 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         static FILE* fl = getenv("RX_VK_FRAME_LOG") ? std::fopen(getenv("RX_VK_FRAME_LOG"), "w") : nullptr;
         static std::chrono::steady_clock::time_point first, prev;
         static uint64_t frames;
+        // (HeyListen) and the QueryPerformanceCounter value of the present, PresentMon's TimeInQPC clock and HOS_LOG_QPC's:
+        // a long frame then falls next to the log lines around it (0 where there is no such counter)
         if (fl) {
             const auto t = std::chrono::steady_clock::now();
-            if (!frames) first = prev = t, std::fputs("frame,time_s,frametime_ms\n", fl);
-            std::fprintf(fl, "%llu,%.4f,%.3f\n", (unsigned long long)frames, std::chrono::duration<double>(t - first).count(),
-                         std::chrono::duration<double, std::milli>(t - prev).count());
+            long long qpc = 0;
+#ifdef _WIN32
+            LARGE_INTEGER q;
+            if (QueryPerformanceCounter(&q)) qpc = (long long)q.QuadPart;
+#endif
+            if (!frames) first = prev = t, std::fputs("frame,time_s,frametime_ms,qpc\n", fl);
+            std::fprintf(fl, "%llu,%.4f,%.3f,%lld\n", (unsigned long long)frames, std::chrono::duration<double>(t - first).count(),
+                         std::chrono::duration<double, std::milli>(t - prev).count(), qpc);
             prev = t;
             if (++frames % 60 == 0) std::fflush(fl);
         }
