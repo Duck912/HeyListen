@@ -553,7 +553,7 @@ Shader::Profile make_profile() {
     p.lower_left_origin_mode = false;
     p.need_declared_frag_colors = false;
     p.max_subgroup_size = 32;
-    p.min_ssbo_alignment = dev.props.limits.minStorageBufferOffsetAlignment;
+    p.min_ssbo_alignment = storage_binding_align();   // (at least 16: vk_internal.h)
     return p;
 }
 
@@ -567,7 +567,7 @@ Shader::HostTranslateInfo host_info() {
     h.needs_demote_reorder = false;
     h.support_snorm_render_buffer = true;
     h.support_viewport_index_layer = true;
-    h.min_ssbo_alignment = dev.props.limits.minStorageBufferOffsetAlignment;
+    h.min_ssbo_alignment = storage_binding_align();
     h.support_geometry_shader_passthrough = false;
     h.support_conditional_barrier = true;   // (barriers in loops kept: see the WebGPU renderer's 4f5e3e6)
     return h;
@@ -1122,6 +1122,13 @@ uint64_t disk_stamp() {
     if (dev.float_atomic_add) {
         const uint32_t float_add = 1;
         add(&float_add, sizeof float_add);
+    }
+    // (hookshot #2442: and where the translation starts a storage binding, when that is not the device's own alignment (AMD's and
+    // ANV's 4 raised to 16, vk_internal.h): offsets are counted from there, so a cache made at 4 is no use at 16. Added only then,
+    // so NVIDIA's stamp, and RX_VK_SSBO_DEVICE_ALIGN=1's, are what they were)
+    if (storage_binding_align() != dev.props.limits.minStorageBufferOffsetAlignment) {
+        const uint32_t salign = (uint32_t)storage_binding_align();
+        add(&salign, sizeof salign);
     }
     for (char** e = _environ; e && *e; e++)
         for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH", "RX_VK_NO_INVARIANT", "RX_VK_NO_NAN_GUARD", "RX_VK_MARKERS", "EDEN_"})
