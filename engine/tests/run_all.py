@@ -30,6 +30,8 @@ ARGS = {
     "tests/test_mma_software.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "tests/test_native_float_atomic_add.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "tests/test_shader_module_guard.py": ["--cxx", "{cxx}"],
+    "tests/test_flat_map.py": ["--cxx", "{cxx}"],
+    "tests/test_replay_copies.py": ["--cxx", "{cxx}"],
     "tests/test_png_publication.py": ["--cxx", "{cxx}"],
     "tests/test_framelog_sink.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_capture_slot_ownership.py": ["--cxx", "{cxx}"],
