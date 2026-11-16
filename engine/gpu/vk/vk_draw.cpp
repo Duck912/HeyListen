@@ -4418,6 +4418,25 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
     d.sops[1][0] = stencil_op(s.ds.fail_b), d.sops[1][1] = stencil_op(s.ds.zpass_b), d.sops[1][2] = stencil_op(s.ds.zfail_b);
     d.scmpop[0] = compare_op(s.ds.sf_f), d.scmpop[1] = compare_op(s.ds.sf_b);
     d.discard = s.raster_discard && !sw().ignore_discard;
+    {   // (diagnosis, default off) RX_VK_DISCARD_PROG=<key start>[,...]: those programs' draws run their geometry stages only (rasterizer
+        // discard), so with RX_VK_PASS_TIMING=2 the run's time minus the normal run's is the pixel work: the picture is wrong
+        static const std::vector<std::string> keys = [] {
+            std::vector<std::string> v;
+            for (const char* q = getenv("RX_VK_DISCARD_PROG"); q && *q;) {
+                const char* e = q;
+                while (*e && *e != ',') e++;
+                v.emplace_back(q, e);
+                q = *e ? e + 1 : e;
+            }
+            return v;
+        }();
+        if (!keys.empty() && cur_program) {
+            char k[20];
+            snprintf(k, sizeof k, "%016llx", (unsigned long long)cur_program->key);
+            for (const std::string& w : keys)
+                if (!w.empty() && strncmp(k, w.c_str(), w.size()) == 0) d.discard = VK_TRUE;
+        }
+    }
     d.poly = s.poly.mode == 0 ? VK_POLYGON_MODE_POINT : s.poly.mode == 1 ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
     static const bool fp_lines = getenv("RX_VK_FOOTPRINT_LINES") != nullptr;   // (the footprints as wireframes)
     if (fp && fp_lines) d.poly = VK_POLYGON_MODE_LINE;
@@ -5088,9 +5107,9 @@ void end_pass(VkCommandBuffer cmd) {
     }
     if (gprof_on()) {
         char label[160];
-        snprintf(label, sizeof label, "pass %ux%u f%d %dc%s, %s draws, first prog %016llx, last prog %016llx", ps.width, ps.height,
+        snprintf(label, sizeof label, "pass %ux%u f%d %dc%s, %s draws, %zu sampled, first prog %016llx, last prog %016llx", ps.width, ps.height,
                  (int)ps.format0, ps.n, ps.depth ? "+d" : "", ps.draws > 256 ? ">256" : ps.draws > 32 ? "33-256" : ps.draws > 4 ? "5-32" : "0-4",
-                 (unsigned long long)ps.first_prog, (unsigned long long)ps.prog);
+                 ps.sampled.size(), (unsigned long long)ps.first_prog, (unsigned long long)ps.prog);
         gprof_end(cmd, label, ps.draws);
     }
     if (dump_on())
@@ -6166,6 +6185,9 @@ VkBuffer mesh_ring = VK_NULL_HANDLE;
 VmaAllocation mesh_ring_mem = nullptr;
 std::mutex mesh_ring_mu;
 uint64_t mesh_ring_at = 0;
+VkBuffer mesh_dbg = VK_NULL_HANDLE;   // (RX_VK_G3_MESHCOUNT)
+VmaAllocation mesh_dbg_mem = nullptr;
+void* mesh_dbg_ptr = nullptr;
 thread_local VkBuffer mesh_conv_buf = VK_NULL_HANDLE;   // (the converted records for the draw in progress)
 thread_local uint64_t mesh_conv_off = 0;
 bool mesh_indirect_convert(VkCommandBuffer cmd, const DrawArgs& d) {
@@ -6208,11 +6230,49 @@ bool mesh_indirect_convert(VkCommandBuffer cmd, const DrawArgs& d) {
     std::vector<VkBufferCopy> regions(n);
     for (uint32_t i = 0; i < n; i++) regions[i] = {args.offset + (uint64_t)i * stride + 4 * word, off + (uint64_t)i * 12, 4};
     vkCmdCopyBuffer(cmd, args.buffer, mesh_ring, n, regions.data());
+    {   // (diagnosis, default off) RX_VK_G3_MESHCOUNT=1: the same counts into a host-visible twin of the ring, for mesh_count_note
+        static const bool on = getenv("RX_VK_G3_MESHCOUNT") != nullptr;
+        if (on) {
+            if (!mesh_dbg && !create_buffer(kMeshRing, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, mesh_dbg, mesh_dbg_mem, &mesh_dbg_ptr)) mesh_dbg = VK_NULL_HANDLE;
+            if (mesh_dbg) {
+                std::vector<VkBufferCopy> r2(n);
+                for (uint32_t i = 0; i < n; i++) r2[i] = {args.offset + (uint64_t)i * stride + 4 * word, off + (uint64_t)i * 12, 4};
+                vkCmdCopyBuffer(cmd, args.buffer, mesh_dbg, n, r2.data());
+            }
+        }
+    }
     mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     mb.dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT, mb.dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
     vkCmdPipelineBarrier2(cmd, &di);
     mesh_conv_buf = mesh_ring, mesh_conv_off = off;
     return true;
+}
+/// (RX_VK_G3_MESHCOUNT=1, diagnosis) an indirect mesh draw of program key put its record at ring offset off: 2000 draws on, the count the GPU
+/// wrote there is read, and every 4000 of them the programs with the most workgroups are logged (draws, mean, largest, sum a frame)
+void mesh_count_note(uint64_t key, uint64_t off) {
+    static std::mutex mu;
+    static std::deque<std::pair<uint64_t, uint64_t>> q;
+    struct Agg { uint64_t n = 0, sum = 0, most = 0; };
+    static std::unordered_map<uint64_t, Agg> agg;
+    static uint64_t reads = 0;
+    std::lock_guard lk(mu);
+    q.emplace_back(key, off);
+    if (q.size() <= 2000 || !mesh_dbg_ptr) return;
+    const auto [k, o] = q.front();
+    q.pop_front();
+    const uint32_t v = *(volatile const uint32_t*)((const uint8_t*)mesh_dbg_ptr + o);
+    Agg& a = agg[k];
+    a.n++, a.sum += v, a.most = std::max<uint64_t>(a.most, v);
+    if (++reads % 4000 != 0) return;
+    std::vector<std::pair<uint64_t, uint64_t>> top;
+    for (const auto& [kk, aa] : agg) top.emplace_back(aa.sum, kk);
+    std::sort(top.rbegin(), top.rend());
+    for (size_t i = 0; i < top.size() && i < 14; i++) {
+        const Agg& aa = agg[top[i].second];
+        logf("vk: mesh counts prog %016llx: %llu draws, %.1f workgroups mean, %llu most, %llu in all", (unsigned long long)top[i].second,
+             (unsigned long long)aa.n, (double)aa.sum / aa.n, (unsigned long long)aa.most, (unsigned long long)aa.sum);
+    }
+    agg.clear();
 }
 } // namespace
 // (hookshot) NVN's indirect mesh draws hold (count, first) and Vulkan's (x, y, z): given as they were, every one drew y = first = 0 workgroups,
@@ -7200,6 +7260,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             if (mesh_conv_buf) {   // (EvilOOT: the records as {count, 1, 1}, mesh_indirect_convert)
                 // (hookshot: as many records as mesh_indirect_convert wrote, not the game's maximum)
                 const uint32_t conv_n = (uint32_t)std::clamp(d.max, 1, 4096);
+                if (mesh_dbg) mesh_count_note(p.key, mesh_conv_off);
                 if (cnt && vkCmdDrawMeshTasksIndirectCountEXT)
                     vkCmdDrawMeshTasksIndirectCountEXT(cmd, mesh_conv_buf, mesh_conv_off, cnt.buffer, cnt.offset, conv_n, 12);
                 else
@@ -9031,8 +9092,9 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     }
     if (dump_on() && dump_ssbo_wanted(p.key)) dump_ssbos(cmd, p, "after");
     if (gprof_on()) {
-        char label[96];
-        snprintf(label, sizeof label, "dispatch %s prog %016llx", indirect ? "indirect" : "", (unsigned long long)p.key);
+        char label[128];   // (G2: the grid, and "mma" for the game's matrix networks, native or software multiplies)
+        snprintf(label, sizeof label, "dispatch %s prog %016llx%s grid %ux%ux%u", indirect ? "indirect" : "", (unsigned long long)p.key,
+                 !p.stages.empty() && p.stages[0].info.uses_cooperative_matrix ? " mma" : "", indirect ? 0u : x, indirect ? 0u : y, indirect ? 0u : z);
         gprof_end(cmd, label);
     }
     st_dispatches++;
