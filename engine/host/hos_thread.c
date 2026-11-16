@@ -35,7 +35,7 @@ struct HosThread {
     /* virtual cores (HOS_VCORES): the core held + 1 (0: none), the last one, a better waiter's request, queued */
     int vc_held, vc_last, vc_queued;
     volatile int vc_kick;
-    int64_t vc_since;
+    int64_t vc_since, vc_took;   /* (when it began to wait for a core; when it took the one it holds) */
     int bg_kind; int64_t bg_since;   /* (HeyListen, sprint 5: HOS_BG_THROTTLE, hos_vcore_checkpoint) */
     /* (HOS_CORE_COUNT, TICK-062 A10) calls that ask for the core number (HLE, svc 0x10), waits for a virtual core and their time */
     int64_t cc_hle, cc_svc, cc_vcw, cc_vcw_ns;
@@ -269,13 +269,35 @@ static void log_flush(void) {}
 
 void hos_log_flush(void) { log_flush(); }
 
+/* One log line. qpc >= 0: the line ends with " @qpc <ticks>", the QueryPerformanceCounter value when it was logged, the
+   clock PresentMon's TimeInQPC column counts in: a line then falls on the frames of the capture (the v0.4.0 benchmark's
+   100-3700 ms frames on the PC 3050 could not be put next to the log's 5 s, cold-page and vcore lines without it) */
+static int log_format(char *line, size_t cap, const char *who, const char *msg, long long qpc) {
+    return qpc >= 0 ? snprintf(line, cap, "[hos %s] %s @qpc %lld\n", who, msg, qpc)
+                    : snprintf(line, cap, "[hos %s] %s\n", who, msg);
+}
+
+/* HOS_LOG_QPC=1: every line stamped so (log_format); off by default, the lines as before */
+static long long log_qpc_now(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("HOS_LOG_QPC");
+        on = e && atoi(e) != 0;
+    }
+    if (!on) return -1;
+    LARGE_INTEGER q;
+    QueryPerformanceCounter(&q);
+    return (long long)q.QuadPart;
+}
+
 void hos_log(const char *fmt, ...) {
-    char buf[1024], line[1100];
+    char buf[1024], line[1152];   /* (room for the name, the message and the stamp) */
+    const long long qpc = log_qpc_now();
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
-    snprintf(line, sizeof line, "[hos %s] %s\n", cur ? cur->name : "host", buf);
+    log_format(line, sizeof line, cur ? cur->name : "host", buf, qpc);
     if (log_queue(line)) return;
     fputs(line, stderr);
     fflush(stderr);
@@ -1274,6 +1296,7 @@ static void vc_take(HosThread *t, int c) {
     t->vc_held = c + 1;
     t->vc_last = c + 1;
     t->vc_kick = 0;
+    t->vc_took = hos_now_ns();
 }
 static void vc_dequeue(HosThread *t) {
     for (int i = 0; i < vc_nq; i++)
@@ -1400,13 +1423,18 @@ static void vc_acquire(HosThread *t) {
             static int logged;
             if (logged < 40) {
                 logged++;
-                char who[256] = "";
+                /* (each holder with how long it has held its core: a holder that took it after this wait began handed
+                   it on in between; one that has held it all along ran that long without an nn::os call, an SVC or a
+                   loop poll, or sat blocked in host code with its core) */
+                char who[320] = "";
                 int len = 0;
-                for (int k = 0; k < vc_cores() && len < 200; k++)
+                const int64_t now = hos_now_ns();
+                for (int k = 0; k < vc_cores() && len < 240; k++)
                     if (m >> k & 1)
-                        len += snprintf(who + len, sizeof who - len, " core %d: %s (%d)%s;", k,
+                        len += snprintf(who + len, sizeof who - len, " core %d: %s (%d)%s, held %.0f ms;", k,
                                         vc_owner[k] ? vc_owner[k]->name : "-", vc_owner[k] ? vc_owner[k]->priority : 0,
-                                        vc_owner[k] && vc_owner[k]->vc_kick ? " asked" : "");
+                                        vc_owner[k] && vc_owner[k]->vc_kick ? " asked" : "",
+                                        vc_owner[k] ? (now - vc_owner[k]->vc_took) / 1e6 : 0.0);
                 hos_log("vcores: %s (priority %d) ran without a core after %.1f ms:%s", t->name, t->priority, waited / 1e6, who);
             }
             break;
