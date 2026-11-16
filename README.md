@@ -33,9 +33,24 @@ Problems: [issues](https://github.com/Sacrappy/HeyListen/issues) (include your G
 
 ## Performance
 
-Average frame rate, **frame generation off**, windowed, with the game's frame limit lifted. Machine: Ryzen 7 7800X3D, RTX 5070 12 GB, Windows 11 (scripted bench scenes from `tools/bench/`, picture and game speed checked on every run).
+**v0.4.0 against the other Ocarina of Time ports** (2026-11-16): in-game frame rate only, 2560x1440, 3D scene at
+100 %, no upscaler, no frame generation, uncapped, Link idle in each zone loaded from the same saves; PresentMon over
+the 40 s after each build's "in play" marker, without its first 3 s; the mean of two runs per zone.
 
-| Scene | Hookshot (fork point) | HeyListen now |
+| Machine | Zones | NX2navi 0.11.0-rc4 | Longshot v3.0.0-rc.4 | **HeyListen v0.4.0** |
+|---|---:|---:|---:|---:|
+| i5-10400F, RTX 3050 8 GB | 17 | 29.7 fps (1% low 22.6) | 35.6 fps (28.1) | **40.8 fps** (24.4) |
+| Ryzen 7 7800X3D, RTX 5070 12 GB | 13 | 68.0 fps (35.5) | 86.0 fps (51.4) | **96.2 fps** (43.6) |
+
+- HeyListen has the highest average frame rate in 14 of 17 zones on the RTX 3050 and 10 of 13 on the RTX 5070
+  (+15 % and +12 % over Longshot on average, +37 % and +41 % over NX2navi).
+- Its 1% lows are still below Longshot's: some frames in steady play take 100-350 ms. That is the next work item.
+- Per zone, the method and every caveat (present modes, a main-PC series run while the PC was in use, NVIDIA's shader
+  cache at its 1 GB default there): [docs/benchmarks/2026-11-16-v0.4.0-zones.md](docs/benchmarks/2026-11-16-v0.4.0-zones.md).
+
+**Against Hookshot, where HeyListen forked from.** Average frame rate, **frame generation off**, windowed, with the game's frame limit lifted. Machine: Ryzen 7 7800X3D, RTX 5070 12 GB, Windows 11 (scripted bench scenes from `tools/bench/`, picture and game speed checked on every run).
+
+| Scene | Hookshot (fork point) | HeyListen (Sprint 5) |
 |---|---:|---:|
 | Kokiri Forest | 54.2 fps | **90.0 fps** |
 | Castle Town (the Market) | 31-43 fps while moving | **89.3 fps** |
