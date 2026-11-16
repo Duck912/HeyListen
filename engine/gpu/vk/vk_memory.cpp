@@ -723,6 +723,15 @@ inline uint32_t page_gen(uint64_t p) {
 }
 uint32_t gen_now = 1;
 uint64_t pages_collected = 0;
+// (ported from Longshot 95475b67, #1083) memory_collect_written takes every page's write mark, then marks the pages in the captured
+// ranges again for the next capture. A submit's capture made on the game's thread in between (capture_make's scan) found those
+// pages unmarked and left them out, and the work it was taken for read an older capture's copy of them: Kokiri Forest's ground
+// mist gone for a frame. The collection holds collect_mu over the window and the capture's scan takes it: a capture that comes
+// then waits for the collection. Lock order: collect_mu, then cap_ranges_mu (capture_ranges_merged), cap_excl_mu and the host's map
+// lock (collect_written's ranges, gpu_ptr). capture_make takes collect_mu with none of those held, and nothing is taken under it
+// but the copy helpers' parts of the scan (they take no lock of ours). The precopy thread's scans are not held: they only take
+// marks earlier, and a page they miss in the window is still marked for the capture
+std::mutex collect_mu;
 
 // (TICK-036, RX_VK_LOG_INHERIT=<hex guest address>: that page's stamps and the retired mirrors a new mirror takes over it)
 uint64_t inherit_watch_page() {
@@ -757,29 +766,35 @@ void memory_collect_written() {
         born.clear();
     }
     uint32_t* pages = nullptr;
-    const int64_t n = host->collect_written(&pages);
-    if (n > 0) {
-        const uint32_t g = ++gen_now;
-        // (the captured ranges once a call: a lock, a pool-list refresh and three searches for every dirty page cost the
-        // replay thousands of lock cycles a submit, the cost that retired gpu_pages' lock below)
-        const auto& owned = capture_ranges_merged();
-        const auto in_capture = [&owned](uint64_t guest) {
-            auto it = std::upper_bound(owned.begin(), owned.end(), std::make_pair(guest, ~uint64_t(0)));
-            return it != owned.begin() && guest < std::prev(it)->second;
-        };
-        const bool only_gpu = cap_only_gpu() == 1;
-        for (int64_t i = 0; i < n; i++) {
-            const uint64_t guest = (uint64_t)pages[i] << kPageShift;
-            // (RX_VK_CAP_ONLY_GPU=1: heap memory between the pools of an imported chunk, which no GPU address reaches: not
-            // stamped, so no mirror sync copies it either)
-            if (only_gpu && cap_excl_hit(guest, guest + 4096)) continue;
-            if (!owned.empty() && in_capture(guest)) {   // (written after its submit's capture: the next capture takes it, as it is then)
-                uint64_t avail = 0;
-                if (const uint8_t* q = host->gpu_ptr(guest, &avail)) host->mark_written(q, 4096);
-                continue;
+    int64_t n = 0;
+    {   // (from taking the marks to marking the captured pages again: no capture scans in between, collect_mu)
+        std::lock_guard lk(collect_mu);
+        n = host->collect_written(&pages);
+        if (n > 0) {
+            const uint32_t g = ++gen_now;
+            // (the captured ranges once a call: a lock, a pool-list refresh and three searches for every dirty page cost the
+            // replay thousands of lock cycles a submit, the cost that retired gpu_pages' lock below)
+            const auto& owned = capture_ranges_merged();
+            const auto in_capture = [&owned](uint64_t guest) {
+                auto it = std::upper_bound(owned.begin(), owned.end(), std::make_pair(guest, ~uint64_t(0)));
+                return it != owned.begin() && guest < std::prev(it)->second;
+            };
+            const bool only_gpu = cap_only_gpu() == 1;
+            for (int64_t i = 0; i < n; i++) {
+                const uint64_t guest = (uint64_t)pages[i] << kPageShift;
+                // (RX_VK_CAP_ONLY_GPU=1: heap memory between the pools of an imported chunk, which no GPU address reaches: not
+                // stamped, so no mirror sync copies it either)
+                if (only_gpu && cap_excl_hit(guest, guest + 4096)) continue;
+                if (!owned.empty() && in_capture(guest)) {   // (written after its submit's capture: the next capture takes it, as it is then)
+                    uint64_t avail = 0;
+                    if (const uint8_t* q = host->gpu_ptr(guest, &avail)) host->mark_written(q, 4096);
+                    continue;
+                }
+                stamp_page(pages[i], g);
             }
-            stamp_page(pages[i], g);
         }
+    }
+    if (n > 0) {
         pages_collected += (uint64_t)n;
         cap_view_bump();
     }
@@ -2582,6 +2597,21 @@ void copy_slots(const uint32_t* pages, const uint32_t* slots, size_t n, uint8_t*
     }
     if (stream) stream_fence();
 }
+/// (capture_make, the game's thread) The pages the CPU wrote in the captured ranges since they were last taken, their marks cleared:
+/// *pages is the list, and *host_pages the host's own, to be freed with host->free_pages when it is not null. Not while the
+/// replay's collection is marking some of those pages again (collect_mu, memory_collect_written; Longshot 95475b67, #1083)
+int64_t capture_scan(const std::vector<std::pair<uint64_t, uint64_t>>& ranges, const uint32_t** pages, uint32_t** host_pages) {
+    if (ranges.empty() || !host->collect_written_in) return 0;
+    std::lock_guard lk(collect_mu);
+    if (scan_split_on()) {
+        const std::vector<uint32_t>& v = collect_split(ranges);
+        *pages = v.data();
+        return (int64_t)v.size();
+    }
+    const int64_t n = host->collect_written_in(reinterpret_cast<const uint64_t(*)[2]>(ranges.data()), (int)ranges.size(), host_pages);
+    *pages = *host_pages;
+    return n;
+}
 /// (the pages the CPU wrote since the last capture, copied now: a submit's capture, or memory_capture_now's)
 std::unique_ptr<Capture> capture_make() {
     if (!capture_on()) return nullptr;
@@ -2621,16 +2651,7 @@ std::unique_ptr<Capture> capture_make() {
     const auto t_lock = std::chrono::steady_clock::now();
     uint32_t* host_pages = nullptr;   // (the host's list, freed below)
     const uint32_t* pages = nullptr;
-    int64_t n = 0;
-    if (!mirrored.empty() && host->collect_written_in) {
-        if (scan_split_on()) {
-            const std::vector<uint32_t>& v = collect_split(mirrored);
-            pages = v.data(), n = (int64_t)v.size();
-        } else {
-            n = host->collect_written_in(reinterpret_cast<const uint64_t(*)[2]>(mirrored.data()), (int)mirrored.size(), &host_pages);
-            pages = host_pages;
-        }
-    }
+    int64_t n = capture_scan(mirrored, &pages, &host_pages);
     const auto t_scan = std::chrono::steady_clock::now();
     // (TICK-043) the copied-ahead pages and these into one list (capture_merge.h): the new ones after the copied ones; or, when a
     // copied page is outside the ranges now or the buffer has no room, every page copied now as without the thread
