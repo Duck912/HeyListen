@@ -214,7 +214,9 @@ static int64_t heap_sweeps;
    (NtAllocateVirtualMemory: AllocateMemoryPages, a first touch) sat that long with its virtual core, and every thread
    waiting for that core ran without one after 250 ms: the 165-317 ms frames of steady play (temple of time, 3 runs of 3) */
 #define COLD_MAX_LISTED 32768
-#define COLD_LIST_SCAN_PAGES (128 * 1024)   /* (512 MB looked at a pass: pages not committed cost a look too) */
+/* (1 GB looked at a pass, ~40 ms of calls of under 0.3 ms each: pages not committed cost a look too; at 512 MB a sweep took
+   3x the VirtualQuery walk's and 0.7 GB fewer heap pages were out of the working set after 100 s) */
+#define COLD_LIST_SCAN_PAGES (256 * 1024)
 static uint64_t listed[COLD_MAX_LISTED][2];
 static int heaps_listed(void) {
     int n = 0;
