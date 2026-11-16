@@ -4471,10 +4471,15 @@ void texture_frame(uint64_t completed) {
                  (unsigned long long)st_pool_destroyed, (unsigned long long)pool_n, (unsigned long long)(pool_bytes >> 20),
                  pool_cap() ? (pool_pressed ? ", VRAM short: given back" : "") : " (RX_VK_TARGET_POOL_MB=0)");
         }
+        uint32_t samplers_made = 0, samplers_waiting = 0, samplers_limit = 0;   // (longshot #442: a count that grows without end shows)
+        uint64_t samplers_retired = 0, samplers_destroyed = 0;
+        sampler_counts(&samplers_made, &samplers_waiting, &samplers_retired, &samplers_destroyed, &samplers_limit);
         logf("vk: VRAM: %llu MB used of %llu MB allowed (%llu MB of it free in the blocks); textures %llu MB (budget %llu "
-             "MB), %zu textures", (unsigned long long)(used >> 20), (unsigned long long)(allowed >> 20),
+             "MB), %zu textures; samplers %u made (the device allows %u), %u retired waiting for the GPU, %llu retired and %llu destroyed "
+             "so far", (unsigned long long)(used >> 20), (unsigned long long)(allowed >> 20),
              (unsigned long long)(block_free >> 20), (unsigned long long)(total_bytes >> 20),
-             (unsigned long long)(budget >> 20), textures.size());
+             (unsigned long long)(budget >> 20), textures.size(), samplers_made, samplers_limit, samplers_waiting,
+             (unsigned long long)samplers_retired, (unsigned long long)samplers_destroyed);
         {   // (TICK-023) by category: textures by kind, the mirrors, the rest (pools' staging, pipelines, streams, swapchain,
             // upscaler, VMA's free block space), against the heaps' budget
             uint64_t k_astc = 0, k_rt = 0, k_fin = 0, k_other = 0;
