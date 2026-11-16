@@ -3452,7 +3452,17 @@ void vw_forget(const Texture& t) {   // (the entry goes; other listed textures a
 VkCommandPool rb_pool = VK_NULL_HANDLE;
 VkCommandBuffer rb_cmd = VK_NULL_HANDLE;
 VkFence rb_fence = VK_NULL_HANDLE;
+// (a read-back whose wait timed out: still on the GPU, its command buffer and fence in use until rb_fence signals. rb_lost:
+// a wait failed otherwise, the device lost: no read-back from then on, and none waited for. Ported from Longshot b8d2b04e, #553)
+bool rb_pending = false, rb_lost = false;
 bool readback_begin() {
+    if (rb_lost) return false;
+    if (rb_pending) {
+        const VkResult r = vkWaitForFences(dev.device, 1, &rb_fence, VK_TRUE, 0);
+        if (r == VK_TIMEOUT) return false;
+        rb_pending = false, rb_lost = r != VK_SUCCESS;
+        if (rb_lost) return false;
+    }
     if (!rb_pool) {
         VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
         pi.queueFamilyIndex = dev.queue_family;
@@ -3497,7 +3507,9 @@ bool readback_submit_wait() {
         if (vkQueueSubmit2(dev.queue, 1, &si, rb_fence) != VK_SUCCESS) return false;
         vk_tl_note("tex-rb-submit-");
     }
-    return vkWaitForFences(dev.device, 1, &rb_fence, VK_TRUE, 5000000000ull) == VK_SUCCESS;
+    const VkResult r = vkWaitForFences(dev.device, 1, &rb_fence, VK_TRUE, 5000000000ull);
+    rb_pending = r == VK_TIMEOUT, rb_lost = r != VK_SUCCESS && r != VK_TIMEOUT;
+    return r == VK_SUCCESS;
 }
 /// A texture's write-back: its image's levels and layers read back, swizzled as the storage lays them out, and written into
 /// its memory within [clip_lo, clip_hi). The GPU half (flush_record) goes into rb_cmd, the CPU half (flush_finish) runs once
@@ -3513,6 +3525,7 @@ struct Flush {
     VmaAllocation alloc = nullptr;
     void* map = nullptr;
     bool ok = false;
+    bool busy = false;   // (not written back: a read-back is still on the GPU (rb_pending), to be tried again later)
 };
 // (cached host memory, which the CPU reads: the sequential-write kind is write-combined, or VRAM behind the BAR, and every read
 // of it by the unswizzle goes over PCIe uncached. RX_VK_FLUSH_UNCACHED=1: as before)
@@ -3643,7 +3656,8 @@ bool flush_finish(Flush& f, bool gpu_ok) {
 /// A batch of write-backs: one submission and one wait for all of them
 void flush_textures(std::vector<Flush>& fs) {
     bool any = false;
-    if (readback_begin()) {
+    const bool begun = readback_begin();
+    if (begun) {
         full_barrier(rb_cmd);   // (after what the submissions before wrote)
         for (Flush& f : fs) any |= flush_record(f);
     } else {
@@ -3659,15 +3673,19 @@ void flush_textures(std::vector<Flush>& fs) {
         if (logged++ < 8)
             logf("vk: a batch of %zu texture write-backs did not complete in time: not written back, its staging buffers kept "
                  "until the GPU is past them", fs.size());
-        for (Flush& f : fs)
+        for (Flush& f : fs) {
+            // (and the images they copy from, by the same rule: evicted now, their end waits for the copy too (Longshot 08fffc2d, #554))
+            f.t->last_value = std::max(f.t->last_value, rec_value + 1);
             if (f.buf) {
                 Dead d{rec_value + 1, VK_NULL_HANDLE, nullptr, {}, {}};
                 d.buffer = f.buf, d.buffer_alloc = f.alloc;
                 dead.push_back(std::move(d));
                 f.buf = VK_NULL_HANDLE, f.alloc = nullptr, f.map = nullptr;
             }
+        }
     }
-    for (Flush& f : fs) f.ok = flush_finish(f, gpu_ok);
+    const bool busy = rb_pending && (!begun || (any && !gpu_ok));   // (this batch's wait timed out, or one before it is still running)
+    for (Flush& f : fs) f.ok = flush_finish(f, gpu_ok), f.busy = busy && !f.ok;
 }
 bool flush_texture(Texture& t, uint64_t clip_lo, uint64_t clip_hi) {
     std::vector<Flush> one;
@@ -4869,6 +4887,9 @@ void texture_frame(uint64_t completed) {
                 if (e.flush) e.flush = !evict_reason::write_back_stale(e.tex->last_written, other[i++]);
         }
     }
+    // (those that wait: a read-back still on the GPU, its wait timed out. They stay, their texels in their images, for a later pass
+    // once rb_fence signals; evicted now, they went with no copy and were made again empty. Longshot b8d2b04e, #553)
+    std::unordered_set<const Texture*> flush_later;
     {   // (the write-backs: batches of up to 64 textures or ~512 MB of staging memory, each one submission and one wait)
         std::vector<Flush> batch;
         uint64_t batch_bytes = 0;
@@ -4876,7 +4897,8 @@ void texture_frame(uint64_t completed) {
             if (batch.empty()) return;
             flush_textures(batch);
             for (const Flush& f : batch)
-                if (f.ok) {
+                if (f.busy) flush_later.insert(f.t);
+                else if (f.ok) {
                     static std::atomic<int64_t> flushed{0};
                     if (++flushed % 50 == 1) logf("vk: textures the GPU drew, written back into their memory before eviction: %lld so far", (long long)flushed.load());
                 }
@@ -4893,6 +4915,7 @@ void texture_frame(uint64_t completed) {
     }
     for (const Evict& e : evict) {   // (and each one's bookkeeping and its end, as before)
         Texture* tex = e.tex;
+        if (flush_later.count(tex)) continue;
         if (e.shifted) n_dead++, b_dead += tex->bytes;
         watch_tex(tex, "evicted");
         if (tex->bc && !tex->gpu_written && tex->uploaded && !bcc_evicting.load(std::memory_order_relaxed)) {
