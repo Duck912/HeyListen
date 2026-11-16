@@ -98,10 +98,14 @@ uint32_t hos_movie_frames(uint64_t player) {
    - f_800672e0, the water renderer (after upstream 6df80a8d, #2409): its ripple simulation runs (int)step times the water's
      substeps (+76 of the pass) each frame. Cut to 0, the rings Link and the actors make in water stood still above 60 fps.
      Its remainder is kept per water object (x21). Found by atk3001 for Lichii (zortos293/Lichii#1152), ported to Fritchii
-     by Frizti (Frizti/Fritchii d389685a4, 063dbb741), then to Hookshot by hckrman101. */
+     by Frizti (Frizti/Fritchii d389685a4, 063dbb741), then to Hookshot by hckrman101.
+   - f_80652cb0, the Deku Tree's floor web (after upstream db0dd7140, #2929): it cuts the elapsed time divided by 1/60 to
+     whole simulation steps, then clamps them to 0..3. Cut to 0, the web did not react when Link jumped on it above 60 fps.
+     Its remainder is kept per web object (x19 + 2296), before the clamp, which stays: a long pause leaves no backlog. */
 HL_WHOLE_HOOK(80a87e50, "7464f66dbdfb2fd2", 12, "c->x[19] + 864");
 HL_WHOLE_HOOK(803edf70, "29ce7b235d0d6bfd", 8, "c->x[19] + 60");
 HL_WHOLE_HOOK(800672e0, "feef3d08fe1f642d", 9, "c->x[21]");
+HL_WHOLE_HOOK(80652cb0, "9593be89631328d3", 22, "c->x[19] + 2296");
 
 uint32_t hos_frame_whole(uint64_t at, uint32_t amount_bits, uint32_t game) {
     static FrameWhole state;   /* (these two under the lock: the game's update threads) */
