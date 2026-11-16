@@ -20,9 +20,14 @@ export EMSDK=$DEPS/emsdk RX_CPM=$DEPS/cpm
 PY=$DEPS/python/bin/python3
 
 # ---- the Vulkan back end, built here once (it needs no game) ----
+# (with AMD FSR 4: the player's build uses this back end as built (HOOKSHOT_VK_PREBUILT) and has none to compile, so FSR 4 is
+# in it or nowhere. AMD's MIT FSR API headers come from third_party/fidelityfx, their licence goes below; AMD's runtime does
+# not: on Linux it is the player's own amd_fidelityfx_upscaler_vk.so, and without it the Upscaler row does not offer FSR 4)
 VKW=$B/vk-work
 rm -rf "$VKW/sa/build/hookshot_vk.so"
-OOT_WORK=$VKW RX_MARCH=x86-64-v3 RX_VK_ONLY=1 RX_RELEASE=1 "$PY" -I nx2/build.py --standalone --jobs "${JOBS:-$(nproc)}"
+OOT_WORK=$VKW RX_MARCH=x86-64-v3 RX_VK_ONLY=1 RX_RELEASE=1 HOOKSHOT_FSR=1 "$PY" -I nx2/build.py --standalone --jobs "${JOBS:-$(nproc)}" |
+    tee "$B/vk-build.txt"
+grep -q "with AMD FSR 4" "$B/vk-build.txt" || { echo "the Vulkan back end was built without AMD FSR 4 (third_party/fidelityfx)"; exit 1; }
 VK=$VKW/sa/build/hookshot_vk.so
 [ -f "$VK" ] || { echo "hookshot_vk.so was not built"; exit 1; }
 
@@ -77,10 +82,11 @@ cp "$VK" "$L/hookshot_vk.so"
 cp "$DEPS/sdl2/libSDL2-2.0.so.0" "$L/libSDL2-2.0.so.0"
 cp -a "$DEPS/licenses" "$T/licenses"   # (LLVM, FFmpeg, dav1d, SDL2: what this AppImage carries besides HeyListen and Hookshot)
 # ---- the licences of the third-party parts compiled into hookshot_vk.so (tests/test_appimage_licenses.py) ----
-mkdir -p "$T/licenses/imgui" "$T/licenses/zstd" "$T/licenses/libertinus"
+mkdir -p "$T/licenses/imgui" "$T/licenses/zstd" "$T/licenses/libertinus" "$T/licenses/fidelityfx"
 cp third_party/imgui/LICENSE.txt third_party/imgui/PROVENANCE.md "$T/licenses/imgui/"
 cp third_party/zstd/LICENSE third_party/zstd/PROVENANCE.md "$T/licenses/zstd/"
 cp third_party/fonts/libertinus/OFL.txt third_party/fonts/PROVENANCE.md "$T/licenses/libertinus/"
+cp third_party/fidelityfx/LICENSE.md third_party/fidelityfx/README.md "$T/licenses/fidelityfx/"   # (AMD's FSR API headers, MIT)
 # ---- end of the licences ----
 
 # the sysroot: this system's C library (headers, start files, the libraries to link against) and GCC's runtime pieces
@@ -88,7 +94,15 @@ S=$L/sysroot
 mkdir -p "$S/usr/lib/x86_64-linux-gnu" "$S/usr/lib/gcc/x86_64-linux-gnu" "$S/lib64"
 ln -s usr/lib "$S/lib"
 cp -a /usr/include "$S/usr/"
-rm -rf "$S/usr/include/c++" "$S/usr/include/x86_64-linux-gnu/c++" "$S/usr/include/llvm"* "$S/usr/include/clang"*
+# (GCC's C++ headers stay, its newest version only: engine/native's C++ (hl/stream, hl/jobs...) is compiled at the player's
+# build since the native engine came in, and the bundled clang finds them through the sysroot's GCC install below.
+# Issue 14: the test build of main failed on the Deck with "'cstddef' file not found" once they were removed here)
+rm -rf "$S/usr/include/llvm"* "$S/usr/include/clang"*
+CXXV=$(basename "$(ls -d /usr/lib/gcc/x86_64-linux-gnu/*/ | sort -V | tail -1)")   # (the GCC whose runtime is carried below)
+[ -d "/usr/include/c++/$CXXV" ] || { echo "no C++ headers for GCC $CXXV (g++-$CXXV / libstdc++-$CXXV-dev)"; exit 1; }
+for d in "$S/usr/include/c++" "$S/usr/include/x86_64-linux-gnu/c++"; do
+    [ -d "$d" ] && find "$d" -mindepth 1 -maxdepth 1 ! -name "$CXXV" -exec rm -rf {} +
+done
 M=/usr/lib/x86_64-linux-gnu
 for f in crt1.o crti.o crtn.o Scrt1.o rcrt1.o libc.so libc.so.6 libc_nonshared.a libm.so libm.so.6 libm.a libmvec.so libmvec.so.1 \
          libmvec.a libpthread.so.0 libpthread.a libdl.so.2 libdl.a librt.so.1 librt.a libutil.a libgcc_s.so.1 ld-linux-x86-64.so.2; do
@@ -100,7 +114,9 @@ cp -aL /lib64/ld-linux-x86-64.so.2 "$S/lib64/"
 GCC=$(ls -d /usr/lib/gcc/x86_64-linux-gnu/*/ | sort -V | tail -1)
 G=$S/usr/lib/gcc/x86_64-linux-gnu/$(basename "$GCC")
 mkdir -p "$G"
-for f in crtbegin.o crtbeginS.o crtbeginT.o crtend.o crtendS.o libgcc.a libgcc_eh.a libgcc_s.so; do
+# (libstdc++.a and libsupc++.a: the game links engine/native's C++ statically against them (nx2/build.py, with a sysroot),
+# so the player's system needs no particular libstdc++)
+for f in crtbegin.o crtbeginS.o crtbeginT.o crtend.o crtendS.o libgcc.a libgcc_eh.a libgcc_s.so libstdc++.a libsupc++.a; do
     [ -e "$GCC/$f" ] && cp -aL "$GCC/$f" "$G/" || true
 done
 # (libgcc_s.so is a linker script naming /lib/x86_64-linux-gnu/libgcc_s.so.1: found in the sysroot through lib -> usr/lib)
@@ -115,6 +131,28 @@ int main(void) { pthread_t t; pthread_create(&t, 0, f, 0); pthread_join(t, 0); p
 EOF
 "$L/emsdk/upstream/bin/clang" --sysroot="$S" -fuse-ld=lld -O2 -march=x86-64-v3 "$B/t.c" -o "$B/t" -lpthread -lm
 "$B/t"
+# (and C++20 the way nx2/build.py compiles and links engine/native: the headers its sources include, libstdc++ linked in)
+cat > "$B/t.cpp" <<'EOF'
+#include <algorithm>
+#include <atomic>
+#include <bit>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <functional>
+#include <span>
+#include <vector>
+int main() {
+    std::atomic<uint64_t> a{1}; std::vector<int> v{3, 1, 2}; std::sort(v.begin(), v.end());
+    std::function<int(int)> f = [](int x) { return x + 1; }; std::span<int> s(v);
+    std::printf("ok %d %d %d\n", (int)a.fetch_add(1), f(s[0]), std::popcount(7u));
+    return 0;
+}
+EOF
+"$L/emsdk/upstream/bin/clang" --sysroot="$S" -fuse-ld=lld -std=c++20 -O2 -march=x86-64-v3 -c "$B/t.cpp" -o "$B/tcpp.o"
+"$L/emsdk/upstream/bin/clang" --sysroot="$S" -fuse-ld=lld -O2 "$B/tcpp.o" -o "$B/tcpp" -l:libstdc++.a -lpthread -lm
+"$B/tcpp"
 
 # ---- the AppDir's own files ----
 cp builder/linux/AppRun "$APPDIR/AppRun"

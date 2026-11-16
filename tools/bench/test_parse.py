@@ -11,6 +11,16 @@ import run_bench as rb  # noqa: E402
 
 DATA = Path(__file__).parent / "testdata"
 SLEEPER = [sys.executable, "-c", "import time; time.sleep(60)"]
+MESA_VERSION, AMDGPU_CARDS = rb.mesa_version, rb.amdgpu_cards   # (the real ones; the fixture below replaces them)
+
+
+@pytest.fixture(autouse=True)
+def _own_machine(tmp_path, monkeypatch):
+    """No test touches the user's saves (the guard copies and puts back the real data folder otherwise), starts
+    vulkaninfo or reads the real GPU: the data folder is the test's own, Mesa unknown, no amdgpu card."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(rb, "mesa_version", lambda: None)
+    monkeypatch.setattr(rb, "amdgpu_cards", lambda sys_root=None: [])
 
 
 def test_percentile_and_stats():
@@ -122,11 +132,11 @@ def test_end_to_end_with_fake_hookshot(tmp_path):
         exe.chmod(0o755)
     out = tmp_path / "out"
     t0 = time.monotonic()
-    rc = rb.main(["--exe", str(exe), "--build", "hookshot", "--scene", "kokiri-idle",
+    rc = rb.main(["--exe", str(exe), "--build", "hookshot", "--scene", "kokiri-idle", "--title", "input",
                   "--out", str(out), "--duration", "2", "--warmup-s", "0"])
     assert rc == 0 and time.monotonic() - t0 < 20
     data = json.loads((out / "bench.json").read_text())
-    assert data["schema_version"] == 3 and data["frames"] > 20
+    assert data["schema_version"] == 5 and data["frames"] > 20
     assert data["fps_1pct_low"] == pytest.approx(100.0) and data["fps_0_1pct_low"] == pytest.approx(100.0)
     assert data["frame_time_ms"]["p50"] == 10.0 and data["killed_by_harness"]
     # The fake game's return_ns is not the perf_counter clock, so the offset falls back
@@ -153,7 +163,7 @@ def test_fake_hookshot_repeat_writes_spread(tmp_path):
         exe.write_text('#!/bin/sh\nexec "%s" "%s"\n' % (sys.executable, game))
         exe.chmod(0o755)
     out = tmp_path / "out"
-    rc = rb.main(["--exe", str(exe), "--build", "hookshot", "--scene", "kokiri-idle",
+    rc = rb.main(["--exe", str(exe), "--build", "hookshot", "--scene", "kokiri-idle", "--title", "input",
                   "--out", str(out), "--duration", "2", "--repeat", "2", "--warmup-s", "0.5"])
     assert rc == 0
     for i in (1, 2):
@@ -349,3 +359,258 @@ def test_summarize_new_columns_on_synthetic_traces(tmp_path, capsys):
     assert "| 1.0% | 100.0% | 1% |" in row
     # 1% low and 0.1% low: the single 40 ms frame -> 25.0 fps
     assert "| 25.0 | 25.0 |" in row
+
+
+# ------------------------------------------------------ the saves the run guards (Linux: the data folder)
+@pytest.mark.skipif(sys.platform == "win32", reason="the Linux data folder")
+def test_save_dirs_are_the_games(tmp_path, monkeypatch):
+    exe = tmp_path / "game" / "hookshot"
+    # (host/hos_main.c saves_dir: $XDG_DATA_HOME/heylisten when it is absolute, else ~/.local/share/heylisten)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    dirs = rb.save_dirs(exe)
+    assert dirs[:2] == [tmp_path / "game" / "user" / "save", tmp_path / "user" / "save"]
+    assert tmp_path / "xdg" / "heylisten" / "save" in dirs
+    assert tmp_path / "xdg" / "hookshot" / "save" in dirs   # (builds before the HeyListen names)
+    monkeypatch.setenv("XDG_DATA_HOME", "relative/data")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    dirs = rb.save_dirs(exe)
+    assert tmp_path / "home" / ".local" / "share" / "heylisten" / "save" in dirs
+    assert not any("relative" in str(d) for d in dirs)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the Linux data folder")
+def test_run_puts_every_save_folder_back(tmp_path):
+    """A game that overwrites a save in the data folder and one beside it, and adds one: all as before after the run."""
+    data_save = tmp_path / "xdg" / "heylisten" / "save" / "0100"
+    data_save.mkdir(parents=True)
+    (data_save / "slot0").write_bytes(b"the user's own save")
+    game_dir = tmp_path / "game"
+    beside = game_dir / "user" / "save"
+    beside.mkdir(parents=True)
+    (beside / "old").write_text("kept beside", encoding="utf-8")
+    game = tmp_path / "fake_game.py"
+    game.write_text(
+        "import os, time\n"
+        "d = os.path.join(os.environ['XDG_DATA_HOME'], 'heylisten', 'save', '0100')\n"
+        "open(os.path.join(d, 'slot0'), 'wb').write(b'autosaved over')\n"
+        "open(os.path.join(d, 'slot1'), 'wb').write(b'new')\n"
+        "open(os.path.join('user', 'save', 'old'), 'w').write('changed')\n"
+        "f = open(os.environ['HOS_PRESENT_TRACE'], 'w')\n"
+        "f.write('frame,return_ns,interval_ns\\n')\n"
+        "for i in range(1, 100000):\n"
+        "    f.write('%d,%d,%d\\n' % (i, i * 10000000, 0 if i == 1 else 10000000)); f.flush(); time.sleep(0.01)\n")
+    exe = game_dir / "hookshot.sh"
+    exe.write_text('#!/bin/sh\nexec "%s" "%s"\n' % (sys.executable, game))
+    exe.chmod(0o755)
+    out = tmp_path / "out"
+    assert rb.main(["--exe", str(exe), "--build", "hookshot", "--scene", "kokiri-idle", "--title", "input",
+                    "--out", str(out), "--duration", "2", "--warmup-s", "0"]) == 0
+    assert (data_save / "slot0").read_bytes() == b"the user's own save"
+    assert not (data_save / "slot1").exists()
+    assert (beside / "old").read_text(encoding="utf-8") == "kept beside"
+    assert sorted(p.name for p in (out / "save-guard").iterdir()) == ["0", "0.txt", "1", "1.txt"]
+
+
+# ------------------------------------------------------ the machine: environment and GPU busy (Linux)
+def _fake_sys(root: Path) -> Path:
+    for cpu, gov in (("cpu0", "performance"), ("cpu1", "performance"), ("cpu2", "powersave")):
+        (root / "devices/system/cpu" / cpu / "cpufreq").mkdir(parents=True)
+        (root / "devices/system/cpu" / cpu / "cpufreq/scaling_governor").write_text(gov + "\n")
+    thp = root / "kernel/mm/transparent_hugepage"
+    thp.mkdir(parents=True)
+    (thp / "enabled").write_text("always [madvise] never\n")
+    (thp / "shmem_enabled").write_text("always within_size [advise] never deny force\n")
+    (root / "module/udmabuf/parameters").mkdir(parents=True)
+    (root / "module/udmabuf/parameters/size_limit_mb").write_text("64\n")
+    # two cards: an amdgpu one (with a connector beside it) and another driver's; drivers and devices are links, as in sysfs
+    for name, pci, driver in (("card1", "0000:0b:00.0", "amdgpu"), ("card0", "0000:01:00.0", "i915")):
+        dev = root / "devices/pci" / pci
+        (dev).mkdir(parents=True)
+        (root / "bus/drivers" / driver).mkdir(parents=True, exist_ok=True)
+        (dev / "driver").symlink_to(root / "bus/drivers" / driver)
+        (dev / "gpu_busy_percent").write_text("37\n")
+        (root / "class/drm" / name).mkdir(parents=True)
+        (root / "class/drm" / name / "device").symlink_to(dev)
+    (root / "class/drm/card1-DP-1").mkdir()
+    (root / "class/drm/card1-DP-1/device").symlink_to(root / "class/drm/card1")
+    return root
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux sysfs")
+def test_linux_environment_from_sysfs(tmp_path):
+    sysr = _fake_sys(tmp_path / "sys")
+    proc = tmp_path / "proc"
+    (proc / "sys/kernel").mkdir(parents=True)
+    (proc / "loadavg").write_text("1.50 0.75 0.25 2/900 12345\n")
+    (proc / "sys/kernel/osrelease").write_text("6.17.1-test\n")
+    env = rb.linux_environment(sysr, proc, mesa=lambda: "Mesa 25.2.4")
+    assert env == {"cpu_governor": "performance,powersave", "thp_enabled": "madvise", "thp_shmem_enabled": "advise",
+                   "udmabuf_size_limit_mb": 64, "loadavg_start": [1.5, 0.75, 0.25], "kernel": "6.17.1-test",
+                   "mesa": "Mesa 25.2.4"}
+    # (udmabuf not loaded, no THP, no cpufreq: unknown, not an error)
+    empty = rb.linux_environment(tmp_path / "nosys", tmp_path / "noproc", mesa=lambda: None)
+    assert empty == {"cpu_governor": None, "thp_enabled": None, "thp_shmem_enabled": None, "udmabuf_size_limit_mb": None,
+                     "loadavg_start": None, "kernel": None, "mesa": None}
+
+
+def test_mesa_version_from_vulkaninfo(monkeypatch):
+    summary = ("Devices:\n========\nGPU0:\n\tdeviceName = AMD Radeon RX 9070 XT (RADV GFX1201)\n\tdriverName = radv\n"
+               "\tdriverInfo = Mesa 25.2.4-arch1.1\nGPU1:\n\tdeviceName = llvmpipe (LLVM 20.1.8, 256 bits)\n"
+               "\tdriverName = llvmpipe\n\tdriverInfo = Mesa 25.2.4-arch1.1 (LLVM 20.1.8)\n")
+    monkeypatch.setattr(rb.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(rb.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, summary, ""))
+    assert MESA_VERSION() == "Mesa 25.2.4-arch1.1"
+    monkeypatch.setattr(rb.shutil, "which", lambda name: None)
+    assert MESA_VERSION() is None
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux sysfs")
+def test_gpu_busy_reads_the_amdgpu_card_only(tmp_path):
+    sysr = _fake_sys(tmp_path / "sys")
+    cards = AMDGPU_CARDS(sysr)
+    assert [c[0] for c in cards] == ["0000:0b:00.0"]
+    busy = rb.GpuBusy(cards)
+    f = cards[0][1]
+    for t, v in ((0.5, 99), (10.0, 20), (10.2, 40), (10.4, 60)):
+        f.write_text(f"{v}\n")
+        busy.sample(t)
+    s = busy.summary(10.0)   # (the warm-up's samples left out)
+    assert s["source"] == "amdgpu gpu_busy_percent" and s["from_s_after_launch"] == 10.0
+    assert s["cards"] == [{"pci": "0000:0b:00.0", "samples": 3, "mean_pct": 40.0, "p50_pct": 40.0, "p95_pct": 58.0}]
+    busy.write_csv(tmp_path / "gpu_busy.csv")
+    assert (tmp_path / "gpu_busy.csv").read_text().splitlines()[:2] == ["t_s,pci,busy_pct", "0.500,0000:0b:00.0,99"]
+    assert rb.GpuBusy([]).summary(0.0) is None
+
+
+def test_summarize_environment_table(tmp_path, capsys):
+    import summarize as sm
+    d = tmp_path / "hookshot-linux"
+    d.mkdir()
+    _write_trace(d / "present_trace.csv", [8.0] * 50)
+    (d / "bench.json").write_text(json.dumps({
+        "build": "hookshot", "scene": "kokiri-idle", "schema_version": 4, "warmup_s": 0.0,
+        "environment": {"cpu_governor": "performance", "thp_enabled": "always", "thp_shmem_enabled": "advise",
+                        "udmabuf_size_limit_mb": 2147483647, "loadavg_start": [1.5, 0.75, 0.25],
+                        "kernel": "6.17.1", "mesa": "Mesa 25.2.4"},
+        "gpu_busy": {"source": "amdgpu gpu_busy_percent", "from_s_after_launch": 0.0,
+                     "cards": [{"pci": "0000:0b:00.0", "samples": 3, "mean_pct": 40.0, "p50_pct": 40.0, "p95_pct": 58.0}]}}))
+    old = tmp_path / "hookshot-old"
+    old.mkdir()
+    _write_trace(old / "present_trace.csv", [8.0] * 50)
+    assert sm.main([str(d), str(old)]) == 0
+    out = capsys.readouterr().out
+    assert "| Dir | Governor | THP |" in out
+    assert ("| hookshot-linux | performance | always | advise | 2147483647 | 1.50 0.75 0.25 | 6.17.1 | Mesa 25.2.4 "
+            "| 40% / 58% |") in out
+    assert "| hookshot-old | - | - | - | - | - | - | - | - |" in out
+    # (no directory records the machine: the table alone, as before)
+    assert sm.main([str(old)]) == 0
+    assert "Governor" not in capsys.readouterr().out
+
+
+# ------------------------------------------------------ the title: the game goes through it, the window starts at play
+def _fake_game(tmp_path, play_after_s, wait_line=None):
+    """A fake game writing a 100 fps trace on the harness's own clock; after play_after_s seconds it logs that play began
+    (as host/hos_main.c does), or, with None, logs wait_line (the title helper giving up) and plays on in the title."""
+    say = ("'[hos host] play: began at clock %d ns, 1.00 s after the process started' % now"
+           if play_after_s is not None else repr("[hos host] " + wait_line))
+    game = tmp_path / "fake_game.py"
+    game.write_text(
+        "import os, time\n"
+        "f = open(os.environ['HOS_PRESENT_TRACE'], 'w')\n"
+        "f.write('frame,return_ns,interval_ns\\n')\n"
+        "assert os.environ.get('HL_SKIP_TITLE') == '1' and os.environ.get('HOS_INPUT_FROM_PLAY') == '1'\n"
+        "t0 = time.perf_counter_ns(); logged = False\n"
+        "for i in range(1, 100000):\n"
+        "    now = time.perf_counter_ns()\n"
+        "    f.write('%d,%d,%d\\n' % (i, now, 0 if i == 1 else 10000000)); f.flush()\n"
+        "    if not logged and now - t0 > " + str(int((play_after_s or 0.3) * 1e9)) + ":\n"
+        "        logged = True\n"
+        "        print(" + say + ", flush=True)\n"
+        "    time.sleep(0.01)\n")
+    exe = tmp_path / ("hookshot.cmd" if sys.platform == "win32" else "hookshot.sh")
+    if sys.platform == "win32":
+        exe.write_text('@"%s" "%s"\n' % (sys.executable, game))
+    else:
+        exe.write_text('#!/bin/sh\nexec "%s" "%s"\n' % (sys.executable, game))
+        exe.chmod(0o755)
+    return exe
+
+
+def test_window_starts_at_play(tmp_path):
+    exe = _fake_game(tmp_path, 1.0)
+    out = tmp_path / "out"
+    rc = rb.main(["--exe", str(exe), "--build", "hookshot", "--scene", "kokiri-idle", "--out", str(out), "--duration", "3.5"])
+    assert rc == 0
+    data = json.loads((out / "bench.json").read_text())
+    assert data["title"] == "skip" and data["warmup_origin"] == "play" and data["status"] == "ok"
+    assert 0.8 < data["play_at_s"] < 2.0
+    # the window starts where play began, counted from the first present
+    assert data["window_start_s"] == pytest.approx(data["play_at_s"] - data["launch_offset_s"], abs=0.01)
+    assert 100 < data["frames"] < 260   # (3.5 s of run minus about 1 s before play, at about 100 fps)
+
+
+def test_a_run_that_never_reaches_play_is_failed_not_measured(tmp_path):
+    exe = _fake_game(tmp_path, None, "skip title: no saved game yet: the title screen stays")
+    out = tmp_path / "out"
+    t0 = time.monotonic()
+    rc = rb.main(["--exe", str(exe), "--build", "hookshot", "--scene", "castle-move", "--out", str(out), "--duration", "20"])
+    assert rc == 2 and time.monotonic() - t0 < 12   # (it did not wait for the whole duration)
+    data = json.loads((out / "bench.json").read_text())
+    assert data["status"] == "failed" and data["frames"] == 0 and data["play_at_s"] is None
+    assert "never reached play" in data["failure"]
+
+
+def test_scene_scripts_in_play_and_the_old_ones():
+    for name in ("kokiri-idle", "castle-move", "hyrule-walk"):
+        assert name in rb.SKIP_SCENES and name in rb.HOOKSHOT_SCENES
+        assert "A," not in rb.SKIP_SCENES[name] and ":A" not in rb.SKIP_SCENES[name]   # (no title presses)
+    assert rb.SKIP_SCENES["kokiri-idle"] == ""
+    assert rb.SKIP_SCENES["castle-move"].startswith("10:LUP+RLEFT/700,11:RLEFT/1900,")
+    assert rb.HOOKSHOT_SCENES["castle-move"].startswith(rb.LOAD_SAVE)   # (the old scenes are unchanged)
+
+
+def test_title_and_origin_defaults():
+    parse = rb.build_parser().parse_args
+    base = ["--exe", "x", "--scene", "castle-move", "--out", "o"]
+    a = parse(base)
+    assert rb.title_mode(a) == "skip" and rb.resolve_origin(a, "skip") == "play"
+    a = parse(base + ["--title", "input"])
+    assert rb.title_mode(a) == "input" and rb.resolve_origin(a, "input") == "launch"
+    a = parse(base + ["--input-script", "300:A"])   # (an explicit script keeps the old clock and the old window)
+    assert rb.title_mode(a) == "input" and rb.resolve_origin(a, "input") == "launch"
+    a = parse(base + ["--warmup-origin", "launch"])
+    assert rb.resolve_origin(a, "skip") == "launch"
+
+
+def test_window_start_and_labels():
+    assert rb.window_start_s("play", 0.0, 12.0, 31.5) == pytest.approx(19.5)
+    assert rb.window_start_s("play", 2.0, 12.0, 31.5) == pytest.approx(21.5)
+    assert rb.window_start_s("play", 0.0, 12.0, None) is None
+    assert rb.window_start_s("launch", 60, 12.0, 31.5) == pytest.approx(48.0)
+    assert rb.cut_label(0, "play", 12.0) == "from play"
+
+
+def test_play_line_parsed_on_the_harness_clock(tmp_path):
+    log = tmp_path / "game_log.txt"
+    log.write_text("[hos host] x\n[hos main] play: began at clock 105500000000 ns, 31.40 s after the process started\n")
+    assert rb.parse_play_line(log, 100_000_000_000) == (pytest.approx(5.5), None)
+    at, note = rb.parse_play_line(log, 900_000_000_000)   # (another clock: the line's own seconds)
+    assert at == pytest.approx(31.4) and note
+    assert rb.parse_play_line(tmp_path / "none.txt", 1) == (None, None)
+
+
+def test_summarize_starts_at_play(tmp_path, capsys):
+    import summarize as sm
+    d = tmp_path / "run"
+    d.mkdir()
+    (d / "present_trace.csv").write_text("frame,return_ns,interval_ns\n" + "".join(
+        "%d,%d,%d\n" % (i, i * 10_000_000, 0 if i == 1 else 10_000_000) for i in range(1, 1001)))
+    (d / "bench.json").write_text(json.dumps({
+        "build": "hookshot", "scene": "castle-move", "warmup_s": 0.0, "warmup_origin": "play",
+        "launch_offset_s": 1.0, "play_at_s": 6.0, "window_start_s": 5.0, "status": "ok"}))
+    assert sm.summarize_dir(d, None)["frames"] == 500   # (the last 5 s of 10 at 100 fps)
+    (d / "bench.json").write_text(json.dumps({
+        "build": "hookshot", "scene": "castle-move", "warmup_s": 0.0, "warmup_origin": "play",
+        "launch_offset_s": 1.0, "play_at_s": None, "window_start_s": None, "status": "failed"}))
+    assert sm.summarize_dir(d, None)["frames"] == 0

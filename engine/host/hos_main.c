@@ -27,6 +27,7 @@ const char *hos_version(void) { return HOOKSHOT_VERSION; }   /* (discord_rpc.c's
 #else
 #include <windows.h>   /* (linux: host/posix's) */
 #include <sys/mman.h>
+#include <sys/stat.h>
 #ifdef __linux__
 #include <sys/prctl.h>
 #include <sys/sysinfo.h>
@@ -453,6 +454,73 @@ static void load_hookshot_env(void) {
     }
     fclose(f);
 }
+
+#ifdef __linux__
+#include "hos_submit_thread.h"
+/* (Linux) Mesa's submit thread (hos_submit_thread.h): decided in main() after load_hookshot_env (the switch may come from
+   hookshot_env.txt) and before the first thread (SDL's, the log's, the game's): the setenv is not safe once another thread can
+   getenv. The variable stays set for the process. The note goes to the log after its first line (game_main), and to the Vulkan
+   back end, which says whether the device it picked is RADV (hos_posix_submit_thread_note, vk_main.cpp create_device) */
+static char submit_thread_note[192];
+const char *hos_posix_submit_thread_note(void) { return submit_thread_note; }
+
+static void submit_thread_at_start(void) {
+    const char *mesa = getenv("MESA_VK_ENABLE_SUBMIT_THREAD");
+    const char *user = hos_submit_thread_user_value(mesa, getenv(HOS_SUBMIT_THREAD_MARK));
+    if (mesa && !user) unsetenv("MESA_VK_ENABLE_SUBMIT_THREAD");   /* (inherited from a HeyListen: decided again here) */
+    unsetenv(HOS_SUBMIT_THREAD_MARK);
+    const long online = sysconf(_SC_NPROCESSORS_ONLN);
+    const unsigned threads = online > 0 ? (unsigned)online : 1u;
+    const HosSubmitThread c =
+        hos_submit_thread_decide(hos_drm_has_amdgpu("/sys/class/drm"), user, getenv("RX_VK_RADV_SUBMIT_THREAD"), threads);
+    char *n = submit_thread_note;
+    const size_t cap = sizeof submit_thread_note;
+    switch (c) {
+    case HOS_SUBMIT_THREAD_ON:
+    case HOS_SUBMIT_THREAD_FORCED:
+        setenv("MESA_VK_ENABLE_SUBMIT_THREAD", "1", 1);
+        setenv(HOS_SUBMIT_THREAD_MARK, "1", 1);
+        /* (the device is not picked yet: beside an AMD card another Mesa GPU's queues (ANV) get it too) */
+        if (c == HOS_SUBMIT_THREAD_ON)
+            snprintf(n, cap, "on: %u threads (RX_VK_RADV_SUBMIT_THREAD=0: off); it reaches any other Mesa GPU's queues too", threads);
+        else snprintf(n, cap, "on: RX_VK_RADV_SUBMIT_THREAD=1 (%u threads); it reaches any other Mesa GPU's queues too", threads);
+        break;
+    case HOS_SUBMIT_THREAD_FEW_THREADS:
+        snprintf(n, cap, "off: %u threads, below %u (RX_VK_RADV_SUBMIT_THREAD=1: on)", threads, HOS_SUBMIT_THREAD_MIN_THREADS);
+        break;
+    case HOS_SUBMIT_THREAD_SWITCH_OFF: snprintf(n, cap, "off: RX_VK_RADV_SUBMIT_THREAD=0 (Mesa's own choice)"); break;
+    case HOS_SUBMIT_THREAD_USER_SET: snprintf(n, cap, "left as the user set it: MESA_VK_ENABLE_SUBMIT_THREAD=%.60s", user); break;
+    case HOS_SUBMIT_THREAD_NO_AMDGPU: n[0] = 0; break;   /* (no AMD card: nothing to say) */
+    }
+}
+/* (Linux) RADV_FORCE_VRS_CONFIG_FILE dropped before anything loads Vulkan. The Steam Deck's Game Mode sets it for Steam and
+   everything it starts, naming a file it writes the Half Rate Shading rate to (/tmp/radv_vrs.<random>, "1x1" when off). While
+   that file exists RADV forces VRS for the device and puts it into every graphics pipeline's key, so nothing built without it
+   is found, in the driver's cache or ours: a start from Game Mode compiled all the preparation's pipelines again (about 20 a
+   second on a Deck, 25-30 minutes) where one from the desktop loads them in seconds. Dropped only when it names a file that
+   exists, which is when RADV reads it; no other driver reads it. RX_VK_HALF_RATE_SHADING=1 keeps it. RADV_FORCE_VRS, a rate
+   someone set by hand, is never touched. Decided in main() beside submit_thread_at_start (the setenv is safe only while this
+   is the one thread); the note goes to stderr now and to the game's log once it is open (game_main) */
+static char driver_env_said[1024];
+static void driver_env_choose(void) {
+    const char *file = getenv("RADV_FORCE_VRS_CONFIG_FILE");
+    struct stat st;
+    if (!file || !*file || stat(file, &st) != 0) return;
+    const char *keep = getenv("RX_VK_HALF_RATE_SHADING");
+    if (keep && !strcmp(keep, "1")) {
+        snprintf(driver_env_said, sizeof driver_env_said,
+                 "vk: RADV_FORCE_VRS_CONFIG_FILE kept (RX_VK_HALF_RATE_SHADING=1): Steam's Half Rate Shading reaches the game, "
+                 "and RADV gives every graphics pipeline another key than the preparation's, so they are compiled again");
+    } else {
+        snprintf(driver_env_said, sizeof driver_env_said,
+                 "vk: RADV_FORCE_VRS_CONFIG_FILE=%.300s dropped: with it RADV gives every graphics pipeline another key than the "
+                 "preparation's and compiles them all again; Steam's Half Rate Shading has no effect here "
+                 "(RX_VK_HALF_RATE_SHADING=1 keeps it)", file);
+        unsetenv("RADV_FORCE_VRS_CONFIG_FILE");
+    }
+    fprintf(stderr, "%s\n", driver_env_said);
+}
+#endif
 
 int hos_oot_protect_hearts;
 volatile int hos_oot_live_action;   /* (test runs) the live input file's "!cheat <action>": host/nn_hid.c */
@@ -955,6 +1023,8 @@ static _Thread_local uint64_t flight_transform_controller;
 static _Thread_local uint64_t flight_pose_actor;
 static _Thread_local float flight_transform_yaw;
 static int64_t flight_player_seen;
+static int64_t play_began;   /* (the first time the player ran, hos_now_ns clock; 0 before) */
+static int64_t process_start_ns;   /* (hos_now_ns when main began) */
 
 static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components) {
     int rx_option(int id, int otherwise);
@@ -965,6 +1035,12 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     if (!flying) flying_actor = 0;
     const int64_t now = hos_now_ns();
     __atomic_store_n(&flight_player_seen, now, __ATOMIC_RELAXED);
+    if (!__atomic_load_n(&play_began, __ATOMIC_RELAXED)) {
+        __atomic_store_n(&play_began, now, __ATOMIC_RELAXED);
+        /* (the bench harness cuts its window here: tools/bench/run_bench.py, "play" origin; the clock is the harness's own) */
+        hos_log("play: began at clock %lld ns, %.2f s after the process started", (long long)now,
+                (double)(now - process_start_ns) / 1e9);
+    }
     if (marked_actor != actor || now - last_player_tick > 2000000000LL) marked_controller = 0;
     last_player_tick = now;
     int action = rx_option(HOS_OPT_CHEAT_ACTION, 0);
@@ -1081,10 +1157,24 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
 }
 #endif
 
-int hos_oot_flight_shortcut_ready(void) {
+/* Whether the player has run in the last quarter second: play is on (host/oot_autoload.c stops its presses on it). */
+int hos_oot_player_seen(void) {
 #if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
     const int64_t seen = __atomic_load_n(&flight_player_seen, __ATOMIC_RELAXED);
     return seen && hos_now_ns() - seen < 250000000;
+#else
+    return 0;
+#endif
+}
+
+int hos_oot_flight_shortcut_ready(void) {
+    return hos_oot_player_seen();
+}
+
+/* When play began (hos_now_ns clock; 0 until the player has run once): host/nn_hid.c's HOS_INPUT_FROM_PLAY. */
+int64_t hos_oot_play_ns(void) {
+#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
+    return __atomic_load_n(&play_began, __ATOMIC_RELAXED);
 #else
     return 0;
 #endif
@@ -1326,6 +1416,9 @@ static int game_main(int argc, char **argv) {
     if (!narrow_paths_ok(argc, argv)) return 1;
     load_hookshot_env();
 #endif
+#if defined(_WIN32) || defined(__linux__)
+    process_start_ns = hos_now_ns();
+#endif
     occlusion_switch();
     {
         const char *protect_hearts = getenv("HOS_OOT_PROTECT_HEARTS");
@@ -1371,6 +1464,11 @@ static int game_main(int argc, char **argv) {
         }
     }
     hos_log("hookshot %s", HOOKSHOT_VERSION);   /* (the log's first line: which build a report comes from) */
+#ifdef __linux__
+    if (submit_thread_note[0])   /* (decided in main, before any thread: submit_thread_at_start) */
+        hos_log("env: Mesa's submit thread %s", submit_thread_note);
+    if (driver_env_said[0]) hos_log("%s", driver_env_said);   /* (decided in main: driver_env_choose) */
+#endif
     const char *image = NULL;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--romfs") && i + 1 < argc) hos_romfs_dir = argv[++i];
@@ -1582,6 +1680,13 @@ int main(int argc, char **argv) {
     int hos_display_init(void);
     void hos_display_loop(void);
     load_hookshot_env();
+#ifdef __linux__
+    /* (after hookshot_env.txt, which may set RX_VK_RADV_SUBMIT_THREAD, and before hos_display_init's SDL_Init, the first
+       thread: its setenv is safe only while this is the one thread. HL_TRACE's dump threads, a constructor's, are the one
+       exception, as for load_hookshot_env's own setenv) */
+    submit_thread_at_start();
+    driver_env_choose();
+#endif
     game_argc = argc, game_argv = argv;
     int prepare_shaders = 0;
     for (int i = 1; i < argc; i++) {

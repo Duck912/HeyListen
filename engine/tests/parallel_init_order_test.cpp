@@ -167,6 +167,9 @@ void logf(const char* f, ...) {
     if (on_log) on_log(line);
 }
 static const struct FixtureHost { void (*log_flush)(); } fixture_host{}, *host = &fixture_host;   // (replay_fatal's)
+// (stream R4's RX_VK_PROF_FINE counters the cut code adds to: off here, so the scope timer adds nothing)
+struct ReplayWallStub { int64_t whole_ns = 0, whole = 0, dry_ns = 0, seg_ns = 0, big = 0; } rwall;
+struct WallAdd { explicit WallAdd(int64_t&) {} };
 #include "init_fatal.inc"
 void full_barrier(VkCommandBuffer cmd, const char* = "") {
     record(cmd, 'F');
@@ -279,6 +282,8 @@ void par_stats_segment_parts(int64_t, int64_t, int64_t, int64_t) {}
 void jt_mark(int, uint64_t) {}   // (TICK-054: the frame-timeline marks)
 template <class R> void gpu_time_begin(R&) {}   // (TICK-057: the segments' GPU timestamps)
 template <class R> void gpu_time_end(R&, bool) {}
+template <class R> void gpu_time_segment_submitted(const R&) {}   // (a segment's submit counted with the recordings')
+uint64_t ts_recseq[8], rec_seq;   // (RX_VK_TL: each slot's recording number)
 std::atomic<bool> par_active{false};
 std::vector<int> run_order;   // (the order the workers run in, one after another; empty: all at once)
 std::vector<std::thread> workers;

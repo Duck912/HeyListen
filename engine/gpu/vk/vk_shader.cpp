@@ -186,11 +186,22 @@ Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
     using Shader::Ampere::Instruction;
     std::vector<Instruction> native;
     Shader::Ampere::ProgramCaptureState capture;
+    // (ported from Longshot 609889f2, #427) A word the capture reads as a branch that would leave every program (to before its start,
+    // between two instructions, or past the largest program, 16 MiB: program_address_map.h) is no instruction of this one. The
+    // capture's end rules are narrower than the lowering's (a loop left only by predicated EXITs, a library function that ends the
+    // shader), so it can read on past the program's end into what follows it there. The program ends before that word: the lowering,
+    // which takes a program only to its own end with every branch inside it, says whether it does, and only if it does not is the
+    // program left out (logged below, naming the word)
+    uint32_t outside = ~0u;   // (that word's instruction number)
     for (uint32_t i = 0; hdr + (i + 1) * sizeof(Instruction) <= len; i++) {
         Instruction& insn = native.emplace_back();
         std::memcpy(&insn, area.data() + hdr + i * sizeof(Instruction), sizeof insn);
         const auto r = capture.Observe(insn, i);
-        if (r == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) return c;
+        if (r == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) {
+            native.pop_back();
+            outside = i;
+            break;
+        }
         if (r == Shader::Ampere::ProgramCaptureState::Result::Complete) break;
     }
     {   // (hookshot, for bisecting a bad translation) RX_VK_REJECT_STAGES=<n,...> (NVN stages) and RX_VK_REJECT_KEYS=
@@ -266,6 +277,10 @@ Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
         if (seen.size() < 400 && seen.insert(c.key).second) {
             const uint32_t at = lowered.error_offset / (uint32_t)sizeof(Instruction);
             const uint32_t op = at < native.size() ? (uint32_t)native[at].Bits(0, 12) : 0xFFFFFFFFu;
+            if (outside != ~0u)   // (the code before the word the capture stopped at does not lower: left out for that word, as before)
+                logf("vk: NVN2 program %016llx (stage %u): the branch at instruction %u (+%#x) goes outside the program (%#x code bytes), and "
+                     "the code before it does not lower", (unsigned long long)c.key, st, outside,
+                     (unsigned)(outside * sizeof(Instruction)), len - hdr);
             logf("vk: NVN2 program %016llx (stage %u) does not lower at +%#x: %s (native op %#x, %08x %08x %08x %08x)", (unsigned long long)c.key,
                  st, lowered.error_offset, std::string(lowered.error).c_str(), op, at < native.size() ? native[at].words[0] : 0,
                  at < native.size() ? native[at].words[1] : 0, at < native.size() ? native[at].words[2] : 0, at < native.size() ? native[at].words[3] : 0);
@@ -280,6 +295,14 @@ Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
             }
         }
         return c;
+    }
+    if (outside != ~0u) {   // (each program once, up to 64: it ended before the word the capture stopped at)
+        static std::mutex mu;
+        static std::unordered_set<uint64_t> seen;
+        std::lock_guard lk(mu);
+        if (seen.size() < 64 && seen.insert(c.key).second)
+            logf("vk: NVN2 program %016llx (stage %u) ends at +%#x, before the word at +%#x that would branch outside it (%#x code bytes)",
+                 (unsigned long long)c.key, st, lowered.source_size, (unsigned)(outside * sizeof(Instruction)), len - hdr);
     }
     c.texture_bound = lowered.required_texture_buffer;
     c.code.assign(sizeof(Shader::ProgramHeader) / 8, 0);
@@ -519,6 +542,7 @@ Shader::Profile make_profile() {
     p.support_typeless_image_loads = true;
     p.support_demote_to_helper_invocation = true;
     p.support_int64_atomics = true;
+    p.support_float32_atomic_add = dev.float_atomic_add;   // (one OpAtomicFAddEXT for a float add, not a compare-exchange loop: vk_main.cpp)
     p.support_derivative_control = true;
     p.support_native_ndc = false;   // (the vertex stage converts NVN's -1..1 depth: RuntimeInfo::convert_depth_mode)
     p.support_scaled_attributes = false;   // (*_UI2F / *_I2F read as integers, converted in the shader: R32 has no scaled format)
@@ -611,7 +635,10 @@ VkShaderModule make_module(const std::vector<uint32_t>& spirv_in) {
     ci.codeSize = spirv.size() * 4;
     ci.pCode = spirv.data();
     VkShaderModule m = VK_NULL_HANDLE;
-    vkCreateShaderModule(dev.device, &ci, nullptr, &m);
+    // (longshot #252: one thread at a time in Intel's compiler on Windows, and a fault in the driver leaves this program out: no
+    // module, and the translation of the program fails as it does when the driver refuses one)
+    IntelDriverGate gate;
+    if (extern_guarded_shader_module(&ci, &m) != VK_SUCCESS) return VK_NULL_HANDLE;
     return m;
 }
 
@@ -1081,11 +1108,19 @@ uint64_t disk_stamp() {
         // NaN guard, the matrix layout measured on this device. Without them a cache made on one GPU was used on another (a laptop's
         // integrated and dedicated GPUs), and RX_VK_NO_INVARIANT / RX_VK_NO_NAN_GUARD did nothing for programs already cached)
         using namespace Shader::Backend::SPIRV;
-        const uint32_t flags = (position_invariant ? 1u : 0u) | (frag_nan_guard ? 2u : 0u) | (mma_software ? 4u : 0u);
+        const uint32_t flags = (position_invariant ? 1u : 0u) | (frag_nan_guard ? 2u : 0u) | (mma_software ? 4u : 0u) |
+                               // (and the software multiplies' form, vk_coopmat.cpp choose_software_form: 0 for the loop, as before)
+                               (mma_software ? mma_software_form << 8 | (mma_software_form && mma_software_quad ? 1024u : 0u) : 0u);
         add(&flags, sizeof flags);
         add(mma_order_a.data(), sizeof(uint32_t) * mma_order_a.size());
         add(mma_order_b.data(), sizeof(uint32_t) * mma_order_b.size());
         add(mma_order_c.data(), sizeof(uint32_t) * mma_order_c.size());
+    }
+    // (longshot #2306: and whether a float add is the GPU's own atomic (make_profile): a program made with OpAtomicFAddEXT is no use
+    // to a GPU without it. Added only when it is, so that the stamp of every GPU that keeps the loop is what it was)
+    if (dev.float_atomic_add) {
+        const uint32_t float_add = 1;
+        add(&float_add, sizeof float_add);
     }
     for (char** e = _environ; e && *e; e++)
         for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH", "RX_VK_NO_INVARIANT", "RX_VK_NO_NAN_GUARD", "RX_VK_MARKERS", "EDEN_"})
@@ -1234,6 +1269,48 @@ void disk_init() {
     });
 }
 
+/// (hookshot, RX_VK_SHADER_KEY) The fingerprint of a program: what the driver compiles it from, field by field (never a struct's bytes,
+/// whose padding and heap pointers differ from one run to the next): the stages' SPIR-V, what the pipeline layout is made from (the
+/// descriptor counts of each kind, the push constant range, the flags that decide whether the layout pushes), the vertex attributes the
+/// vertex stage reads, and the mesh fallback's sizes. A translated program and the same one read back from the cache give the same
+/// value. 0: not known (a program whose SPIR-V was not kept for each stage)
+uint64_t program_fingerprint(const Program& p, const std::vector<std::vector<uint32_t>>& spirv) {
+    if (spirv.size() != p.stages.size() || spirv.empty()) return 0;
+    uint64_t h = 0x9E3779B97F4A7C15ull;
+    const auto add = [&h](uint64_t w) {
+        h = (h ^ w) * 0xFF51AFD7ED558CCDull;
+        h ^= h >> 32;
+    };
+    add(1);   // (the fingerprint's own version)
+    add(Shader::Backend::SPIRV::MESH_FALLBACK_PUSH_END);
+    add((p.compute ? 1u : 0u) | (p.mesh ? 2u : 0u) | (p.fallback ? 4u : 0u) | (p.fallback_task ? 8u : 0u));
+    add(p.workgroup[0]), add(p.workgroup[1]), add(p.workgroup[2]), add(p.shared_memory);
+    add((uint64_t)p.fallback_topology), add(p.fallback_vertices_per_workgroup), add(p.fallback_record_words);
+    add(p.fallback_payload_words), add(p.fallback_task_threads);
+    add(p.stages.size());
+    for (size_t k = 0; k < p.stages.size(); k++) {
+        const Stage& st = p.stages[k];
+        const Shader::Info& i = st.info;
+        add((uint64_t)(uint32_t)st.nvn_stage << 32 | (uint32_t)st.vk_stage);
+        const auto counts = [&](const auto& list) {
+            add(list.size());
+            for (const auto& d : list) add(d.count);
+        };
+        counts(i.constant_buffer_descriptors), counts(i.storage_buffers_descriptors), counts(i.texture_buffer_descriptors);
+        counts(i.image_buffer_descriptors), counts(i.texture_descriptors), counts(i.image_descriptors);
+        add((i.uses_render_area ? 1u : 0u) | (i.uses_rescaling_uniform ? 2u : 0u) | (i.uses_global_memory ? 4u : 0u));
+        uint64_t loads = 0;
+        for (uint32_t g = 0; g < 32; g++) loads |= (uint64_t)i.loads.Generic(g) << g;
+        add(loads);
+        add(spirv[k].size());
+        const uint32_t* w = spirv[k].data();
+        size_t n = spirv[k].size();
+        for (; n >= 2; n -= 2, w += 2) add((uint64_t)w[1] << 32 | w[0]);
+        if (n) add(w[0]);
+    }
+    return h ? h : 1;
+}
+
 void put_bytes(std::vector<uint8_t>& o, const void* d, size_t n) {
     o.insert(o.end(), (const uint8_t*)d, (const uint8_t*)d + n);
 }
@@ -1348,7 +1425,8 @@ void get_info(Reader& r, Shader::Info& i) {
     for (auto& h : i.handle_programs) r.list(h);
 }
 
-void program_cache_save(const Program& p, const std::vector<std::vector<uint32_t>>& spirv) {
+void program_cache_save(Program& p, const std::vector<std::vector<uint32_t>>& spirv) {
+    if (shader_key_on()) p.fp = program_fingerprint(p, spirv), program_fingerprinted(p.fp);
     disk_init();
     if (!disk_on || spirv.size() != p.stages.size()) return;
     std::vector<uint8_t> o;
@@ -1407,6 +1485,7 @@ void program_cache_read(FILE* in, std::mutex* mu, uint64_t key, const std::vecto
         p->variant = answers_hash(*p);
         const uint64_t n = r.count(1);
         bool ok = !r.bad && n <= 8;   // (a program has at most a few stages)
+        std::vector<std::vector<uint32_t>> all_spirv;   // (RX_VK_SHADER_KEY: for the fingerprint)
         for (uint64_t k = 0; ok && k < n; k++) {
             p->stages.emplace_back();
             Stage& st = p->stages.back();
@@ -1422,7 +1501,9 @@ void program_cache_read(FILE* in, std::mutex* mu, uint64_t key, const std::vecto
             }
             st.module = make_module(spirv);
             ok = ok && st.module;
+            if (shader_key_on()) all_spirv.push_back(std::move(spirv));
         }
+        if (ok && shader_key_on()) p->fp = program_fingerprint(*p, all_spirv);
         ok = ok && answers_fit(*p, p->answers);   // (hookshot: an answer past the stages or their slots: not this record)
         if (!ok) {
             static std::atomic<int> logged{0};
@@ -2191,6 +2272,10 @@ bool key_listed(const char* hex, const char* var) {
     }
     return false;
 }
+bool shader_key_on() {
+    static const bool on = !getenv("RX_VK_SHADER_KEY") || atoi(getenv("RX_VK_SHADER_KEY")) != 0;
+    return on;
+}
 uint64_t program_cache_stamp() { return disk_stamp(); }
 /// (hookshot) How many program keys the program cache holds now (SIZE_MAX: it is off). vk_draw.cpp's prepare check compares it with
 /// what the last prepare left there: a cache cut short or made again under another stamp (a start with other shader settings,
@@ -2698,6 +2783,26 @@ const Program* program_find(uint64_t key, uint64_t variant) {
     for (auto& p : it->second)
         if (p->variant == variant && p->ready.load(std::memory_order_acquire) && !p->failed) return p.get();
     return nullptr;
+}
+
+bool program_variant_kept(uint64_t key, uint64_t variant) {
+    std::unordered_set<uint64_t> have;
+    loaded_variants(key, &have);
+    if (have.count(variant)) return true;
+    std::lock_guard lk(disk_mu);
+    const auto it = disk_records.find(key);
+    if (it == disk_records.end() || !disk_in) return false;
+    for (const DiskRecord& d : it->second) {
+        std::vector<uint8_t> data(std::min<size_t>(d.size, 1 << 16));   // (the answers come first)
+        _fseeki64(disk_in, d.at, SEEK_SET);
+        if (fread(data.data(), 1, data.size(), disk_in) != data.size()) continue;
+        Reader rd{data.data(), data.data() + data.size()};
+        Program q;
+        rd.get<uint32_t>();
+        rd.list(q.answers);
+        if (!rd.bad && answers_hash(q) == variant) return true;
+    }
+    return false;
 }
 
 void shader_stats(int64_t* translated, int64_t* failed) {

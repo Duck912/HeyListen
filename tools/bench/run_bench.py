@@ -23,7 +23,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 3  # v3: fps_1pct_low, fps_0_1pct_low, over_*_ms_pct (TICK-013); v2: warmup_origin, launch_offset_s
+SCHEMA_VERSION = 5  # v5: play_at_s, status, window_start_s, warmup_origin "play"; v4: environment, gpu_busy (Linux); v3: fps_1pct_low, fps_0_1pct_low, over_*_ms_pct (TICK-013); v2: warmup_origin, launch_offset_s
 HARD_LIMIT_S = float(os.environ.get("HL_BENCH_LIMIT_S", "120"))   # (a run is killed at 2 minutes; the owner lifted it to 8 for single long runs: HL_BENCH_LIMIT_S=500)
 DEFAULT_DURATION_S = 90.0
 # Hookshot, measured on the TICK-004 traces (see README "Warm-up"): gameplay starts
@@ -56,6 +56,25 @@ HOOKSHOT_SCENES = {
         f"{76 + 6 * i}:LUP+RLEFT/700,{77 + 6 * i}:RLEFT/1900,{79 + 6 * i}:LDOWN+RRIGHT/700,{80 + 6 * i}:RRIGHT/1900"
         for i in range(5)),
 }
+
+# The same scenes started with HL_SKIP_TITLE=1 (the game presses A through the title and the file list by itself, from the
+# newest save: engine/host/oot_autoload.c) and HOS_INPUT_FROM_PLAY=1: the script's seconds count from the moment play
+# begins (the game's "play: began" log line), not from launch, so the inputs and the measured window do not depend on how
+# long the title and the loading took. In-play inputs are those above, 66 s earlier (their old launch-relative time minus
+# the old warm-up); the B presses that closed the talk the title's extra A presses started are not needed.
+SKIP_WALK = "10:LUP/6000,17:LRIGHT/4000,23:LDOWN/5000"
+SKIP_SCENES = {
+    "kokiri-idle": "",
+    "kokiri-walk": SKIP_WALK,
+    "hyrule-idle": "",
+    "hyrule-walk": SKIP_WALK,
+    "castle-move": ",".join(
+        f"{10 + 6 * i}:LUP+RLEFT/700,{11 + 6 * i}:RLEFT/1900,{13 + 6 * i}:LDOWN+RRIGHT/700,{14 + 6 * i}:RRIGHT/1900"
+        for i in range(5)),
+}
+# The game stops waiting for a title that will not go (no save, or the presses did not get through): the run is over then.
+GIVE_UP_LINES = ("skip title: no saved game yet", "skip title: gave up")
+_PLAY_LINE = re.compile(r"play: began at clock (\d+) ns, ([0-9.]+) s after the process started")
 
 
 # ---------------------------------------------------------------- statistics
@@ -248,11 +267,41 @@ def skip_from_first_present(warmup_s: float, origin: str, launch_offset_s: float
 
 
 def cut_label(warmup_s: float, origin: str, launch_offset_s: float | None) -> str:
+    if origin == "play":
+        return "from play" if warmup_s <= 0 else f"{warmup_s:g} s after play began"
     if warmup_s <= 0:
         return "whole capture"
     if origin == "launch" and launch_offset_s is not None:
         return f"{warmup_s:g} s after launch"
     return f"{warmup_s:g} s after first present"
+
+
+def parse_play_line(log_path: Path, launch_ns: int | None) -> tuple[float | None, str | None]:
+    """When play began, in seconds after the launch, from the game log's "play: began at clock <ns> ns, <s> s after the
+    process started" line (the clock is the game's hos_now_ns: the harness's perf_counter_ns on Windows). Without a launch
+    time, or when the clock does not match it, the line's own seconds after the process started. (None, None): no line."""
+    try:
+        text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None, None
+    m = _PLAY_LINE.search(text)
+    if not m:
+        return None, None
+    if launch_ns is not None:
+        at = (int(m.group(1)) - launch_ns) / 1e9
+        if 0.0 <= at <= OFFSET_MAX_S * 2:
+            return at, None
+    return float(m.group(2)), "play began: the game clock is not the harness clock; counted from the process start"
+
+
+def window_start_s(origin: str, warmup_s: float, launch_offset_s: float | None, play_at_s: float | None) -> float | None:
+    """Seconds after the first present where the measured window starts (origin "play": warmup_s is the settle time after
+    play began); None when the run has no window (origin "play" and play never began)."""
+    if origin == "play":
+        if play_at_s is None:
+            return None
+        return max(0.0, play_at_s + warmup_s - (launch_offset_s or 0.0))
+    return skip_from_first_present(warmup_s, origin, launch_offset_s)
 
 
 def resolve_launch_offset(trace: Path, launch_ns: int, first_seen_ns: int | None,
@@ -290,6 +339,112 @@ def fps_spread(fps_values: list[float]) -> dict:
     return {"fps_mean": mean, "fps_min": min(vals), "fps_max": max(vals),
             "spread_pct": spread if len(vals) > 1 else None,
             "within_limit": len(vals) > 1 and spread <= REPEAT_SPREAD_LIMIT_PCT}
+
+
+# ------------------------------------------------------- the machine (Linux)
+# What changes a Linux result beside the build (bench.json schema 4): the CPU governor, transparent huge pages (the guest
+# memory is shared memory, so shmem_enabled counts too), udmabuf's size limit (the guest memory imported as dma-bufs,
+# engine/gpu/vk/vk_memory.cpp), the load when the run starts, the kernel and Mesa; and the GPU's busy share during the
+# run, from amdgpu's sysfs file (there is no NVIDIA reader: null there).
+def _read(path: Path) -> str | None:
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+
+
+def _selected(text: str | None) -> str | None:
+    """The [chosen] word of a sysfs choice file ("always [madvise] never" -> "madvise")."""
+    m = re.search(r"\[([^\]]+)\]", text or "")
+    return m.group(1) if m else text
+
+
+def mesa_version() -> str | None:
+    """The Vulkan drivers' Mesa versions ("Mesa 25.2.4"), from vulkaninfo --summary when it is installed (software
+    renderers left out); None without it."""
+    exe = shutil.which("vulkaninfo")
+    if not exe:
+        return None
+    try:
+        r = subprocess.run([exe, "--summary"], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    found, name = [], None
+    for line in r.stdout.splitlines():
+        k, _, v = (x.strip() for x in line.partition("="))
+        if k == "driverName":
+            name = v
+        elif k == "driverInfo" and v.startswith("Mesa") and name != "llvmpipe" and v not in found:
+            found.append(v)
+    return ", ".join(found) or None
+
+
+def linux_environment(sys_root: Path = Path("/sys"), proc: Path = Path("/proc"), mesa=None) -> dict | None:
+    """The machine's state that changes Linux results, read before the launch; None on another OS."""
+    if not sys.platform.startswith("linux"):
+        return None
+    cpus = sys_root / "devices" / "system" / "cpu"
+    governors = sorted({g for g in (_read(f) for f in cpus.glob("cpu[0-9]*/cpufreq/scaling_governor")) if g})
+    thp = sys_root / "kernel" / "mm" / "transparent_hugepage"
+    udmabuf = _read(sys_root / "module" / "udmabuf" / "parameters" / "size_limit_mb")
+    load = (_read(proc / "loadavg") or "").split()[:3]
+    try:
+        loadavg = [float(x) for x in load] if len(load) == 3 else None
+    except ValueError:
+        loadavg = None
+    return {
+        "cpu_governor": ",".join(governors) or None,
+        "thp_enabled": _selected(_read(thp / "enabled")),
+        "thp_shmem_enabled": _selected(_read(thp / "shmem_enabled")),
+        "udmabuf_size_limit_mb": int(udmabuf) if udmabuf and udmabuf.isdigit() else None,
+        "loadavg_start": loadavg,
+        "kernel": _read(proc / "sys" / "kernel" / "osrelease"),
+        "mesa": (mesa or mesa_version)(),
+    }
+
+
+def amdgpu_cards(sys_root: Path = Path("/sys")) -> list[tuple[str, Path]]:
+    """(PCI address, gpu_busy_percent file) of every card whose driver is amdgpu (connectors such as card1-DP-1 left out)."""
+    cards = []
+    for card in sorted((sys_root / "class" / "drm").glob("card*")):
+        if not re.fullmatch(r"card\d+", card.name):
+            continue
+        dev = card / "device"
+        busy = dev / "gpu_busy_percent"
+        if os.path.basename(os.path.realpath(dev / "driver")) == "amdgpu" and busy.is_file():
+            cards.append((os.path.basename(os.path.realpath(dev)), busy))
+    return cards
+
+
+class GpuBusy:
+    """The amdgpu cards' busy percent, read each time sample() is called (the run's 0.2 s loop)."""
+
+    def __init__(self, cards: list[tuple[str, Path]]):
+        self.cards = cards
+        self.rows: list[tuple[float, str, int]] = []   # (seconds after the launch, PCI address, percent)
+
+    def sample(self, t_s: float) -> None:
+        for pci, f in self.cards:
+            v = _read(f)
+            if v and v.isdigit():
+                self.rows.append((t_s, pci, int(v)))
+
+    def write_csv(self, path: Path) -> None:
+        if self.cards:
+            path.write_text("t_s,pci,busy_pct\n" + "".join(f"{t:.3f},{c},{v}\n" for t, c, v in self.rows), encoding="utf-8")
+
+    def summary(self, from_s: float) -> dict | None:
+        """Per card, the samples from from_s seconds after the launch (the warm-up) on: count, mean, p50, p95."""
+        if not self.cards:
+            return None
+        cards = []
+        for pci, _f in self.cards:
+            vals = sorted(float(v) for t, c, v in self.rows if c == pci and t >= from_s)
+            cards.append({"pci": pci, "samples": len(vals),
+                          "mean_pct": round(sum(vals) / len(vals), 1) if vals else None,
+                          "p50_pct": round(percentile(vals, 0.50), 1) if vals else None,
+                          "p95_pct": round(percentile(vals, 0.95), 1) if vals else None})
+        return {"source": "amdgpu gpu_busy_percent", "from_s_after_launch": from_s, "cards": cards}
 
 
 # ------------------------------------------------------------------ watchdog
@@ -370,11 +525,33 @@ def detect_build(exe: Path) -> str:
     return "lichii" if any(t in n for t in ("lichii", "eden")) else "hookshot"
 
 
+def title_mode(args: argparse.Namespace) -> str:
+    """"skip": the game itself goes through the title (HL_SKIP_TITLE=1) and the scene's inputs count from play; "input":
+    the scene's inputs press through the title, counted from launch (the way until 2026-11-15). auto: skip for the named
+    scenes, input with an --input-script (its times were written for the old clock; --title skip makes them play-relative)."""
+    if args.title != "auto":
+        return args.title
+    return "input" if args.input_script is not None else "skip"
+
+
+def resolve_origin(args: argparse.Namespace, mode: str) -> str:
+    if args.warmup_origin != "auto":
+        return args.warmup_origin
+    return "play" if mode == "skip" else "launch"
+
+
 def resolve_warmup(warmup_arg: float | None, build: str) -> float:
     """--warmup-s if given, else the per-build default (counted from launch for Hookshot)."""
     if warmup_arg is not None:
         return max(0.0, float(warmup_arg))
     return HOOKSHOT_DEFAULT_WARMUP_S if build == "hookshot" else LICHII_DEFAULT_WARMUP_S
+
+
+def log_text(path: Path) -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
 
 
 def run(args: argparse.Namespace) -> dict:
@@ -386,7 +563,16 @@ def run(args: argparse.Namespace) -> dict:
     if duration < args.duration:
         warnings.append(f"duration clamped to {duration} s to respect the {HARD_LIMIT_S:.0f} s limit")
     warmup = resolve_warmup(args.warmup_s, build)
-    if duration - warmup < MEASURE_MIN_S:
+    mode = title_mode(args) if build == "hookshot" else "input"
+    want_origin = resolve_origin(args, mode) if build == "hookshot" else "first_present"
+    if want_origin == "play" and mode != "skip":
+        raise SystemExit("--warmup-origin play needs the game to log when play began: use --title skip "
+                         "(HL_SKIP_TITLE=1; without it nothing presses through the title)")
+    if want_origin == "play":
+        warmup = max(0.0, float(args.play_settle_s))   # (seconds after play begins; --warmup-s is not used)
+        if args.warmup_s is not None:
+            warnings.append(f"--warmup-s {args.warmup_s:g} ignored: the window is counted from play (--play-settle-s)")
+    if want_origin != "play" and duration - warmup < MEASURE_MIN_S:
         warnings.append(f"only {max(0.0, duration - warmup):.0f} s left to measure after the "
                         f"{warmup:g} s warm-up; use a longer --duration (max {HARD_LIMIT_S - 5:.0f})")
 
@@ -400,11 +586,14 @@ def run(args: argparse.Namespace) -> dict:
     # Everything that can refuse happens before anything is launched.
     if build == "hookshot":
         source = "hos_present_trace"
-        script = args.input_script or HOOKSHOT_SCENES.get(args.scene)
+        scenes = SKIP_SCENES if mode == "skip" else HOOKSHOT_SCENES
+        script = args.input_script if args.input_script is not None else scenes.get(args.scene)
         if script is None:
-            raise SystemExit(f"unknown scene {args.scene!r}; known: {sorted(HOOKSHOT_SCENES)} (or pass --input-script)")
+            raise SystemExit(f"unknown scene {args.scene!r}; known: {sorted(scenes)} (or pass --input-script)")
         env.update({"HOS_PRESENT_TRACE": str(trace), "HOS_FPS_LIMIT": str(args.fps_limit),
                     "HOS_AUDIO": "0", "HOS_WINDOW_NOACTIVATE": "1", "HOS_INPUT_SCRIPT": script})
+        if mode == "skip":
+            env.update({"HL_SKIP_TITLE": "1", "HOS_INPUT_FROM_PLAY": "1"})
     else:
         source = "presentmon"
         pm = find_presentmon(args.presentmon)
@@ -425,18 +614,17 @@ def run(args: argparse.Namespace) -> dict:
     launch_ns = None
     first_seen_ns = None
     next_check = 0.0
+    next_log_check = 0.0
+    give_up = False
     image = exe.name
     if instances(exe):
         raise SystemExit(f"{exe} is already running: refusing to start a second instance of this game folder")
+    environment = linux_environment()   # (before the launch: the load average is the machine's, not the game's)
+    busy = GpuBusy(amdgpu_cards() if sys.platform.startswith("linux") else [])
     # (2026-11-09: a scripted walk left the area, the game autosaved and the user's own save was overwritten) the run must leave
     # the saves exactly as they were: copied before, put back after
-    save_dir = next((d for d in save_dirs(exe) if d.is_dir()), None)
-    save_copy = out / "save-guard"
-    if save_dir is not None and not os.environ.get("BENCH_KEEP_GAME_SAVES"):
-        shutil.rmtree(save_copy, ignore_errors=True)
-        shutil.copytree(save_dir, save_copy)
-    else:
-        save_dir = None
+    # (every folder the game may save to: on Linux the data folder and, after a failed move, user/ beside the exe)
+    guarded = [] if os.environ.get("BENCH_KEEP_GAME_SAVES") else guard_saves(save_dirs(exe), out / "save-guard")
     log = log_path.open("wb")
     try:
         dog.start()
@@ -454,6 +642,16 @@ def run(args: argparse.Namespace) -> dict:
                 next_check = time.monotonic() + 0.5
                 if trace_has_row(trace):
                     first_seen_ns = time.perf_counter_ns()
+            busy.sample(time.monotonic() - started)
+            if mode == "skip" and not give_up and time.monotonic() >= next_log_check:
+                next_log_check = time.monotonic() + 2.0
+                wait_text = log_text(log_path)
+                if _PLAY_LINE.search(wait_text):
+                    next_log_check = float("inf")   # (play began: nothing more to wait for)
+                elif any(line in wait_text for line in GIVE_UP_LINES):
+                    give_up = True
+                    warnings.append("the game stopped waiting for the title to go: the run ends here, not measured")
+                    break
             time.sleep(0.2)
         exit_code = game.poll()
     finally:
@@ -474,16 +672,18 @@ def run(args: argparse.Namespace) -> dict:
             time.sleep(1)
         if instances(exe):
             warnings.append(f"{image} still running after the run")
-        elif save_dir is not None:   # (only once no game can write them any more)
-            shutil.rmtree(save_dir, ignore_errors=True)
-            shutil.copytree(save_copy, save_dir)
-        if save_dir is not None and instances(exe):
-            warnings.append(f"saves NOT restored (game still running): the copy is in {save_copy}")
+        elif guarded:   # (only once no game can write them any more)
+            warnings += restore_saves(guarded)
+        if guarded and instances(exe):
+            warnings.append(f"saves NOT restored (game still running): the copies are in {out / 'save-guard'}")
     wall = time.monotonic() - started
     if dog.fired:
         warnings.append("hard watchdog fired")
 
     offset, origin = None, "first_present"
+    play_at, play_note = parse_play_line(log_path, launch_ns) if build == "hookshot" else (None, None)
+    if play_note:
+        warnings.append(play_note)
     if build == "hookshot":
         rows = parse_hookshot_trace(trace)
         if rows:
@@ -497,13 +697,22 @@ def run(args: argparse.Namespace) -> dict:
                 warnings.append(note)
         if offset is not None:
             origin = "launch"
+        if want_origin == "play":
+            origin = "play"
     else:
         rows = parse_presentmon_csv(pm_csv)
         if not rows:
             warnings.append("no PresentMon rows")
         windows = []
         warnings.append("warm-up counted from the first PresentMon row (no launch offset for Lichii)")
-    skip = skip_from_first_present(warmup, origin, offset)
+    skip = window_start_s(origin, warmup, offset, play_at)
+    failed = skip is None
+    failure = None
+    if failed:
+        failure = ("never reached play: no play-began line in the game log"
+                   + (" (the game gave up waiting for the title)" if give_up else ""))
+        warnings.append(failure)
+        skip = float("inf")   # (nothing is measured)
     result = {
         "schema_version": SCHEMA_VERSION,
         "build": build,
@@ -516,14 +725,22 @@ def run(args: argparse.Namespace) -> dict:
         "warmup_s": warmup,
         "warmup_origin": origin,
         "launch_offset_s": None if offset is None else round(offset, 3),
+        "title": mode,
+        "play_at_s": None if play_at is None else round(play_at, 3),
+        "window_start_s": None if failed else round(skip, 3),
+        "status": "failed" if failed else "ok",
+        "failure": failure,
         "killed_by_harness": killed,
         "watchdog_fired": dog.fired,
         "exit_code": exit_code,
         **compute_stats(window(rows, skip)),
         "log_window_fps": windows,
+        "environment": environment,
+        "gpu_busy": busy.summary(warmup),
         "warnings": warnings,
     }
-    if rows and not result["frames"]:
+    busy.write_csv(out / "gpu_busy.csv")
+    if rows and not result["frames"] and not failed:
         result["warnings"].append(f"no frames after the {warmup:g} s warm-up")
     (out / "bench.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result
@@ -571,20 +788,64 @@ def build_parser() -> argparse.ArgumentParser:
                    help="ignore frames before N s after game LAUNCH (Hookshot default 60; Lichii default 0)")
     p.add_argument("--repeat", type=int, default=1, help="N back-to-back runs into <out>/run1..N + repeat.json")
     p.add_argument("--fps-limit", type=int, default=120, help="Hookshot HOS_FPS_LIMIT")
-    p.add_argument("--input-script", help="Hookshot HOS_INPUT_SCRIPT override")
+    p.add_argument("--input-script", help="Hookshot HOS_INPUT_SCRIPT override (with --title skip: its times count from play)")
+    p.add_argument("--title", choices=("auto", "skip", "input"), default="auto",
+                   help="how the run gets through the title: skip = the game does (HL_SKIP_TITLE=1, newest save) and the "
+                        "scene's inputs count from play; input = the scene's own presses, from launch (the old way, for "
+                        "comparisons). auto: skip for the named scenes, input with --input-script")
+    p.add_argument("--warmup-origin", choices=("auto", "launch", "play"), default="auto",
+                   help="what the warm-up counts from: play = the window starts when play begins (a run that never "
+                        "reaches play is failed, not measured); launch = --warmup-s after launch. auto: play with "
+                        "--title skip, else launch")
+    p.add_argument("--play-settle-s", type=float, default=0.0,
+                   help="with the play origin: seconds after play begins that are left out too (default 0)")
     p.add_argument("--presentmon", help="path to PresentMon (Lichii)")
     p.add_argument("--game", help="Lichii: game file passed with -g (the emulator loads its own save)")
     return p
 
 
 def save_dirs(exe: Path) -> list[Path]:
-    """Where the game keeps its saves: user/save beside the exe (Windows), else the Linux data folder
-    ($XDG_DATA_HOME/hookshot/save, by default ~/.local/share/hookshot/save)."""
+    """Every folder the game may keep its saves in; the run guards each one that exists.
+
+    user/save beside the exe (Windows; on Linux when started with an image path, or when the move below left the saves
+    there), and on Linux the data folder of engine/host/hos_main.c saves_dir: $XDG_DATA_HOME/heylisten/save when
+    XDG_DATA_HOME is an absolute path, else ~/.local/share/heylisten/save. Builds before the HeyListen names used
+    .../hookshot/save (nothing moves those), so that one is guarded too.
+    """
     dirs = [exe.parent / "user" / "save", exe.parent.parent / "user" / "save"]
     if os.name != "nt":
-        data = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
-        dirs.append(Path(data) / "hookshot" / "save")
+        xdg = os.environ.get("XDG_DATA_HOME", "")
+        data = Path(xdg) if xdg.startswith("/") else Path.home() / ".local" / "share"
+        dirs += [data / "heylisten" / "save", data / "hookshot" / "save"]
     return dirs
+
+
+def guard_saves(dirs: list[Path], copies: Path) -> list[tuple[Path, Path]]:
+    """Copies every existing save folder of dirs into copies/<n>; the (folder, copy) pairs for restore_saves."""
+    shutil.rmtree(copies, ignore_errors=True)
+    guarded, seen = [], set()
+    for d in dirs:
+        key = os.path.realpath(d)
+        if key in seen or not d.is_dir():
+            continue
+        seen.add(key)
+        copy = copies / str(len(guarded))
+        shutil.copytree(d, copy, symlinks=True)
+        (copies / f"{len(guarded)}.txt").write_text(str(d) + "\n", encoding="utf-8")
+        guarded.append((d, copy))
+    return guarded
+
+
+def restore_saves(guarded: list[tuple[Path, Path]]) -> list[str]:
+    """Puts every guarded save folder back as it was copied; the warnings (a folder that could not be put back)"""
+    warnings = []
+    for d, copy in guarded:
+        try:
+            shutil.rmtree(d, ignore_errors=True)
+            shutil.copytree(copy, d, symlinks=True)
+        except OSError as e:
+            warnings.append(f"saves in {d} NOT restored ({e}): the copy is in {copy}")
+    return warnings
 
 
 def instance_pids(exe: Path) -> list[int]:
@@ -653,14 +914,14 @@ def main(argv: list[str] | None = None) -> int:
     for res in results:
         print(json.dumps({k: res[k] for k in ("build", "scene", "frames", "fps", "fps_1pct_low",
                                               "fps_0_1pct_low", "frame_time_ms", "wall_clock_s",
-                                              "warmup_origin", "launch_offset_s")}, indent=2))
+                                              "warmup_origin", "launch_offset_s", "play_at_s", "status")}, indent=2))
     if len(results) > 1:
         spread = fps_spread([r["fps"] for r in results])
         sp = "n/a" if spread["spread_pct"] is None else f"{spread['spread_pct']:.1f}%"
         print(f"repeat: fps {spread['fps_min']:.1f}-{spread['fps_max']:.1f} "
               f"(mean {spread['fps_mean']:.1f}), spread {sp}, "
               f"{'within' if spread['within_limit'] else 'NOT within'} {REPEAT_SPREAD_LIMIT_PCT:g}%")
-    return 0 if all(r["frames"] for r in results) else 2
+    return 0 if all(r["frames"] and r["status"] == "ok" for r in results) else 2
 
 
 if __name__ == "__main__":

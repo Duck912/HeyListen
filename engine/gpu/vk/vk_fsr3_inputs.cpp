@@ -1,8 +1,8 @@
 // (hookshot) AMD FSR 3.1's inputs: the scene's camera and depth, made into colour, depth and motion at the render size by
 // one pass (shaders/fsr3_prep.comp); see vk_fsr3_inputs.h for what comes from #841 and what does not yet.
 //
-// The camera is taken exactly as vk_dlss.cpp's dlss_note_scene_draw takes it, from the draws into the scene's colour target:
-// their vertex stage's uniform buffer 3 holds the target's size at 0x120, this frame's view-projection at 0x30 (row major,
+// The camera is taken exactly as vk_temporal.cpp's temporal_note_scene_draw takes it, from the draws into the scene's
+// colour target: their vertex stage's uniform buffer 3 holds the target's size at 0x120, this frame's view-projection at 0x30 (row major,
 // clip = M * position) and the projection at 0x70, its w row (0, 0, -1, 0) at 0xa0. The jitter the host put on the
 // projection (nx2/oot_jitter.py: P[0][2] and P[1][2]) is read back from it, given to FSR in render pixels and taken off the
 // motion, with dlss_math.h's functions: the same jitter, read the same way, as DLSS's.
@@ -162,12 +162,13 @@ bool make_pipeline() {
     VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     mi.codeSize = sizeof FSR3_PREP_COMP_SPV, mi.pCode = FSR3_PREP_COMP_SPV;
     VkShaderModule m = VK_NULL_HANDLE;
-    if (vkCreateShaderModule(dev.device, &mi, nullptr, &m) != VK_SUCCESS) return false;
+    IntelDriverGate gate;
+    if (extern_guarded_shader_module(&mi, &m) != VK_SUCCESS) return false;
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main",
                 nullptr};
     ci.layout = s.layout;
-    const VkResult r = vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &s.pipe);
+    const VkResult r = extern_guarded_compute(VK_NULL_HANDLE, &ci, &s.pipe);
     vkDestroyShaderModule(dev.device, m, nullptr);
     if (r != VK_SUCCESS) {
         logf("vk: fsr3 inputs: their pipeline was not made (%d)", (int)r);
@@ -183,7 +184,7 @@ bool make_pipeline() {
     return true;
 }
 
-/// A view of a depth texture's depth alone, for sampling (made once per image: vk_dlss.cpp's depth_view)
+/// A view of a depth texture's depth alone, for sampling (made once per image: vk_temporal.cpp's depth_view)
 VkImageView depth_view(Texture* t) {
     State& s = st();
     const uint64_t gen = texture_destroy_generation();

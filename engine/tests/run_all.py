@@ -26,6 +26,10 @@ OS = "windows" if WINDOWS else "linux"
 # Arguments some tests need. {name} is a tool or folder found below (find_tools); a check whose tools are missing is
 # skipped, or fails with --strict. Tests not listed run with no arguments and their own defaults.
 ARGS = {
+    "tests/test_sampler_retirement.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_mma_software.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
+    "tests/test_native_float_atomic_add.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
+    "tests/test_shader_module_guard.py": ["--cxx", "{cxx}"],
     "tests/test_png_publication.py": ["--cxx", "{cxx}"],
     "tests/test_framelog_sink.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_capture_slot_ownership.py": ["--cxx", "{cxx}"],
@@ -43,6 +47,19 @@ ARGS = {
     "tests/test_readback_ticket.py": ["--cxx", "{cxx}"],
     "tests/test_capture_claim.py": ["--cxx", "{cxx}"],
     "tests/test_pcie_link.py": ["--cxx", "{cxx}"],
+    "tests/test_amdgpu_stats.py": ["--cxx", "{cxx}"],
+    "tests/test_cpu_temp.py": ["--cxx", "{cxx}"],
+    "tests/test_exe_base.py": ["--cxx", "{cxx}"],
+    "tests/test_sparse_queue.py": ["--cxx", "{cxx}"],
+    "tests/test_radv_submit_thread.py": ["--cxx", "{cxx}"],
+    "tests/test_driver_env_choose.py": ["--cxx", "{cxx}"],
+    "tests/test_readback_timeout_reuse.py": ["--cxx", "{cxx}"],
+    "tests/test_import_reach.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_pending_guest_import.py": ["--cxx", "{cxx}"],
+    "tests/test_vk_collect_window.py": ["--cxx", "{cxx}"],
+    "tests/test_astc_cpu.py": ["--cxx", "{cxx}"],
+    "tests/test_capture_past_end.py": ["--cxx", "{cxx}"],
+    "tests/test_target_pool_cap.py": ["--cxx", "{cxx}"],
     "tests/test_shadow_fast.py": ["--cxx", "{cxx}"],
     "tests/test_collect_fast.py": ["--cc", "{cxx}"],
     "tests/test_late_fix_order.py": ["--cxx", "{cxx}"],
@@ -56,6 +73,7 @@ ARGS = {
     "tests/test_prof_sampling.py": ["--cxx", "{cxx}"],
     "tests/test_present_geometry_trace.py": ["--cxx", "{cxx}"],
     "tests/test_screensaver.py": ["--cc", "gcc"],
+    "tests/test_update_order.py": ["--cc", "gcc"],
     "tests/test_guestpages.py": ["--cc", "gcc"],
     "tests/test_hl_trace.py": ["--cc", "gcc"],
     "tests/test_windows_display_startup.py": ["--cc", "gcc"],
@@ -73,11 +91,13 @@ ARGS = {
     "tests/test_lower_depbar.py": ["--cxx", "clang++"],
     "tests/test_lower_register_markers.py": ["--cxx", "clang++"],
     "tests/test_text_speed.py": ["--cc", "gcc"],
+    "tests/test_movie_frame_count.py": ["--cc", "gcc"],
     "tests/test_audio_in.py": ["--cc", "gcc", "--cxx", "g++"],
     "tests/test_upscale_fallback.py": ["--cxx", "g++"],
     "tests/test_reserved_core.py": ["--cxx", "g++"],
     "tests/test_fsr3_shaders.py": ["--glslang", "{glslang}", "--spirv-val", "{spirv_val}"],
     "tests/test_fg_scale_sharpen.py": ["--cxx", "g++"],
+    "tests/test_astc_bc_encode.py": ["--cxx", "{cxx}"],
     "tests/test_taau_env_lookup.py": ["--cxx", "g++"],
     "tests/test_target_overlap.py": ["--cxx", "g++"],
     "tests/test_segment_plan.py": ["--cxx", "g++"],
@@ -94,6 +114,7 @@ ARGS = {
     "tests/test_stick_dead_zone.py": ["--cc", "gcc", "--cxx", "g++"],
     "tests/test_menu_restart.py": ["--cxx", "g++", "--cc", "gcc"],
     "tests/test_output_resolution.py": ["--cxx", "{cxx}"],
+    "tests/test_marker_stall.py": ["--cxx", "{cxx}"],
     "tests/test_widescreen_shapes.py": ["--cc", "gcc"],
     "tests/test_nvn_buffer_map.py": ["--cc", "gcc"],
     "tests/test_nvn_host_tables.py": ["--cc", "gcc"],
@@ -137,6 +158,9 @@ ARGS = {
     "tests/test_astc_bc_policy.py": ["--cxx", "g++"],
     "tests/test_drawn_page_map.py": ["--cxx", "{cxx}"],
     "tests/test_evict_reason.py": ["--cxx", "{cxx}"],
+    "tests/test_tl_time_domain.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_jt_mark_export.py": ["--cxx", "{cxx}"],
+    "tests/test_vcore_video_acquire.py": ["--cxx", "{cxx}"],
 }
 
 # Python packages some tests import (CI installs them; the runner itself needs none)
@@ -148,6 +172,7 @@ MODULES = {
 # Checks that cannot run in CI, with why, by OS. Each still runs with --no-skip (or by name).
 SKIP = {
     "tests/test_precompile_compute_guard.py": ({"linux"}, "Windows structured exceptions"),
+    "tests/test_shader_module_guard.py": ({"linux"}, "Windows structured exceptions"),
     # (the game: these run the lifted code of a real dump against Unicorn)
     "nx2/test_insn.py": ({"linux", "windows"}, "needs the game's modules (work/dump) and Unicorn"),
     "nx2/test_leaf.py": ({"linux", "windows"}, "needs the game's modules (work/dump) and Unicorn"),
@@ -162,6 +187,7 @@ SKIP = {
     "tests/test_linux_update.py": ({"windows"}, "the Linux builder's update and folder launcher, POSIX files and shell scripts"),
     "tests/test_oot_saves.py": ({"windows"}, "the save script's folder discovery is the Linux one (on Windows Hookshot's saves are in the game folder: --hookshot)"),
     "tests/test_linux_driver_fault_guard.py": ({"windows"}, "POSIX signals: the Linux guard"),
+    "tests/test_jt_mark_export.py": ({"windows"}, "the Linux exe's dynamic exports (on Windows the mark is a DLL export)"),
 }
 # (spirv-val: SPIRV-Tools comes with the Linux runner's packages, not on Windows)
 for _name in ("nx2/test_texture_phi_dominance.py", "nx2/test_unsigned_image_types.py", "nx2/test_depth_sample_types.py", "nx2/test_default_point_size.py", "nx2/test_draw_parameters.py", "nx2/test_coop_spirv.py",

@@ -11,8 +11,16 @@ Runs one build, collects per-frame present intervals, writes `<dir>/bench.json`
 (plus the raw `present_trace.csv` / `presentmon.csv` and `game_log.txt`).
 Exit code 0 when frames were recorded, 2 when none were.
 
-On Linux, `--exe` is the game folder's `hookshot`; the saves the run guards (copied before, put back after) are
-`$XDG_DATA_HOME/hookshot/save` (`~/.local/share/hookshot/save`), and the running check uses `pgrep -x`.
+On Linux, `--exe` is the game folder's `hookshot`, and the running check uses `pgrep -x`. The run guards (copies
+into `<dir>/save-guard/<n>` before, puts back after) every save folder the game may write that exists: `user/save`
+beside the exe (and one folder up), and on Linux the game's data folder, `$XDG_DATA_HOME/heylisten/save` (when
+`XDG_DATA_HOME` is an absolute path, as `engine/host/hos_main.c` reads it; else `~/.local/share/heylisten/save`), and
+`.../hookshot/save`, where builds before the HeyListen names saved. `<dir>/save-guard/<n>.txt` names each copy's folder.
+`BENCH_KEEP_GAME_SAVES=1` turns the guard off.
+
+On Linux each run also records the machine (`environment` in bench.json) and, with an amdgpu card, the GPU's busy share
+(`gpu_busy`, and every sample in `gpu_busy.csv`): see bench.json below. `summarize.py` prints them as a second table
+when a directory has them.
 
 `--repeat N` (TICK-009) runs N launches back to back into `<dir>/run1` .. `run<N>`
 (each with its own watchdog, the game killed before the next one starts) and writes
@@ -98,6 +106,27 @@ bound because the file is buffered. If neither works, `launch_offset_s` is null 
 PresentMon capture starts after launch and its clock is not measured), so its warm-up
 counts from the first PresentMon row.
 
+## Window from play (schema 5)
+
+A run counted from launch (`--warmup-s`) measures the title and the loading when it is late out of the title. The named
+scenes (`kokiri-idle`, `kokiri-walk`, `hyrule-idle`, `hyrule-walk`, `castle-move`) therefore start the game with
+`HL_SKIP_TITLE=1` (the game presses A through the title and the file list by itself, from the newest save in the
+folder's `user/save`: `engine/host/oot_autoload.c`) and `HOS_INPUT_FROM_PLAY=1` (the scene's inputs count from the moment
+play begins, so they carry no title presses), and cut the window at that moment:
+
+- The game logs `play: began at clock <ns> ns, <s> s after the process started` when the player first runs. The harness
+  reads it on its own clock (the same QPC clock) and writes `play_at_s` (seconds after launch) into bench.json;
+  `warmup_origin` is `play` and `window_start_s` is where the window starts, in seconds after the first present.
+  `--play-settle-s N` leaves N more seconds out (default 0). `--warmup-s` is not used then (a warning says so).
+- A run that never reaches play (no save in the folder: the title stays; the presses did not get through) is
+  `status: "failed"` with `failure`, `frames` 0 and exit code 2, not measured. The run ends as soon as the game
+  logs that it stopped waiting for the title (no save), not at the end of the duration.
+- `--title input` is the old way: the scenes' own presses through the title from launch (scripts `HOOKSHOT_SCENES`) and
+  the `--warmup-s` window counted from launch, kept for comparisons with older runs. An `--input-script` also keeps it by
+  default (its times were written for the launch clock); `--title skip --input-script S` makes them count from play.
+  `--warmup-origin launch|play` chooses the cut apart from the title mode (`play` needs `--title skip`).
+- `summarize.py` takes the window of a play-origin run from `window_start_s`; a failed run shows 0 frames.
+
 ## Watchdog
 
 The game (and PresentMon) are launched as children of the script. They are killed
@@ -134,18 +163,22 @@ membership for ETW. The scene is not controllable: Lichii has no input script, s
 `--scene` is only a label and the user positions the game; this is a gap. These are
 PresentMon's present intervals on the host swap chain, not guest (Switch) frames.
 
-## bench.json (schema_version 3)
+## bench.json (schema_version 5)
 
 | key | type | meaning |
 |---|---|---|
-| schema_version | int | 3 (TICK-013: low fps and budget shares added). 2 = launch-based warm-up, 1 = warm-up counted from the first present; both still read |
+| schema_version | int | 5 (the play window: `title`, `play_at_s`, `window_start_s`, `status`, `failure`; `warmup_origin` may be `play`). 4 = environment and gpu_busy added; 3 = low fps and budget shares (TICK-013), 2 = launch-based warm-up, 1 = warm-up counted from the first present; all still read |
 | build | "hookshot"/"lichii" | |
 | exe, scene | string | inputs |
 | source | "hos_present_trace"/"presentmon" | where frame times came from |
 | started_utc | string | ISO 8601 |
 | duration_requested_s, wall_clock_s | number | requested vs actual run time |
 | warmup_s | number | frames before this many seconds are ignored (see Warm-up) |
-| warmup_origin | "launch"/"first_present" | what warmup_s is counted from (absent in schema 1 = first_present) |
+| warmup_origin | "launch"/"first_present"/"play" | what warmup_s is counted from (absent in schema 1 = first_present); `play`: the window starts when play began and warmup_s is the settle time after it |
+| title | "skip"/"input" | schema 5: how the run got through the title (see Window from play) |
+| play_at_s | number/null | schema 5: seconds from launch to the game's `play: began` line (null when it never came, also in runs of the old way that did not log it) |
+| window_start_s | number/null | schema 5: where the measured window starts, in seconds after the first present (null: failed) |
+| status, failure | "ok"/"failed", string/null | schema 5: failed = a `play` run that never reached play, nothing measured |
 | launch_offset_s | number/null | game launch to first present (see Warm-up) |
 | killed_by_harness | bool | game still running at the end and was killed |
 | watchdog_fired | bool | the hard timer (not the normal end) killed it |
@@ -156,6 +189,8 @@ PresentMon's present intervals on the host swap chain, not guest (Switch) frames
 | fps_1pct_low, fps_0_1pct_low | number | schema 3: 1000 / mean of the slowest 1% / 0.1% frames (see Summary metrics) |
 | over_8_33_ms_pct, over_6_94_ms_pct, over_16_7_ms_pct | number | schema 3: % of frames above 8.33 / 6.94 / 16.7 ms |
 | log_window_fps | [number] | Hookshot only, see above |
+| environment | object/null | schema 4, Linux (null elsewhere), read before the launch: `cpu_governor` (the CPUs' `scaling_governor`s, comma-separated when they differ), `thp_enabled` and `thp_shmem_enabled` (the chosen word of `/sys/kernel/mm/transparent_hugepage/enabled` and `shmem_enabled`), `udmabuf_size_limit_mb` (`/sys/module/udmabuf/parameters/size_limit_mb`, null when udmabuf is not loaded), `loadavg_start` (`/proc/loadavg`'s three), `kernel`, `mesa` (the drivers' `driverInfo` from `vulkaninfo --summary`, null without it). A field that cannot be read is null |
+| gpu_busy | object/null | schema 4, Linux with an amdgpu card (null otherwise; there is no NVIDIA reader): `source`, `from_s_after_launch` (the warm-up: samples before it are left out) and per card `pci`, `samples`, `mean_pct`, `p50_pct`, `p95_pct` of `/sys/class/drm/card<N>/device/gpu_busy_percent`, read every 0.2 s |
 | warnings | [string] | caveats of this run |
 
 ## Tests
@@ -163,4 +198,6 @@ PresentMon's present intervals on the host swap chain, not guest (Switch) frames
 `python -m pytest -q tools/bench` - parsers on sample files in `testdata/`, the warm-up and
 launch-offset logic, the fps spread, `summarize.py` on synthetic directories, the
 watchdog, the 1% / 0.1% low fps and the 120 / 144 / 60 Hz budget shares on synthetic traces,
-and end-to-end runs (`--repeat 2` included) against a fake game process. No real game is started.
+the save folders guarded and put back, the Linux environment and GPU busy readers on a fake sysfs,
+and end-to-end runs (`--repeat 2` included) against a fake game process. No real game is started, and the tests use a
+data folder of their own (`XDG_DATA_HOME`), never the user's saves.
