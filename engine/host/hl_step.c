@@ -15,7 +15,8 @@
    the two symbols. nn_vi.c publishes the frame's seconds (hos_frame_seconds_bits) while the cap is above 60 and the hook
    is in (hos_step_probe set by the first one), and keeps the nominal rate at 60 at most then. HOS_FPS_STEP=0: as before. */
 #include "hl_host.h"
-#include <windows.h>   /* (SRWLOCK: hos_movie_frames) */
+#include "frame_whole.h"
+#include <windows.h>   /* (SRWLOCK: hos_movie_frames, hos_frame_whole) */
 #include <stdlib.h>
 #include <string.h>
 
@@ -76,4 +77,30 @@ uint32_t hos_movie_frames(uint64_t player) {
     }
     ReleaseSRWLockExclusive(&lock);
     return n;
+}
+
+/* The game's counters that add the frame step, or an amount of it, cut to whole frames, above a 60 cap (after upstream
+   Hookshot f915af93, #2006). At 60 fps the step is 1; above a 60 cap it is the frame's own time, under 1 (0.42 at 144 fps),
+   and the cut is 0 every frame, so the counter stands still. A whole hook (HL_WHOLE_HOOK below: the function, its text hash,
+   the register the cut goes into, the guest address the remainder is kept for) is a line nx2/hl_gates.py puts after that
+   cut, making the count hos_frame_whole(key, the amount, the game's count): the amount added to that counter's own
+   remainder and its whole frames handed out (host/frame_whole.h) while the host publishes the frame's seconds; the game's
+   own count, exactly, otherwise and with HOS_FPS_WHOLE=0 (comparisons; HeyListen's, upstream has no switch). A site is
+   added once it is seen to misbehave in game:
+   - f_80a87e50, the pick-up indicator above Link's head (a rupee, a Deku Stick): the count it shows (+864) moves toward the
+     wallet's (+860) by (int)(step * max(distance / 50, 1)) and the indicator fades when they meet. Cut to 0, it stayed at
+     the old count until a door or a talk replaced it (upstream issue 1832). */
+HL_WHOLE_HOOK(80a87e50, "7464f66dbdfb2fd2", 12, "c->x[19] + 864");
+
+uint32_t hos_frame_whole(uint64_t at, uint32_t amount_bits, uint32_t game) {
+    static FrameWhole state;   /* (these two under the lock: the game's update threads) */
+    static SRWLOCK lock = SRWLOCK_INIT;
+    static int on = -1;
+    int v = __atomic_load_n(&on, __ATOMIC_RELAXED);
+    if (v < 0) v = !(getenv("HOS_FPS_WHOLE") && !atoi(getenv("HOS_FPS_WHOLE"))), __atomic_store_n(&on, v, __ATOMIC_RELAXED);
+    if (!v || !__atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED)) return game;
+    AcquireSRWLockExclusive(&lock);
+    const uint32_t whole = frame_whole(&state, at, amount_bits, 1);
+    ReleaseSRWLockExclusive(&lock);
+    return whole;
 }

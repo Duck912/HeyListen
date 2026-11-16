@@ -211,3 +211,15 @@ under the game's, so a moving platform keeps Link. These are lift hooks (`HL_SOU
 when it hashes as recorded, markers `hl gate 80435301`, `838ceb81`, `838cfc11`. At a cap of 60 both give the game's own
 values. `HOS_FPS_SOUND=0`, `HOS_FPS_SOLVER=0`: the game's (HeyListen's switches); `HOS_FPS_LOG=1`: what they do every 600
 calls.
+
+**Counters cut to whole frames (after upstream Hookshot f915af93).** Some of the game's counters add the frame step, or an
+amount of it, cut to a whole number: 1 a frame at 60, 0 every frame under a step of 1, so the counter stands still above a
+60 cap. A whole hook (`HL_WHOLE_HOOK` in `host/hl_step.c`: the function, its hash, the register the cut goes into, the
+counter's or its object's guest address) is a line after that cut making the count `hos_frame_whole(key, amount, count)`:
+the amount added to that counter's own remainder and its whole frames handed out (`host/frame_whole.h`) while the frame's
+seconds are published, the game's count exactly otherwise (`HOS_FPS_WHOLE=0`: always the game's; HeyListen's switch). The
+sites, each added once it was seen to misbehave in game:
+
+| Function | What counts | Remainder kept for | Above a 60 cap without it |
+|---|---|---|---|
+| `0x80a87e50` | the pick-up indicator's shown count (`+864`) moves toward the wallet's by `(int)(step x max(distance / 50, 1))` (upstream #2006) | `x19 + 864` | the indicator above Link's head never fades |

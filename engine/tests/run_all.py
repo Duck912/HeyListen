@@ -94,6 +94,7 @@ ARGS = {
     "tests/test_text_speed.py": ["--cc", "gcc"],
     "tests/test_movie_frame_count.py": ["--cc", "gcc"],
     "tests/test_high_fps_fixes.py": ["--cc", "gcc"],
+    "tests/test_frame_whole.py": ["--cc", "gcc"],
     "tests/test_audio_in.py": ["--cc", "gcc", "--cxx", "g++"],
     "tests/test_upscale_fallback.py": ["--cxx", "g++"],
     "tests/test_reserved_core.py": ["--cxx", "g++"],

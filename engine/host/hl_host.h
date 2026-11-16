@@ -48,6 +48,13 @@ void hl_answer(uint64_t guest, A64Fn fn, HlOn on, const char *what);
     __attribute__((constructor)) static void hl_solver_decl_##addr(void) { hl_gate_declared(0x##addr##ULL); } \
     extern const int hl_solver_hook_##addr
 
+/* HL_WHOLE_HOOK(80a87e50, "<hash>", <reg>, "<key>"); a lift hook (nx2/hl_gates.py) after the function's cut of an amount of
+   the frame step to whole frames into x<reg>, making the count hos_frame_whole(<key>, amount, count) (host/hl_step.c): the
+   fractions carried per counter above a 60 cap. Nothing in C. */
+#define HL_WHOLE_HOOK(addr, hash, reg, key) \
+    __attribute__((constructor)) static void hl_whole_decl_##addr(void) { hl_gate_declared(0x##addr##ULL); } \
+    extern const int hl_whole_hook_##addr
+
 /* Whether the gates are in the lifted code: nx2/hl_gates.py puts, beside each gate it puts in, a constructor that calls
    hl_gate_present(address) at start; a gate left out (its function's text hashes otherwise in this lift) never says so.
    hl_gates_in: 1 when every one of the n addresses is in; otherwise 0, and one log line naming `what` and the missing

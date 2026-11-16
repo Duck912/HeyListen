@@ -145,9 +145,13 @@ def movie_site(s, addr, off):
 #   hos_oot_sound_step (a whole one while the gate holds the job to whole steps).
 # - HL_SOLVER_HOOK(838ceb80, "<hash>"): after the cut of frame step x the solver's steps a 60 fps frame + 0.001, stored to
 #   the solver's +712: the count through hos_oot_solver_steps (rounded up while the step is under 1).
+# - HL_WHOLE_HOOK(80a87e50, "<hash>", <reg>, "<key>"): after the function's cut of an amount of the frame step (vreg 0's
+#   float) to whole frames into x<reg>, that count made hos_frame_whole(<key>, the amount, the game's count) (host/hl_step.c):
+#   the fractions carried per counter (<key>, the counter's or its object's guest address) above a 60 cap. The cut is the
+#   function's one; where it makes the same cut more than once, the one stored to <key> right after it.
 # Each goes in only where its function's text hashes as recorded, both lines of a kind or none. The marker is the address
 # plus one, as a step hook's (one hook a function), so a tree that does not ask for it takes it out as a stale gate.
-WANT_LIFT = re.compile(r'^HL_(SOUND|SOLVER)_HOOK\(\s*([0-9a-f]{8})\s*,\s*"([0-9a-f]*)"((?:\s*,\s*(?:\d+|"[^"\n]*"))*)\s*\)',
+WANT_LIFT = re.compile(r'^HL_(SOUND|SOLVER|WHOLE)_HOOK\(\s*([0-9a-f]{8})\s*,\s*"([0-9a-f]*)"((?:\s*,\s*(?:\d+|"[^"\n]*"))*)\s*\)',
                        re.M)
 CUT = "    c->x[%d]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);\n"
 SOUND_SLOT = "g_module_base + 0x80435000ULL + (int64_t)75927552"   # (the page of the step's pointer, whose +2192 holds it)
@@ -157,6 +161,7 @@ SOUND_LOAD = ("    c->x[8]=" + SOUND_SLOT + ";\n"
               "    c->x[8]=recomp_load64(c,c->x[8] + 0);\n"
               "    { { uint64_t _v=recomp_load32(c,(c->x[8]+16ULL)); a64_vset64(c->vreg[0],_v); } }\n")
 SOLVER_STORE = "    recomp_store32(c,c->x[0] + 712,c->x[1]);\n"
+WHOLE_STORE = "    recomp_store32(c,%s,c->x[%d]);\n"
 
 
 def lift_lines(kind, addr, args):
@@ -170,6 +175,10 @@ def lift_lines(kind, addr, args):
     if kind == "solver":
         return ["    { extern uint32_t hos_oot_solver_steps(uint32_t, uint32_t, uint32_t); c->x[1] = "
                 "hos_oot_solver_steps((uint32_t)c->x[1], (uint32_t)c->vreg[0][0], (uint32_t)c->vreg[1][0]); }" + mark]
+    if kind == "whole":
+        reg, key = args
+        return ["    { extern uint32_t hos_frame_whole(uint64_t, uint32_t, uint32_t); c->x[%d] = hos_frame_whole(%s, "
+                "(uint32_t)c->vreg[0][0], (uint32_t)c->x[%d]); }%s" % (reg, key, reg, mark)]
     raise ValueError(kind)
 
 
@@ -185,11 +194,18 @@ def lift_places(body, addr, kind, args):
         if body.count(anchor) != 1:
             return None
         return [body.index(anchor) + len(CUT % 1)]
+    if kind == "whole":
+        reg, key = args
+        cut = CUT % reg
+        for anchor in (cut, cut + WHOLE_STORE % (key, reg)):
+            if body.count(anchor) == 1:
+                return [body.index(anchor) + len(cut)]
+        return None
     raise ValueError(kind)
 
 
 def wanted_lifts(host=HOST):
-    """{address: (hash, kind, args)} of every lift hook (HL_SOUND_HOOK, ...) in host/hl_*.c"""
+    """{address: (hash, kind, args)} of every lift hook (HL_SOUND_HOOK, HL_SOLVER_HOOK, HL_WHOLE_HOOK) in host/hl_*.c"""
     out = {}
     for path in sorted(glob.glob(os.path.join(host, "hl_*.c"))):
         with open(path, encoding="utf-8", errors="replace") as f:
