@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration of HeyListen Builder (docs/release.md). Paste it into the SignPath project as the artifact
+  configuration whose slug is the repository variable SIGNPATH_ARTIFACT_CONFIGURATION_SLUG (or as the project's default).
+
+  The artifact is the GitHub Actions artifact "windows-unsigned" that .github/workflows/release.yml uploads: a zip of
+  <out>/sign-<tag>/ as the build stage of tools/release/make_release.py writes it (SIGNED there: keep both lists the same).
+  It holds only files this repository builds:
+
+    setup/HookshotBuilder-Setup.exe   the setup (engine/builder/setup/setup.c, llvm-mingw); released as HeyListenBuilder.exe
+    builder/HeyListenBuilder.exe      the builder's .NET app host (engine/builder/HookshotBuilder, dotnet publish)
+    builder/HeyListenBuilder.dll      the builder's own assembly
+
+  Never signed here: .NET's runtime files (Microsoft's, already signed by Microsoft), the prebuilt third_party files
+  (a64emit, lld-link, zbic, SDL) and the parts downloaded from earlier releases: they are not in the artifact at all.
+  Each file must be there exactly once (min-matches and max-matches default to 1): a missing or renamed file fails the
+  signing request instead of shipping unsigned.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <directory path="setup">
+      <pe-file path="HookshotBuilder-Setup.exe">
+        <authenticode-sign/>
+      </pe-file>
+    </directory>
+    <directory path="builder">
+      <pe-file-set>
+        <include path="HeyListenBuilder.exe"/>
+        <include path="HeyListenBuilder.dll"/>
+        <for-each>
+          <authenticode-sign/>
+        </for-each>
+      </pe-file-set>
+    </directory>
+  </zip-file>
+</artifact-configuration>

@@ -16,6 +16,13 @@ The parts that did not change (Python, emsdk, CPM, wgpu-native, maybe third_part
 at this repository's builder-parts release for them (it mirrors the ones first made by upstream Hookshot, whose repository
 is gone), and at llvm-mingw's official release. No link of the list leads anywhere else: the build fails otherwise.
 Nothing is uploaded or tagged here: the maintainer does that (see the printed commands).
+
+--stage splits the run in two for code signing (.github/workflows/release.yml, docs/release.md): `build` makes the setup and
+the builder into <out>/work-<tag>/ and copies the files we build and sign into <out>/sign-<tag>/ (SIGNED below, the same list
+as .signpath/artifact-configurations/heylisten-builder.xml); `package` makes the parts, the list, the notes and the checksums
+from <out>/work-<tag>/, with --signed <folder> (laid out as sign-<tag>/) put over the built files first. A part holds the
+builder, so the files are signed before the parts are made: the list's checksums are the signed parts'. The default, `all`,
+is both in one run, unsigned, as before.
 """
 import argparse
 import hashlib
@@ -37,6 +44,12 @@ FORBIDDEN = re.compile(r"(\.(nup|nsp|xci|nsz|xcz|nca|nso|keys|spv)$|(^|/)(romfs|
 # Exact paths that match FORBIDDEN but hold no game data: upstream's public builder profile ships the lifted-C chunk
 # boundaries (57 guest addresses, nx2/chunks.py) under tools/work/image/
 ALLOWED = {"HookshotBuilder/tools/work/image/chunks.txt"}
+# The files we build and get signed (code signing signs only what this repository builds: never .NET's own files, already
+# signed by Microsoft, nor the prebuilt third_party ones): their path in sign-<tag>/ -> their path in work-<tag>/. Keep it the
+# same as .signpath/artifact-configurations/heylisten-builder.xml
+SIGNED = {"setup/HookshotBuilder-Setup.exe": "HookshotBuilder-Setup.exe",
+          "builder/HeyListenBuilder.exe": "publish/HeyListenBuilder.exe",
+          "builder/HeyListenBuilder.dll": "publish/HeyListenBuilder.dll"}
 
 
 def forbidden(path):
@@ -100,11 +113,17 @@ def main():
     p.add_argument("--out", default=os.path.join(ROOT, "build", "release"))
     p.add_argument("--dotnet", help="dotnet.exe to use (default: the one on PATH)")
     p.add_argument("--allow-dirty", action="store_true", help="build with uncommitted changes (a test, not a release)")
+    p.add_argument("--stage", choices=("all", "build", "package"), default="all",
+                   help="all (default): everything; build: the setup and the builder, and sign-<tag>/; package: the rest, "
+                        "from <out>/work-<tag>/ (see the top of this file)")
+    p.add_argument("--signed", help="(package) a folder laid out as sign-<tag>/ with the signed files, put over the built ones")
     a = p.parse_args()
     if os.name != "nt":
         sys.exit("make_release.py builds the Windows builder: run it on Windows")
+    if a.signed and a.stage != "package":
+        sys.exit("--signed goes with --stage package")
 
-    dotnet = a.dotnet or need_dotnet()
+    dotnet = (a.dotnet or need_dotnet()) if a.stage != "package" else None
     if not a.allow_dirty and out_of(["git", "status", "--porcelain", "--", "engine", "docs", "tools/release"], cwd=ROOT):
         sys.exit("uncommitted changes in engine/, docs/ or tools/release/: commit them (the package holds the tracked files) "
                  "or pass --allow-dirty")
@@ -117,39 +136,67 @@ def main():
     version = tag[1:] if tag.startswith("v") else tag
     out = os.path.abspath(a.out)
     work = os.path.join(out, "work-" + tag)
+    sign = os.path.join(out, "sign-" + tag)
     dist = os.path.join(out, tag)
     cache = os.path.join(out, "cache")
-    for d in (work, dist):
-        if os.path.exists(d):
-            shutil.rmtree(d)
-    os.makedirs(work)
-    os.makedirs(os.path.join(dist, "parts"))
+    setup = os.path.join(work, "HookshotBuilder-Setup.exe")
+    publish = os.path.join(work, "publish")
     os.makedirs(cache, exist_ok=True)
     env = dict(os.environ, RUNNER_TEMP=cache)   # (release_parts.py's download cache)
     py = [sys.executable, "-I"]
     parts_py = os.path.join(ENGINE, "scripts", "release_parts.py")
+
+    if a.stage in ("all", "build"):
+        for d in (work, sign):
+            if os.path.exists(d):
+                shutil.rmtree(d)
+        os.makedirs(work)
+        print("HeyListen release %s: building in %s" % (tag, work), flush=True)
+
+        # 1. llvm-mingw (official release, SHA-256 checked) and the setup exe
+        llvm = out_of(py + [parts_py, "llvm-mingw", os.path.join(cache, "llvm")], env=env).splitlines()[-1]
+        setup_dir = os.path.join(ENGINE, "builder", "setup")
+        rc_o = os.path.join(work, "setup_rc.o")
+        run([os.path.join(llvm, "bin", "x86_64-w64-mingw32-windres.exe"), "setup.rc", "-O", "coff", "-o", rc_o], cwd=setup_dir)
+        run([os.path.join(llvm, "bin", "x86_64-w64-mingw32-clang.exe"), "-O2", "-mwindows", "-municode", "setup.c", rc_o,
+             "-lwinhttp", "-lbcrypt", "-lcomctl32", "-lshell32", "-lole32", "-o", setup], cwd=setup_dir)
+        os.remove(rc_o)
+
+        # 2. the builder (self-contained .NET 8 folder)
+        run([dotnet, "publish", os.path.join(ENGINE, "builder", "HookshotBuilder", "HookshotBuilder.csproj"), "--configuration",
+             "Release", "-p:Version=" + re.sub(r"[^0-9A-Za-z.\-]", "", version), "-p:NuGetAudit=false", "--output", publish])
+        if not os.path.isfile(os.path.join(publish, "HeyListenBuilder.exe")):
+            sys.exit("dotnet publish made no HeyListenBuilder.exe")
+
+        # 3. what gets signed, beside (a code-signing service gets this folder alone)
+        for rel, built in SIGNED.items():
+            q = os.path.join(sign, *rel.split("/"))
+            os.makedirs(os.path.dirname(q), exist_ok=True)
+            shutil.copyfile(os.path.join(work, *built.split("/")), q)
+        if a.stage == "build":
+            print("\nBuilt: %s\nTo sign: %s (%s)\nThen: --stage package --tag %s [--signed <the signed folder>]"
+                  % (work, sign, ", ".join(SIGNED), tag))
+            return 0
+    elif not (os.path.isfile(setup) and os.path.isfile(os.path.join(publish, "HeyListenBuilder.exe"))):
+        sys.exit("--stage package: no build in %s (--stage build makes it)" % work)
+
+    if a.signed:
+        for rel, built in SIGNED.items():
+            q = os.path.join(a.signed, *rel.split("/"))
+            if not os.path.isfile(q):
+                sys.exit("--signed %s: no %s" % (a.signed, rel))
+            shutil.copyfile(q, os.path.join(work, *built.split("/")))
+            print("signed: %s" % rel, flush=True)
+    for d in (dist, os.path.join(work, "parts")):   # (a package run again starts from the build alone)
+        if os.path.exists(d):
+            shutil.rmtree(d)
+    os.makedirs(os.path.join(dist, "parts"))
     print("HeyListen release %s -> %s" % (tag, dist), flush=True)
 
-    # 1. the previous release's setup list: the Python, emsdk, CPM, wgpu-native and
-    #    third_party parts and the play profile come from it
+    # 3b. the previous release's setup list: the Python, emsdk, CPM, wgpu-native and
+    #     third_party parts and the play profile come from it
     previous = os.path.join(work, "previous-setup.txt")
     run(py + [parts_py, "previous", previous, "--repo", REPO, "--skip-tag", tag], env=env)
-
-    # 2. llvm-mingw (official release, SHA-256 checked) and the setup exe
-    llvm = out_of(py + [parts_py, "llvm-mingw", os.path.join(cache, "llvm")], env=env).splitlines()[-1]
-    setup_dir = os.path.join(ENGINE, "builder", "setup")
-    rc_o = os.path.join(work, "setup_rc.o")
-    setup = os.path.join(work, "HookshotBuilder-Setup.exe")
-    run([os.path.join(llvm, "bin", "x86_64-w64-mingw32-windres.exe"), "setup.rc", "-O", "coff", "-o", rc_o], cwd=setup_dir)
-    run([os.path.join(llvm, "bin", "x86_64-w64-mingw32-clang.exe"), "-O2", "-mwindows", "-municode", "setup.c", rc_o,
-         "-lwinhttp", "-lbcrypt", "-lcomctl32", "-lshell32", "-lole32", "-o", setup], cwd=setup_dir)
-
-    # 3. the builder (self-contained .NET 8 folder)
-    publish = os.path.join(work, "publish")
-    run([dotnet, "publish", os.path.join(ENGINE, "builder", "HookshotBuilder", "HookshotBuilder.csproj"), "--configuration",
-         "Release", "-p:Version=" + re.sub(r"[^0-9A-Za-z.\-]", "", version), "-p:NuGetAudit=false", "--output", publish])
-    if not os.path.isfile(os.path.join(publish, "HeyListenBuilder.exe")):
-        sys.exit("dotnet publish made no HeyListenBuilder.exe")
 
     # 4. the package folder (builder, setup, LICENSE, tracked engine sources under tools/, profile, prebuilt third_party)
     #    (the pipeline state list in profile/ is shipped only when it holds nothing but hashes, formats and draw state:
