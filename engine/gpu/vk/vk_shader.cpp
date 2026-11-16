@@ -53,6 +53,7 @@
 #include "vk_internal.h"
 #include "vk_jobs.h"
 #include "vk_draw.h"
+#include "flat_map.h"
 
 // (EvilOOT, RX_VK_PTR_DIAG) the pointer pass's counts for this thread's translations
 // (global_memory_to_storage_buffer_pass.cpp, declared by hand so no Eden header changes)
@@ -2024,7 +2025,7 @@ struct Pick {
     const Program* p = nullptr;
     std::vector<uint32_t> handles;   // (at its answers' descriptors: their slots and the slots' versions)
 };
-thread_local std::unordered_map<uint64_t, Pick> picks;   // (each recording thread's: program_pick has its own lock)
+thread_local FlatMap<uint64_t, Pick> picks;   // (each recording thread's: program_pick has its own lock; hookshot: flat, flat_map.h)
 uint64_t pick_inputs(const NvnState& s, const uint8_t color_types[8]) {
     uint64_t h = 0x9E37;
     for (int i = 0; i < 16; i++) h = h * 1099511628211ull ^ (uint64_t)s.vattr[i];
@@ -2167,6 +2168,9 @@ const Program* program_for(const NvnState& s, ProgramKind kind, const uint8_t co
         }
     }
     const uint64_t key = (compute ? 0x5EED : pick_inputs(s, color_types)) * 1099511628211ull ^ s.prog.serial;
+    // (hookshot: held across program_pick below and written through after it, though an insert into the FlatMap picks would move it
+    // (flat_map.h): nothing in between inserts into this thread's picks. program_pick takes shader_mu, which is not recursive,
+    // so it cannot reach program_for again; a callback from it into the draw path would have to look pk up anew)
     Pick& pk = picks[key];
     auto keep = [&](const Program* p) {
         if (!p || !p->ready.load(std::memory_order_acquire) || p->failed) return p;
