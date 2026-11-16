@@ -75,3 +75,15 @@ to ten segments of ~128 draws instead (`RX_VK_SEG_MAX=10 RX_VK_PARALLEL_ROUNDS=0
 recorder that is done takes the next (the pool's queue; the replay thread helps from it). The replay thread's own segment 4.7-5.0 ->
 3.6 ms (3.1-3.2 with 12 segments of ~96), the waits for the segments 0.7 -> 1.4. Castle-move, 4 rounds interleaved: 36.1 -> 37.6 fps
 (+4%), 1% low unchanged. 12 segments (96 or 64 draws) gave the same.
+
+## Confirmed on main 38ab626c (PC 3050, plain runs, interleaved, new defaults against `RX_VK_FINE_SEGMENTS=0 RX_VK_DRY_WANTED=0`)
+
+- castle-move, 3 rounds: 35.6 / 34.3 / 36.2 (mean 35.4) -> 37.6 / 37.9 / 37.7 (mean 37.7), +2.3 fps (+6%); 1% low 7.9-12.0 -> 18.2-19.8.
+- kokiri-idle, 3 valid rounds (the first, after the rebuild, was a cold-cache throwaway): 37.4 / 39.8 / 36.9 -> 37.1 / 37.4 / 37.5 / 36.9:
+  no gain, inside the spread.
+- Picture: frame log (320x180, ~35 s each) of castle-move, kokiri-idle, a saved zone (Kakariko) and the Zora run (D4's movement
+  script, the reporter's save): 0 one-frame luma dips in all of them, "uploaded by the later segment" lines 0, no made frames;
+  flashes by framelog.py: castle 449 against 418, Zora 415 against 572 (small blocks, not dips), kokiri 0 against 4, zone 0 against 0.
+  Shots of the four scenes by eye: right.
+- Suites on the final HEAD: Windows 291 passed, 1 failed (nx2/test_nup_paths, known); Linux 307 passed, 2 failed (nx2/test_nup_read_name:
+  no `zstandard` in WSL; the byte-compile check: git refuses the worktree path there).
