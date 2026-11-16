@@ -13,6 +13,9 @@
 #include <string>
 #include <thread>
 #include <vector>
+#ifndef _WIN32
+#include <dlfcn.h>   // (create_device: hos_posix_submit_thread_note, looked up in the exe)
+#endif
 
 #include "vk_api.h"
 #include "vk_draw.h"
@@ -20,7 +23,6 @@
 #include "vk_internal.h"
 #include "gpu_choice.h"
 #include "sparse_queue.h"
-#include "radv_submit_thread.h"
 #include "vk_menu.h"
 #include "vk_dlss.h"
 #include "vk_fsr4.h"
@@ -546,30 +548,20 @@ bool create_device() {
     ci.enabledExtensionCount = (uint32_t)want.size();
     ci.ppEnabledExtensionNames = want.data();
 #ifndef _WIN32
-    // (RADV) Mesa's submit thread, read by Mesa in this vkCreateDevice (radv_submit_thread.h): set for it unless the user set
-    // MESA_VK_ENABLE_SUBMIT_THREAD or RX_VK_RADV_SUBMIT_THREAD=0, and taken out again once the device is made
-    const auto submit_thread = radv_submit_thread::decide(fadd_driver.driverID == VK_DRIVER_ID_MESA_RADV,
-                                                          getenv("MESA_VK_ENABLE_SUBMIT_THREAD"), getenv("RX_VK_RADV_SUBMIT_THREAD"));
-    switch (submit_thread) {
-    case radv_submit_thread::Choice::set_on:
-        setenv("MESA_VK_ENABLE_SUBMIT_THREAD", "1", 0);
-        logf("vk: RADV: Mesa's submit thread on (MESA_VK_ENABLE_SUBMIT_THREAD unset; RX_VK_RADV_SUBMIT_THREAD=0: off)");
-        break;
-    case radv_submit_thread::Choice::user_set:
-        logf("vk: RADV: Mesa's submit thread left as the user set it (MESA_VK_ENABLE_SUBMIT_THREAD=%s)",
-             getenv("MESA_VK_ENABLE_SUBMIT_THREAD"));
-        break;
-    case radv_submit_thread::Choice::switch_off:
-        logf("vk: RADV: Mesa's submit thread off by the switch (RX_VK_RADV_SUBMIT_THREAD=0: Mesa's own choice)");
-        break;
-    case radv_submit_thread::Choice::not_radv:
-        break;
+    {   // (Linux) Mesa's submit thread, read by Mesa in this vkCreateDevice: decided at process start, before any thread, and
+        // set for the whole process (host/hos_submit_thread.h, hos_main.c submit_thread_at_start): only said here, with the
+        // device now known. Nothing to say without an AMD card (the host's note is empty) or an older host (no note)
+        using Note = const char* (*)();
+        const Note note = (Note)dlsym(RTLD_DEFAULT, "hos_posix_submit_thread_note");
+        const char* said = note ? note() : nullptr;
+        if (said && *said) {
+            if (fadd_driver.driverID == VK_DRIVER_ID_MESA_RADV) logf("vk: RADV: Mesa's submit thread %s (decided at start)", said);
+            else logf("vk: the picked device is not RADV (driver %d): Mesa's submit thread was decided at start for the AMD card (%s), "
+                      "it reaches this device only if it is another Mesa driver", (int)fadd_driver.driverID, said);
+        }
     }
 #endif
     const VkResult created = vkCreateDevice(dev.physical, &ci, nullptr, &dev.device);
-#ifndef _WIN32
-    if (submit_thread == radv_submit_thread::Choice::set_on) unsetenv("MESA_VK_ENABLE_SUBMIT_THREAD");
-#endif
     if (created != VK_SUCCESS) {
         logf("vk: vkCreateDevice failed");
         return false;
