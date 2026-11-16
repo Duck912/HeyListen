@@ -3718,7 +3718,11 @@ bool bind_descriptors(VkCommandBuffer cmd, VkPipelineBindPoint bp, const Program
 
 // ---- RX_VK_CHECKPOINTS: a marker before each draw and dispatch (VK_NV_device_diagnostic_checkpoints); when the
 // device is lost, the markers the GPU reached say which program it was running ----
-struct Checkpoint { uint64_t prog; uint64_t frame; uint32_t seq; char kind; };
+// (shape and a, b, c: what the work is, set once the draw or dispatch knows: checkpoint_work. 'x' dispatch of a x b x c groups;
+// 'n' indirect dispatch; 'V' draw of a vertices, b instances; 'E' indexed draw of a indices, b instances; 'Q' quads drawn as
+// a indices, b instances; 'F' fallback draw of a vertices; 'I' indirect draw of up to a records; 'M' mesh draw of a x b x c
+// groups; 'N' indirect mesh draw of up to a records; 0 unknown)
+struct Checkpoint { uint64_t prog; uint64_t frame; uint32_t seq; char kind; char shape; uint32_t a, b, c; };
 Checkpoint checkpoints[1 << 16];
 std::atomic<uint32_t> checkpoint_n{0};
 
@@ -3763,11 +3767,37 @@ uint32_t checkpoint_seq() {
     }
     return next++;
 }
+thread_local uint32_t checkpoint_last = 0;   // (this thread's latest marker: checkpoint_work)
 void checkpoint(VkCommandBuffer cmd, const Program& p, char kind) {
     if (!checkpoints_on()) return;
     const uint32_t seq = checkpoint_seq(), i = (seq - 1) & 0xFFFF;
     checkpoints[i] = {p.key, texture_frame_no(), seq, kind};
+    checkpoint_last = seq;
     set_checkpoint(cmd, i, seq);
+}
+// (the work the thread's latest marker stands for, filled in when the call's counts are known: the stall report names its size)
+void checkpoint_work(char shape, uint32_t a, uint32_t b = 0, uint32_t c = 0) {
+    if (!checkpoint_last) return;
+    Checkpoint& k = checkpoints[(checkpoint_last - 1) & 0xFFFF];
+    if (k.seq != checkpoint_last) return;   // (the ring went round: the entry is another marker's)
+    k.shape = shape, k.a = a, k.b = b, k.c = c;
+}
+/// What a marker's work is, for the report: "" when unknown.
+std::string checkpoint_work_text(const Checkpoint& k) {
+    char t[96];
+    switch (k.shape) {
+    case 'x': snprintf(t, sizeof t, ", %u x %u x %u groups", k.a, k.b, k.c); break;
+    case 'n': snprintf(t, sizeof t, ", groups read from GPU memory"); break;
+    case 'V': snprintf(t, sizeof t, ", %u vertices x %u instances", k.a, k.b); break;
+    case 'E': snprintf(t, sizeof t, ", %u indices x %u instances", k.a, k.b); break;
+    case 'Q': snprintf(t, sizeof t, ", %u indices (quads) x %u instances", k.a, k.b); break;
+    case 'F': snprintf(t, sizeof t, ", %u vertices (fallback)", k.a); break;
+    case 'I': snprintf(t, sizeof t, ", indirect, up to %u records", k.a); break;
+    case 'M': snprintf(t, sizeof t, ", mesh %u x %u x %u groups", k.a, k.b, k.c); break;
+    case 'N': snprintf(t, sizeof t, ", mesh indirect, up to %u records", k.a); break;
+    default: return {};
+    }
+    return t;
 }
 const char* checkpoint_kind(char c) {
     return c == 'd' ? "draw of program" : c == 'c' ? "dispatch of program" : c == 'i' ? "INDIRECT dispatch of program"
@@ -3841,6 +3871,7 @@ void checkpoint_mark(VkCommandBuffer cmd, uint64_t key, char kind) {
     if (!checkpoints_on()) return;
     const uint32_t seq = checkpoint_seq(), i = (seq - 1) & 0xFFFF;   // (TICK-061: see checkpoint_seq)
     checkpoints[i] = {key, texture_frame_no(), seq, kind};
+    checkpoint_last = 0;
     set_checkpoint(cmd, i, seq);
 }
 
@@ -3888,6 +3919,23 @@ void buffer_markers_init() {
 }
 
 namespace {
+// ---- when the watch first saw each marker reached (issue 14: how long the work in flight had been running) ----
+// A cell a marker's slot of the ring: its sequence number in the high word, the steady clock's milliseconds (wrapping) in the low.
+// Filled on each of the watch's looks (every 250 ms), so a time is the first look that found the marker reached, up to 0.25 s late.
+std::atomic<uint64_t> reach_seen[1 << 16];
+uint32_t steady_ms() {
+    return (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+// What the report says of marker seq: when it was first seen reached, or that no look saw it.
+std::string marker_seen_text(uint32_t seq, uint32_t now_ms) {
+    const uint64_t cell = reach_seen[(seq - 1) & 0xFFFF].load(std::memory_order_relaxed);
+    if ((uint32_t)(cell >> 32) != seq) return "not seen reached";
+    char t[64];
+    snprintf(t, sizeof t, "reached %.1f s ago", (uint32_t)(now_ms - (uint32_t)cell) / 1000.0);
+    return t;
+}
+// ---- end of the ring ----
+
 // (the markers the GPU reached whose earlier work never finished: the hang is in the work after the last marker that did)
 void buffer_markers_report() {
     const uint32_t n = checkpoint_n.load(), first = n > 0xFFFF ? n - 0xFFFF : 1;
@@ -3901,10 +3949,11 @@ void buffer_markers_report() {
         else if (r) stuck.push_back(s);
     }
     logf("vk: device lost: %u markers set, %u reached; the last whose earlier work all finished: %u", n, reached, last_done);
-    const auto line = [](const char* what, uint32_t s) {
+    const uint32_t now_ms = steady_ms();
+    const auto line = [now_ms](const char* what, uint32_t s) {
         const Checkpoint& k = checkpoints[(s - 1) & 0xFFFF];
-        logf("vk:   %s: marker %u (%s %016llx, frame %llu)", what, s, checkpoint_kind(k.kind), (unsigned long long)k.prog,
-             (unsigned long long)k.frame);
+        logf("vk:   %s: marker %u (%s %016llx%s, frame %llu), %s", what, s, checkpoint_kind(k.kind), (unsigned long long)k.prog,
+             checkpoint_work_text(k).c_str(), (unsigned long long)k.frame, marker_seen_text(s, now_ms).c_str());
     };
     for (uint32_t s = last_done > 6 ? last_done - 6 : 1; last_done && s < last_done; s++) line("finished before", s);
     // (from the last finished marker to the first reached one whose earlier work did not finish: what the GPU was running)
@@ -3923,7 +3972,7 @@ void buffer_markers_report() {
 struct MarkerScan {
     uint32_t done = 0, last_done = 0, pending = 0, n = 0;   // (done: in the last 65535; pending: reached, earlier work unfinished)
 };
-MarkerScan marker_scan() {
+MarkerScan marker_scan(uint32_t note_ms = 0) {   // (note_ms: the watch's look, the clock's reading it stamps the markers it finds reached with)
     MarkerScan m;
     m.n = checkpoint_n.load();
     const uint32_t first = m.n > 0xFFFF ? m.n - 0xFFFF : 1;
@@ -3932,6 +3981,10 @@ MarkerScan marker_scan() {
         const bool r = marker_words[2 * i] == s, d = marker_words[2 * i + 1] == s;
         if (d) m.done++, m.last_done = s;
         else if (r) m.pending++;
+        if (r && note_ms) {
+            const uint64_t cell = reach_seen[i].load(std::memory_order_relaxed);
+            if ((uint32_t)(cell >> 32) != s) reach_seen[i].store((uint64_t)s << 32 | note_ms, std::memory_order_relaxed);
+        }
     }
     return m;
 }
@@ -3969,7 +4022,7 @@ void buffer_markers_watch() {
         const auto t0 = std::chrono::steady_clock::now();
         for (int reports = 0; reports < 3;) {
             Sleep(250);
-            const MarkerScan m = marker_scan();
+            const MarkerScan m = marker_scan(steady_ms());
             const double now = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
             if (!w.step(m, now)) continue;
             reports++;
@@ -6493,6 +6546,7 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.fallback_compute[stage]);
         if (mesh_stage && p.fallback_task) {
             if (!slots) return true;
+            checkpoint_work('x', slots, 1, 1);
             vkCmdDispatch(cmd, slots, 1, 1);   // (one workgroup a slot; the task's flags cull those it did not start)
         } else if (d.indirect) {
             if (!indirect) {
@@ -6500,12 +6554,14 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
                 if (told++ < 2) logf("vk: fallback: an indirect mesh draw with no converted arguments is left out");
                 return false;
             }
+            checkpoint_work('n', 0);
             vkCmdDispatchIndirect(cmd, mesh_conv_buf, mesh_conv_off);
         } else {
             const uint32_t most{p.fallback_task ? (uint32_t)std::max(1u, capacity / std::max(1u, p.fallback_task_threads))
                                                 : groups};
             const uint32_t n{mesh_stage ? groups : std::min(groups, most)};
             if (!n) return true;
+            checkpoint_work('x', n, 1, 1);
             vkCmdDispatch(cmd, n, 1, 1);
         }
         return true;
@@ -7196,6 +7252,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
                     const VkDeviceSize off = 0, size = 65536, stride = 0;
                     vkCmdBindVertexBuffers2(cmd, 0, 1, &b, &off, &size, &stride);
                 }
+                checkpoint_work('F', (uint32_t)fallback_vertex_count);
                 vkCmdDraw(cmd, fallback_vertex_count, 1, 0, 0);
             }
             st_mesh++;
@@ -7261,6 +7318,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
                 // (hookshot: as many records as mesh_indirect_convert wrote, not the game's maximum)
                 const uint32_t conv_n = (uint32_t)std::clamp(d.max, 1, 4096);
                 if (mesh_dbg) mesh_count_note(p.key, mesh_conv_off);
+                checkpoint_work('N', conv_n);
                 if (cnt && vkCmdDrawMeshTasksIndirectCountEXT)
                     vkCmdDrawMeshTasksIndirectCountEXT(cmd, mesh_conv_buf, mesh_conv_off, cnt.buffer, cnt.offset, conv_n, 12);
                 else
@@ -7280,6 +7338,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
                 const uint64_t firsts = mesh_args_address + mesh_args.offset + 12;
                 vkCmdPushConstants(cmd, p.layout, p.push_stages, Shader::Backend::SPIRV::MESH_FIRST_PUSH_OFFSET, 8, &firsts);
             }
+            checkpoint_work('N', (uint32_t)std::max(d.max, 1));
             if (cnt && vkCmdDrawMeshTasksIndirectCountEXT)
                 vkCmdDrawMeshTasksIndirectCountEXT(cmd, mesh_args.buffer, mesh_args.offset, cnt.buffer, cnt.offset, d.max, step);
             else
@@ -7294,6 +7353,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
                 const uint64_t firsts = mesh_args_address + (uint64_t)at * 16 + 12;
                 vkCmdPushConstants(cmd, p.layout, p.push_stages, Shader::Backend::SPIRV::MESH_FIRST_PUSH_OFFSET, 8, &firsts);
             }
+            checkpoint_work('M', (uint32_t)std::max(d.groups[0], 0), (uint32_t)std::max(d.groups[1], 1), (uint32_t)std::max(d.groups[2], 1));
             vkCmdDrawMeshTasksEXT(cmd, (uint32_t)std::max(d.groups[0], 0), (uint32_t)std::max(d.groups[1], 1),
                                   (uint32_t)std::max(d.groups[2], 1));
         }
@@ -7393,6 +7453,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             std::memcpy(out + q * 6, tri, sizeof tri);
         }
         bind_index(cmd, cur->stream, at6, VK_INDEX_TYPE_UINT32);
+        checkpoint_work('Q', quads * 6, (uint32_t)std::max(1, d.instances));
         vkCmdDrawIndexed(cmd, quads * 6, (uint32_t)std::max(1, d.instances), 0, d.indexed ? d.base_vertex : 0,
                          (uint32_t)d.base_instance);
         st_draws++, ps.draws++;
@@ -7403,6 +7464,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         // negative count or stride from the game is no draw
         if (d.max < 0 || d.stride < 0) SKIP_HERE();
         const int ind_stride = std::max(d.stride, d.indexed ? 20 : 16);
+        checkpoint_work('I', (uint32_t)std::max(d.max, 1));
         ledger_mark(d.indirect, (uint64_t)std::max(d.max, 1) * (uint64_t)ind_stride, kUseIndirect);   // (RX_VK_LEDGER)
         if (d.count_addr) ledger_mark(d.count_addr, 4, kUseIndirect);
         BufferRef args = gpu_buffer_bind(d.indirect, (uint64_t)std::max(d.max, 1) * (uint64_t)ind_stride, false);
@@ -7431,9 +7493,11 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             bind_index(cmd, ib.buffer, ib.offset, itype);
         }
         FINE_SCOPE(FT_DRAWCALL);
+        checkpoint_work('E', (uint32_t)d.count, (uint32_t)std::max(1, d.instances));
         vkCmdDrawIndexed(cmd, (uint32_t)d.count, (uint32_t)std::max(1, d.instances), 0, d.base_vertex, (uint32_t)d.base_instance);
     } else {
         FINE_SCOPE(FT_DRAWCALL);
+        checkpoint_work('V', (uint32_t)d.count, (uint32_t)std::max(1, d.instances));
         vkCmdDraw(cmd, (uint32_t)d.count, (uint32_t)std::max(1, d.instances), (uint32_t)d.first, (uint32_t)d.base_instance);
     }
     st_draws++, ps.draws++;
@@ -9085,8 +9149,10 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                          (unsigned long long)indirect);
                 dump_buffer(cmd, args.buffer, args.offset, 12, what);
             }
+            checkpoint_work('n', 0);
             vkCmdDispatchIndirect(cmd, args.buffer, args.offset);
         } else {
+            checkpoint_work('x', x, y, z);
             vkCmdDispatch(cmd, x, y, z);
         }
     }
