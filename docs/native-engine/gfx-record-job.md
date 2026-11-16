@@ -1418,6 +1418,51 @@ PC 3050 measurement of section 13's build (no difference) agrees.
 arithmetic and the run merging), `0x800955a0`, `0x8008f8e0`, geometry mode, the model-class case, and the empty items
 (the frame of `0x80084de0`: neither read nor whether an empty recording's memory used is non-zero measured).
 
+## 15. Stream 2k: the drawables' submission method `0x800955a0` (read for structure; nothing native yet)
+
+**What it is.** A drawable's submission method (vtable +0x58) called as (x0 the drawable, x1 the render-state block, x3
+the key's first word). It is **not one algorithm but a dispatcher with several variant bodies inlined**. It derives an
+index from the drawable's flags word (+92: bit 6 and the bits above it), the item's flags and the block's mask, reads the
+entry of a table of 16-byte entries (address, adjustment; table at `0x84c304a0`, 64 entries read: mostly small
+instantiations at `0x8366xxxx` of about 176 lines that call the shared preparation `0x8008fc00`, plus the large template
+bodies `0x800715e0` at index 8 and `0x80861440` at index 12), and then **compares that entry's address with a chain of
+known bodies and runs the matching body inline** (`0x808ef6b0`, `0x807cfa00`, `0x80861440` seen in the chain; these
+bodies are 1,450-1,650 lines each with one preparation call and one `0x8572f020` helper call, as separate functions too).
+Only an entry matching none is called. That is why the method is 4,652 lines with three preparation calls.
+
+**The inlined bodies' common shape** (read in the first two, 58-330 and 360-705): the drawable's per-pass array (+56
+pointer, +48 count, 16 bytes a record: a count word and a pointer at +8) indexed by the block's pass byte (+56) gives the
+list of sub-mesh records; per record the mask test against x3, the model's class method test (vtable +488 against the
+game's usual one), the query object of the model's pass table (+104 -> +1592, 0x270 bytes a pass), ResetCounter and
+ReportCounter around the draw, conditional render with the (query, slot) pair, SetRenderEnable, then the preparation and
+CallCommands of the record's pre-recorded list (record +80), the triangle counter at block +80 += record +616. That is the
+key-0xa0 entry's work of section 13 (the commands `BridgeCommands` already emits) in a loop over the drawable's own
+record list instead of over an item's entry list.
+
+**The call census** (each indirect call's target followed back to its proc global): 95 indirect calls = **76 NVN
+procedure calls** (BindUniformBuffer 35, BindStorageBuffer 23, CallCommands 5, SetGeometryProcessingMode 3,
+BufferGetAddress 3, ResetCounter 2, ReportCounter 2, SetRenderEnable 2, SetRenderEnableConditional 1) and **19 guest
+virtual calls** (14 through one object's vtable +40, the object reached by a global singleton's +1760 -> +216 -> +88 -> +0
+chain; 3 through a vtable +4008 on a global object; 1 through the vtable of an object found from the query object; 1 through
+an address outside the NVN table). Direct calls: the preparation 3 times, `0x8572f020` 4 times.
+
+**Where the NVN procedures fall (by line, three separable parts).**
+- Lines 58-1760 (the inlined bodies up to the dispatcher's tail): the plain per-record work above with BindUniformBuffer
+  15, SetGeometryProcessingMode 3, SetRenderEnable 2 and 3 virtual calls. The first two bodies are exactly the commands
+  the native key loop knows; the third adds uniform-block binds and geometry-mode switches.
+- Lines 2275-4100: BindUniformBuffer 20 and no virtual calls: the uniform-block assembly of the skinned / instanced path.
+- Lines 4100-4652: BindStorageBuffer 23 and 15 virtual calls: a storage-buffer path whose virtual calls reach scene
+  objects (guest code that must stay translated).
+
+**The cut proposed.** The first two bodies are plain NVN emission over data read in place and are separable: new ways in
+`classify()` taken when the drawable's method is `0x800955a0`, the table entry is the body's address, and the per-record
+conditions hold (mask, model-class test, no virtual hook); any other entry keeps calling the method translated, as for
+`0x80078fc0` today. The check is the one of section 13. To size it first: with `HL_GFX_VAR=2` count, for each entry that
+declines because of this method, the table entry address (which of the bodies it selects). **That census, the table's
+index bits, regions 3-6 line by line, and the 14 calls through vtable +40 are not done**: this session did not get a
+whole-machine slot in time, and the bodies were mapped by their call structure, not read instruction by instruction.
+Nothing is built.
+
 ## Not established
 
 - Who builds the runner's item lists (R+1244..R+1280), the pass and target objects, the slot table of `0x80364080`
