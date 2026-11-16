@@ -2,8 +2,9 @@
 Hookshot f915af93: host/frame_whole.h, host/hl_step.c hos_frame_whole; the hooks put in by nx2/hl_gates.py).
 
 The pick-up indicator above Link's head (f_80a87e50) moves the count it shows toward the wallet's by (int)(step * per) and fades
-when they meet. Under a Frame rate cap above 60 the step is the frame's own time, under 1 (0.42 at 144 fps): cut to 0 every
-frame, the count never moved and the indicator stayed. With the frames' own time as the step (carry), frame_whole adds the
+when they meet; the time of day (f_803edf70, after upstream f0c40fc96) adds (int)(2 * step) game seconds a frame. Under a
+Frame rate cap above 60 the step is the frame's own time, under 1 (0.42 at 144 fps): cut to 0 every frame, the count never
+moved and the indicator stayed, and the clock stood still. With the frames' own time as the step (carry), frame_whole adds the
 amount to the counter's own remainder and hands out its whole frames: 144 frames of 60/144 are 60; an amount of 1 or more keeps
 its fraction too; two counters keep their own remainders; NaN and amounts below zero give 0. Without it, the amount is cut as
 the game cuts it (60 fps as before).
@@ -11,7 +12,7 @@ the game cuts it (60 fps as before).
 The hooks: host/hl_step.c asks nx2/hl_gates.py for one a site (HL_WHOLE_HOOK: the function, its hash, the register of the cut,
 the counter's address), a line after the site's cut; the function's hash is unchanged, a second run changes nothing, another
 text, a function an exeFS mod patches and a tree that does not ask leave the lift as it was, and the same cut in another
-function stays. The hooked made-up sites, compiled with the host's hos_frame_whole, count 60 frames a second at 144 fps, each
+function stays, as does the clock's second cut (the one not stored to its seconds). The hooked made-up sites, compiled with the host's hos_frame_whole, count 60 frames a second at 144 fps, each
 object its own; at a cap of 60 and with HOS_FPS_WHOLE=0 they count as the game does; without the hooks the same checks fail.
 
 python -I -B tests/test_frame_whole.py [--cc gcc]
@@ -34,6 +35,7 @@ import hl_gates  # noqa: E402
 #  makes the same cut once more elsewhere, so that the cut is the one stored to the counter)
 SITES = {
     "80a87e50": (12, "c->x[19] + 864", False),   # the pick-up indicator's shown count
+    "803edf70": (8, "c->x[19] + 60", True),      # the time of day's seconds added a frame (its cut once more elsewhere)
 }
 HOST_ANCHOR = "uint32_t hos_frame_whole(uint64_t at, uint32_t amount_bits, uint32_t game) {"
 
@@ -80,6 +82,9 @@ static void helper(void) {
     n = 0;
     for (int i = 0; i < 4; i++) n += frame_whole(&w, b + 8, bits(1.25f), 1);   /* (the step times 3: its fractions kept) */
     CHECK(n == 5);
+    n = 0;
+    for (int i = 0; i < 144; i++) n += frame_whole(&w, b + 16, bits(2.0f * 60.0f / 144.0f), 1);   /* (the time of day) */
+    CHECK(n == 120 || n == 119);   /* (a second at 144 fps: the 120 game seconds of one at 60) */
     CHECK(frame_whole(&w, a, bits(0.42f), 0) == 0 && frame_whole(&w, a, bits(1.5f), 0) == 1 && frame_whole(&w, a, bits(2.0f), 0) == 2);
     CHECK(frame_whole(&w, a, bits(-1.0f), 1) == 0 && frame_whole(&w, a, bits(NAN), 1) == 0 && frame_whole(&w, a, bits(0.0f), 1) == 0);
     for (uint64_t k = 0; k < 40; k++) frame_whole(&w, 0x9000 + k, bits(0.5f), 1);   /* (more counters than slots: the oldest go) */
@@ -132,9 +137,10 @@ static uint32_t update(int site, int object, float amount) {
 }
 static void seconds(double s) { hos_frame_seconds_bits = s > 0 ? bits((float)s) : 0; }
 int main(int argc, char **argv) {
-    const int off = argc > 1 && !strcmp(argv[1], "off");
+    const int off = argc > 1 && !strcmp(argv[1], "off"), only = argc > 2 ? atoi(argv[2]) : -1;   /* (only: one site) */
     helper();
     for (int k = 0; k < SITES; k++) {
+        if (only >= 0 && k != only) continue;
         /* a cap of 60: the game's cut */
         seconds(0);
         CHECK(update(k, 1, 0.42f) == 0 && update(k, 1, 1.5f) == 1 && update(k, 1, 2.0f) == 2);
@@ -226,8 +232,9 @@ def main():
         # (the negative control: the game's own cut fails the same checks at 144 fps)
         c.write_text(fixture.replace("@LIFTED@", LIFTED.replace('#include "a64.h"\n', "")), encoding="utf-8")
         subprocess.run(cmd, check=True)
-        r = subprocess.run([str(exe)], env=env, capture_output=True, text=True)
-        check(r.returncode != 0 and "FAIL:" in r.stderr, "the unhooked counts pass the checks: they prove nothing")
+        for k, addr in enumerate(SITES):
+            r = subprocess.run([str(exe), "on", str(k)], env=env, capture_output=True, text=True)
+            check(r.returncode != 0 and "FAIL:" in r.stderr, "f_%s unhooked passes the checks: they prove nothing" % addr)
     print("frame whole: ok")
 
 

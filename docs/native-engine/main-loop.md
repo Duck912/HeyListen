@@ -223,3 +223,4 @@ sites, each added once it was seen to misbehave in game:
 | Function | What counts | Remainder kept for | Above a 60 cap without it |
 |---|---|---|---|
 | `0x80a87e50` | the pick-up indicator's shown count (`+864`) moves toward the wallet's by `(int)(step x max(distance / 50, 1))` (upstream #2006) | `x19 + 864` | the indicator above Link's head never fades |
+| `0x803edf70` | the time of day adds `(int)(2 x step)` game seconds (`+60`) a frame to the seconds of the day (upstream #2093); the function's second such cut, in the branch that sets the time from another source, stays the game's | `x19 + 60` | the day runs slow below 120 fps (83% at 100) and stops above it, the sun swinging over a frozen hour |

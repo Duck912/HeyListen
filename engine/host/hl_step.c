@@ -89,8 +89,14 @@ uint32_t hos_movie_frames(uint64_t player) {
    added once it is seen to misbehave in game:
    - f_80a87e50, the pick-up indicator above Link's head (a rupee, a Deku Stick): the count it shows (+864) moves toward the
      wallet's (+860) by (int)(step * max(distance / 50, 1)) and the indicator fades when they meet. Cut to 0, it stayed at
-     the old count until a door or a talk replaced it (upstream issue 1832). */
+     the old count until a door or a talk replaced it (upstream issue 1832).
+   - f_803edf70, the time of day (after upstream f0c40fc96, #2093): each frame it adds (int)(2 * step) game seconds (+60) to
+     the seconds of the day (+40, a day of 86400, then the day count +44). Cut, it added 1 a frame below 120 fps (the day
+     slower: 83% at 100) and 0 above 120, where the clock stood still and the sun swung back and forth over the frozen hour.
+     The function cuts into x8 the same way once more, in the branch that sets the time from another source: that one stays
+     the game's (the hook's anchor is the cut stored to +60). */
 HL_WHOLE_HOOK(80a87e50, "7464f66dbdfb2fd2", 12, "c->x[19] + 864");
+HL_WHOLE_HOOK(803edf70, "29ce7b235d0d6bfd", 8, "c->x[19] + 60");
 
 uint32_t hos_frame_whole(uint64_t at, uint32_t amount_bits, uint32_t game) {
     static FrameWhole state;   /* (these two under the lock: the game's update threads) */
