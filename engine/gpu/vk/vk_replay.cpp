@@ -2719,11 +2719,12 @@ bool seg_early_on() {
 // the replay thread's own last segment are done (~5 ms, R6's trace). =1: rec_cur (the work before it, the pre-sync's copies, the
 // part's readback refresh) is submitted before the dry pass, the dry pass's own uploads go to a recording of their own, and each
 // segment is submitted in order by the thread that finishes it. =2: also the first segment cut short (RX_VK_EARLY_GPU_FIRST draws
-// and dispatches, 48 by default), so the GPU starts sooner. Off (0) by default: exactly as before.
+// and dispatches, 48 by default), so the GPU starts sooner. On (1) by default since 2026-11-16 (PC 3050, interleaved A/B, same
+// pictures: kokiri-forest 36.45 -> 38.05 fps, market 42.05 -> 42.85, the GPU's idle a frame ~1 ms shorter); =0: exactly as before.
 int early_gpu_mode() {
     static const int v = [] {
         const char* e = getenv("RX_VK_EARLY_GPU");
-        const int m = e ? std::clamp(atoi(e), 0, 2) : 0;
+        const int m = e ? std::clamp(atoi(e), 0, 2) : 1;
         logf("vk: a big command buffer's work to the GPU: %s (RX_VK_EARLY_GPU=%d)",
              m == 0 ? "after its dry pass and the replay thread's own segment, as before"
                     : m == 1 ? "as recorded: the work before it first, each segment in order as it is done"

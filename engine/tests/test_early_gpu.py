@@ -6,7 +6,7 @@ and a stub submit_job that records the order:
 - once the dry pass has recorded an upload (dry_uploaded), no segment goes out until rd has (sub_after_rd); then all that are done;
 - random finishing orders and upload moments over 100000 rounds keep this.
 And, by the text:
-- off by default (early_gpu_mode: RX_VK_EARLY_GPU, 0 when unset), only on the path with segments (early), the short first
+- on by default (early_gpu_mode: RX_VK_EARLY_GPU, 1 when unset; =0 the old path), only on the path with segments (early), the short first
   segment only at 2;
 - on: rec_cur (the pre-sync's copies, the readback refresh) is submitted before the dry pass, rd is begun and made rec_cur and the
   dry pass's command buffer, and the upload watch is set before the dry pass and cleared right after it;
@@ -49,7 +49,7 @@ def main():
     tex = (ROOT / "gpu/vk/vk_texture.cpp").read_text(encoding="utf-8")
 
     m = function(rp, "int early_gpu_mode() {")
-    need('const int m = e ? std::clamp(atoi(e), 0, 2) : 0;' in m and 'getenv("RX_VK_EARLY_GPU")' in m, "RX_VK_EARLY_GPU is not off by default")
+    need('const int m = e ? std::clamp(atoi(e), 0, 2) : 1;' in m and 'getenv("RX_VK_EARLY_GPU")' in m, "RX_VK_EARLY_GPU is not on by default")
     rh = function(rp, "const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_stop)")
     need("if (early_gpu_mode() >= 2) plan[0] = std::min(plan[0], early_gpu_first());" in rh, "the short first segment is not mode 2's only")
 
