@@ -198,3 +198,16 @@ the clock: at a cap of 120 the opening story movie went black at half its length
 hook (`HL_MOVIE_HOOK` in `host/hl_step.c`, marker `hl gate 83b7c711`), makes the step `hos_movie_frames(player)`: the
 frame's published seconds in 60ths, the rest carried to that player's next update, 1 when nothing is published
 (`HOS_FPS_MOVIE=0`: 1 always).
+
+**The sound job and the solver's steps (after upstream Hookshot 8fcc8c22b and 9df055f23).** Two places need whole 60 fps
+frames, where the step is now the frame's own time. The sound manager's job (`0x80435300`, phase in `w2`) hands the step to
+the sound engine, whose timers and ramps count updates of at least one whole step: fed 0.5 at 120 fps, sounds were not
+released at area changes until the voice budget was full and sounds, then the music, stopped. Above a 60 cap the job runs
+at 60 Hz (a remainder of steps, a whole one handed over when it runs, its other phases following phase 0's choice, the
+remainder kept over steps of 1 or more). The physics solver's step count (`(int)(step x steps a 60 fps frame + 0.001)` into
+the solver's `+712`, at `0x838ceb80` and `0x838cfc10`) is rounded up instead while the step is under 1, at least 1 and never
+under the game's, so a moving platform keeps Link. These are lift hooks (`HL_SOUND_HOOK`, `HL_SOLVER_HOOK` in
+`host/hl_high_fps.c`, the logic in `host/oot_high_fps.h`): lines `nx2/hl_gates.py` puts after anchors in each function's text
+when it hashes as recorded, markers `hl gate 80435301`, `838ceb81`, `838cfc11`. At a cap of 60 both give the game's own
+values. `HOS_FPS_SOUND=0`, `HOS_FPS_SOLVER=0`: the game's (HeyListen's switches); `HOS_FPS_LOG=1`: what they do every 600
+calls.
