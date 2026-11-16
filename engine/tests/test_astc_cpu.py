@@ -66,9 +66,11 @@ def main():
         problems.append("docs/development.md does not describe RX_VK_ASTC_CPU")
     with tempfile.TemporaryDirectory(prefix="astc-cpu-") as folder:
         tmp = Path(folder)
-        for name, define, want in (("windows", ["-D_WIN32"], WINDOWS), ("other", [], OTHER)):
+        # (the rule's _WIN32 renamed: a Windows compiler defines _WIN32 itself, so the check of the other platforms got Windows'
+        # rule, and its own headers cannot do without it)
+        for name, define, want in (("windows", ["-DASTC_RULE_WIN32"], WINDOWS), ("other", [], OTHER)):
             cpp = tmp / (name + ".cpp")
-            cpp.write_text(HARNESS % rule, encoding="utf-8")
+            cpp.write_text(HARNESS % rule.replace("_WIN32", "ASTC_RULE_WIN32"), encoding="utf-8")
             exe = tmp / name
             r = subprocess.run([args.cxx, "-std=c++17", "-O0", "-Wall", "-Wextra", "-Werror", *define, str(cpp), "-o", str(exe)],
                                capture_output=True, text=True, timeout=120)
