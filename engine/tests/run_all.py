@@ -105,6 +105,7 @@ ARGS = {
     "tests/test_taau_env_lookup.py": ["--cxx", "g++"],
     "tests/test_target_overlap.py": ["--cxx", "g++"],
     "tests/test_segment_plan.py": ["--cxx", "g++"],
+    "tests/test_desc_counts.py": ["--cxx", "{cxx}"],
     "tests/test_gone_ring.py": ["--cxx", "g++"],
     "tests/test_split_count.py": ["--cxx", "g++"],
     "tests/test_mirror_inherit.py": ["--cxx", "{cxx}"],
