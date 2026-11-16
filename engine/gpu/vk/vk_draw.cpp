@@ -6145,6 +6145,9 @@ VkBuffer mesh_ring = VK_NULL_HANDLE;
 VmaAllocation mesh_ring_mem = nullptr;
 std::mutex mesh_ring_mu;
 uint64_t mesh_ring_at = 0;
+VkBuffer mesh_dbg = VK_NULL_HANDLE;   // (RX_VK_G3_MESHCOUNT)
+VmaAllocation mesh_dbg_mem = nullptr;
+void* mesh_dbg_ptr = nullptr;
 thread_local VkBuffer mesh_conv_buf = VK_NULL_HANDLE;   // (the converted records for the draw in progress)
 thread_local uint64_t mesh_conv_off = 0;
 bool mesh_indirect_convert(VkCommandBuffer cmd, const DrawArgs& d) {
@@ -6187,11 +6190,49 @@ bool mesh_indirect_convert(VkCommandBuffer cmd, const DrawArgs& d) {
     std::vector<VkBufferCopy> regions(n);
     for (uint32_t i = 0; i < n; i++) regions[i] = {args.offset + (uint64_t)i * stride + 4 * word, off + (uint64_t)i * 12, 4};
     vkCmdCopyBuffer(cmd, args.buffer, mesh_ring, n, regions.data());
+    {   // (diagnosis, default off) RX_VK_G3_MESHCOUNT=1: the same counts into a host-visible twin of the ring, for mesh_count_note
+        static const bool on = getenv("RX_VK_G3_MESHCOUNT") != nullptr;
+        if (on) {
+            if (!mesh_dbg && !create_buffer(kMeshRing, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, mesh_dbg, mesh_dbg_mem, &mesh_dbg_ptr)) mesh_dbg = VK_NULL_HANDLE;
+            if (mesh_dbg) {
+                std::vector<VkBufferCopy> r2(n);
+                for (uint32_t i = 0; i < n; i++) r2[i] = {args.offset + (uint64_t)i * stride + 4 * word, off + (uint64_t)i * 12, 4};
+                vkCmdCopyBuffer(cmd, args.buffer, mesh_dbg, n, r2.data());
+            }
+        }
+    }
     mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     mb.dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT, mb.dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
     vkCmdPipelineBarrier2(cmd, &di);
     mesh_conv_buf = mesh_ring, mesh_conv_off = off;
     return true;
+}
+/// (RX_VK_G3_MESHCOUNT=1, diagnosis) an indirect mesh draw of program key put its record at ring offset off: 2000 draws on, the count the GPU
+/// wrote there is read, and every 4000 of them the programs with the most workgroups are logged (draws, mean, largest, sum a frame)
+void mesh_count_note(uint64_t key, uint64_t off) {
+    static std::mutex mu;
+    static std::deque<std::pair<uint64_t, uint64_t>> q;
+    struct Agg { uint64_t n = 0, sum = 0, most = 0; };
+    static std::unordered_map<uint64_t, Agg> agg;
+    static uint64_t reads = 0;
+    std::lock_guard lk(mu);
+    q.emplace_back(key, off);
+    if (q.size() <= 2000 || !mesh_dbg_ptr) return;
+    const auto [k, o] = q.front();
+    q.pop_front();
+    const uint32_t v = *(volatile const uint32_t*)((const uint8_t*)mesh_dbg_ptr + o);
+    Agg& a = agg[k];
+    a.n++, a.sum += v, a.most = std::max<uint64_t>(a.most, v);
+    if (++reads % 4000 != 0) return;
+    std::vector<std::pair<uint64_t, uint64_t>> top;
+    for (const auto& [kk, aa] : agg) top.emplace_back(aa.sum, kk);
+    std::sort(top.rbegin(), top.rend());
+    for (size_t i = 0; i < top.size() && i < 14; i++) {
+        const Agg& aa = agg[top[i].second];
+        logf("vk: mesh counts prog %016llx: %llu draws, %.1f workgroups mean, %llu most, %llu in all", (unsigned long long)top[i].second,
+             (unsigned long long)aa.n, (double)aa.sum / aa.n, (unsigned long long)aa.most, (unsigned long long)aa.sum);
+    }
+    agg.clear();
 }
 } // namespace
 // (hookshot) NVN's indirect mesh draws hold (count, first) and Vulkan's (x, y, z): given as they were, every one drew y = first = 0 workgroups,
@@ -7159,6 +7200,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             if (mesh_conv_buf) {   // (EvilOOT: the records as {count, 1, 1}, mesh_indirect_convert)
                 // (hookshot: as many records as mesh_indirect_convert wrote, not the game's maximum)
                 const uint32_t conv_n = (uint32_t)std::clamp(d.max, 1, 4096);
+                if (mesh_dbg) mesh_count_note(p.key, mesh_conv_off);
                 if (cnt && vkCmdDrawMeshTasksIndirectCountEXT)
                     vkCmdDrawMeshTasksIndirectCountEXT(cmd, mesh_conv_buf, mesh_conv_off, cnt.buffer, cnt.offset, conv_n, 12);
                 else
