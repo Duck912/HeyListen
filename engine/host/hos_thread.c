@@ -1361,6 +1361,31 @@ static int64_t vc_env_ns(const char *name, int64_t us) {
     const char *e = getenv(name);
     return (e ? atoll(e) : us) * 1000;
 }
+/* Where a core's holder is now, for the escape line: " at <module>+<offset>" of its host thread's instruction pointer
+   (HeyListen.exe's link map names the lifted function, f_<guest address>, or the host function around it), sampled with
+   the thread stopped for the one GetThreadContext call. Nothing is called while it is stopped: a lock it holds (the heap's,
+   the loader's) cannot be waited for here */
+static void vc_where(HosThread *h, char *out, size_t cap) {
+    out[0] = 0;
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+    if (!h->handle || SuspendThread(h->handle) == (DWORD)-1) return;
+    CONTEXT ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.ContextFlags = CONTEXT_CONTROL;
+    const BOOL got = GetThreadContext(h->handle, &ctx);
+    ResumeThread(h->handle);
+    if (!got) return;
+    HMODULE mod = NULL;
+    char path[MAX_PATH] = "?";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)(uintptr_t)ctx.Rip, &mod))
+        GetModuleFileNameA(mod, path, sizeof path);
+    const char *base = strrchr(path, '\\');
+    snprintf(out, cap, " at %s+%#llx", base ? base + 1 : path, (unsigned long long)(ctx.Rip - (uintptr_t)mod));
+#else
+    (void)h, (void)cap;
+#endif
+}
 static void vc_acquire(HosThread *t) {
     static int64_t esc_better = -1, esc_eq, slice;
     if (esc_better < 0) {
@@ -1421,20 +1446,23 @@ static void vc_acquire(HosThread *t) {
             vc_dequeue(t);
             vc_st.escapes++;
             static int logged;
-            if (logged < 40) {
+            if (logged < 400) {   /* (40 were all spent in a zone's load: the escapes of steady play went unlogged) */
                 logged++;
                 /* (each holder with how long it has held its core: a holder that took it after this wait began handed
                    it on in between; one that has held it all along ran that long without an nn::os call, an SVC or a
-                   loop poll, or sat blocked in host code with its core) */
-                char who[320] = "";
+                   loop poll, or sat blocked in host code with its core: where it is then, vc_where) */
+                char who[480] = "";
                 int len = 0;
                 const int64_t now = hos_now_ns();
-                for (int k = 0; k < vc_cores() && len < 240; k++)
-                    if (m >> k & 1)
-                        len += snprintf(who + len, sizeof who - len, " core %d: %s (%d)%s, held %.0f ms;", k,
-                                        vc_owner[k] ? vc_owner[k]->name : "-", vc_owner[k] ? vc_owner[k]->priority : 0,
-                                        vc_owner[k] && vc_owner[k]->vc_kick ? " asked" : "",
-                                        vc_owner[k] ? (now - vc_owner[k]->vc_took) / 1e6 : 0.0);
+                for (int k = 0; k < vc_cores() && len < 360; k++)
+                    if (m >> k & 1) {
+                        HosThread *h = vc_owner[k];
+                        char at[96] = "";
+                        if (h && now - h->vc_took > esc_eq / 2) vc_where(h, at, sizeof at);
+                        len += snprintf(who + len, sizeof who - len, " core %d: %s (%d)%s, held %.0f ms%s;", k,
+                                        h ? h->name : "-", h ? h->priority : 0, h && h->vc_kick ? " asked" : "",
+                                        h ? (now - h->vc_took) / 1e6 : 0.0, at);
+                    }
                 hos_log("vcores: %s (priority %d) ran without a core after %.1f ms:%s", t->name, t->priority, waited / 1e6, who);
             }
             break;

@@ -5833,6 +5833,9 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         const uint32_t width = want ? (uint32_t)(want >> 32) : dev.swap_extent.width;
         const uint32_t height = want ? (uint32_t)want : dev.swap_extent.height;
         if (!create_swapchain(width, height)) {
+            static int64_t failed;   // (HeyListen: a frame not shown for want of a swapchain, said as the acquire's are)
+            if (++failed <= 4 || failed % 600 == 0)
+                logf("vk: a frame not shown: no swapchain of %ux%u (%lld frames so far)", width, height, (long long)failed);
             // Retry without replacing a newer resize published while recreation was in progress.
             uint64_t empty = 0;
             dev.swap_resize.compare_exchange_strong(empty, ((uint64_t)width << 32) | height,
@@ -5890,6 +5893,13 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         logf("vk: the window is shown again");
     }
 #endif
+    if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
+        // (HeyListen) a frame not shown, said: in two of the S8 runs on the main PC the game went on at 90 fps for 30 s with
+        // nothing presented after a swapchain was made again, and nothing in the log said so
+        static int64_t unshown;
+        if (++unshown <= 4 || unshown % 600 == 0)
+            logf("vk: a frame not shown: the image acquire gave %d (%lld frames so far)", (int)res, (long long)unshown);
+    }
     if (res == VK_ERROR_OUT_OF_DATE_KHR) {
         std::lock_guard qk(dev.present_mu);
         create_swapchain(dev.swap_extent.width, dev.swap_extent.height);

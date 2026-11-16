@@ -82,6 +82,7 @@ void hl_mem_unimported(uint64_t lo, uint64_t hi) {
 }
 
 typedef struct { void *va; ULONG_PTR attr; } ColdWs;   /* PSAPI_WORKING_SET_EX_INFORMATION (bit 0: valid) */
+static int64_t cold_unlocks, cold_queries;   /* (VirtualUnlock and VirtualQuery calls: a slow pass's line) */
 typedef BOOL(WINAPI *ColdQueryFn)(HANDLE, PVOID, DWORD);
 static ColdQueryFn cold_query;
 
@@ -106,6 +107,7 @@ static void cold_slice(int kind, uint64_t a, uint64_t b) {
                 int r = j;
                 while (r < e && (info[r].attr & 1)) r++;
                 VirtualUnlock(info[j].va, (SIZE_T)(r - j) << 12);   /* (fails with ERROR_NOT_LOCKED, and trims: by design) */
+                cold_unlocks++;
                 j = r;
             }
             took[ntook][0] = k, took[ntook][1] = e, ntook++;
@@ -208,6 +210,7 @@ static void heaps_pass(void) {
             break;
         }
         MEMORY_BASIC_INFORMATION mbi;
+        cold_queries++;
         if (!VirtualQuery(GP(at), &mbi, sizeof mbi)) { at = HOS_GUEST_SPACE; continue; }
         uint64_t end = (uint64_t)((uint8_t *)mbi.BaseAddress - (uint8_t *)GP(0)) + mbi.RegionSize;
         if (end > HOS_GUEST_SPACE) end = HOS_GUEST_SPACE;
@@ -240,8 +243,9 @@ static DWORD WINAPI cold_main(void *unused) {
         Sleep(COLD_PASS_MS);
         if (hos_pool_trap_active()) continue;
         const int64_t t0 = hos_now_ns();
+        const int64_t unlocks0 = cold_unlocks, queries0 = cold_queries;
         pools_pass();
-        const int64_t t1 = hos_now_ns();
+        const int64_t t1 = hos_now_ns(), unlocks1 = cold_unlocks;
         if (heaps_on) {
             const uint64_t back = hl_mem_cold_back_pages(HL_MEM_COLD_POOLS) + hl_mem_cold_back_pages(HL_MEM_COLD_HEAPS);
             if (++passes > 2 && back - back_before[1] >= COLD_QUIET_PAGES) quiet_left = COLD_QUIET_PASSES;
@@ -250,6 +254,12 @@ static DWORD WINAPI cold_main(void *unused) {
             else heaps_pass();
         }
         const int64_t t2 = hos_now_ns();
+        /* (a pass of 100 ms or more, alone, with its calls: such passes came with the 250 ms frames of the v0.4.0
+           benchmark, the game's Resource Memory thread holding its core meanwhile) */
+        if (t2 - t0 >= 100000000LL)
+            hos_log("hl mem: a slow pass: pools %.1f ms (%lld unlocks), heaps %.1f ms (%lld unlocks, %lld queries)",
+                    (t1 - t0) / 1e6, (long long)(unlocks1 - unlocks0), (t2 - t1) / 1e6,
+                    (long long)(cold_unlocks - unlocks1), (long long)(cold_queries - queries0));
         if ((t1 - t0) / 1e6 > worst_ms[0]) worst_ms[0] = (t1 - t0) / 1e6;
         if ((t2 - t1) / 1e6 > worst_ms[1]) worst_ms[1] = (t2 - t1) / 1e6;
         if (hos_now_ns() >= next_report) {

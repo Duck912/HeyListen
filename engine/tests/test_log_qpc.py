@@ -39,6 +39,9 @@ def main():
     acquire = block(text, 'static void vc_acquire(')
     if 'held %.0f ms' not in acquire or 'vc_took' not in acquire:
         raise SystemExit('FAIL: the escape line does not say how long each holder has held its core')
+    where = block(text, 'static void vc_where(')
+    if 'vc_where(h, at' not in acquire or where.index('ResumeThread') > where.index('GetModuleHandleExA'):
+        raise SystemExit('FAIL: the escape line does not say where a long holder is, or calls out while it is stopped')
     if 't->vc_took = hos_now_ns();' not in block(text, 'static void vc_take('):
         raise SystemExit('FAIL: vc_take does not note when the core was taken')
     fixture = r'''
