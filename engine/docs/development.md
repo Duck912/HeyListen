@@ -134,6 +134,7 @@ case-sensitive, and an unknown one is ignored.
 | `HOS_SAMPLE=<thread>` + `HOS_SAMPLE_FILE=<file>` | One thread's stacks, sampled every millisecond (needs `HOS_PROFILE`); `python -I scripts/prof.py <file>` reads them |
 | `HOS_SAMPLE_ALL=<file>` | Every game and renderer thread every 2 ms while `<file>.go` exists (needs `HOS_PROFILE`); `scripts/crit.py`, `scripts/vkprof.py` and `scripts/hotlist.py` read it |
 | `HOS_THREAD_TIMES=<seconds>` | Every interval, the threads that used over 5% of a core |
+| `HOS_SHORT_SLEEP_TIMER=0` or `1` | The game's sleeps under a millisecond (SleepThread): `0` all short sleeps yield (or PAUSE-spin with `HOS_SHORT_SLEEP_PAUSE`) to their time, as before; `1` all wait on the timer, the host's too. Not set: on Linux the game's wait on the timer (`clock_nanosleep`) and the host's yield, which lowered the frame's CPU 44.8 -> 35.4 ms at the same frame time in Hookshot (a1eb46046, #2637); on Windows all yield. For A/B |
 | `HOS_FPS_LOG` (set), `HOS_PRESENT_TRACE=<csv>` | The game's frame limiter, VRR flags and nominal rate every 300 presents; a CSV line per game present |
 | `RX_VK_FRAME_LOG=<csv>` | A CSV line per present: frame, seconds, frame time in ms, QueryPerformanceCounter ticks (Windows) |
 | `HOS_LOG_QPC=1` | Every log line ends with ` @qpc <ticks>`, the clock of PresentMon's `TimeInQPC` and of the frame log's last column |
