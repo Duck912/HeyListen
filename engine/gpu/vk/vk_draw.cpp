@@ -2747,7 +2747,8 @@ int ubo_memo_mode() {
         int v = c && *c && *c != '0' ? 2 : e && *e && *e != '0' ? 1 : 0;
         if (!v) return 0;
         const char* cap = getenv("RX_VK_CAP_ONLY_GPU");
-        if (ledger_on() || !cap || (*cap && *cap != '0') ||   // (RX_VK_CAP_ONLY_GPU is on by default: unset counts as on) getenv("RX_VK_UB_SNAPSHOT") || getenv("RX_VK_UB_CUR_ONLY")) {
+        // (RX_VK_CAP_ONLY_GPU is on by default: unset counts as on)
+        if (ledger_on() || !cap || (*cap && *cap != '0') || getenv("RX_VK_UB_SNAPSHOT") || getenv("RX_VK_UB_CUR_ONLY")) {
             logf("hl ubo memo: left off (RX_VK_LEDGER, RX_VK_CAP_ONLY_GPU, RX_VK_UB_SNAPSHOT or RX_VK_UB_CUR_ONLY is set)");
             return 0;
         }
