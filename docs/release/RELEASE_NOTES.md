@@ -5,16 +5,15 @@ game. The release holds only the **HeyListen Builder**: no game code, data, keys
 `.nup`, the builder reads it, translates and compiles the game on your PC, prepares its shaders, and starts it. See the
 [user guide](https://github.com/Sacrappy/HeyListen/blob/main/docs/USER_GUIDE.md).
 
-🎮 To play, get it from RecompLauncher
+🎮 To play, download the HeyListen Builder
 =====
-### [Open HeyListen in RecompLauncher](https://recomplauncher.com)
-Pick your own `.nup` (Switch 2, version 131072), press **Set Up**, then **Play**: the launcher builds the game on your PC.
-
-Or download the HeyListen Builder directly:
 ### [🪟  Download the Builder for Windows](https://github.com/Sacrappy/HeyListen/releases/download/{TAG}/HeyListenBuilder.exe)
 ### [🐧  Download the Builder for Linux (AppImage)](https://github.com/Sacrappy/HeyListen/releases/download/{TAG}/HeyListen-{TAG}-Linux-x64.AppImage)
+Run it, pick your own `.nup` (Switch 2, version 131072): it builds the game on your PC and starts it. Nothing of the game is in
+these files.
 
-**Nothing of the game is in these files**: `HeyListen-{TAG}-Windows-x64.zip` is the builder the launcher installs for you.
+Also on [RecompLauncher](https://recomplauncher.com), if you use it: HeyListen is in its library, with the same build done for you
+(`HeyListen-{TAG}-Windows-x64.zip` below is what the launcher installs; you don't need to download it).
 
 **Shaders are prepared again once** with this release (the mesh programs are translated differently): the first start
 takes a few minutes longer, later starts are as before.
@@ -24,9 +23,7 @@ takes a few minutes longer, later starts are as before.
 
 ### Features
 
-* **launcher:** HeyListen installs, starts and is set up from RecompLauncher: the game is built from your own copy with no window, settings are on the game's page, saves are found
-* **launcher:** NVIDIA DLSS and AMD FSR 4 are ticks on the setup screen; NVIDIA's and AMD's files are downloaded from them, checked and put in place for you
-* **launcher:** a `logs` folder keeps the last five runs' logs for the launcher's crash reports
+* **builder:** the progress bar moves while your `.nup` is read (it used to sit at the start for minutes); a RecompLauncher setup also prepares the shaders and pipelines, with their progress, instead of the first start
 * **telemetry:** opt-in crash reports and performance statistics, both off by default (Privacy settings in the game and in the launcher); no save, no game data, no account, user name and paths removed
 * **vk:** `RX_VK_MESH_SHADERS=native` or `compute` picks the mesh path by hand
 * **perf:** smaller mesh shaders: big mesh programs keep their memory helpers out of line, constant flag operations fold, each mesh invocation works its buffer ranges out once (-1.1 ms of GPU in Kokiri Forest on an RTX 3050)
@@ -35,6 +32,9 @@ takes a few minutes longer, later starts are as before.
 * **perf:** fewer stalls: flat per-draw caches, only changed vertex streams bound, recording threads wait less on the copy lock ([#38](https://github.com/Sacrappy/HeyListen/pull/38) to [#42](https://github.com/Sacrappy/HeyListen/pull/42))
 * **perf:** the program cache is packed (6.4 GB became 1.7 GB)
 * **build:** the Vulkan back end can be built with a play profile ([#54](https://github.com/Sacrappy/HeyListen/pull/54))
+* **launcher:** HeyListen can also be installed, started and set up from RecompLauncher: the game is built from your own copy with no window, settings are on the game's page, saves are found
+* **launcher:** NVIDIA DLSS and AMD FSR 4 are ticks on the setup screen; NVIDIA's and AMD's files are downloaded from them, checked and put in place for you
+* **launcher:** a `logs` folder keeps the last five runs' logs for the launcher's crash reports
 
 ### Fixes
 

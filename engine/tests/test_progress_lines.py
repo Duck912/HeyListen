@@ -50,12 +50,12 @@ class ProgressLinesTests(unittest.TestCase):
         self.assertEqual(values, sorted(values), "the bar never goes back")
         self.assertEqual(lines[0], "progress 0.000 Reading your game files")
         self.assertEqual(lines[-1], "progress 1.000 Your game is ready")
-        self.assertIn("progress 0.300 Compiling", lines)
+        self.assertIn("progress 0.250 Compiling", lines)
         self.assertTrue(any(l.endswith("Compiling") and 0.5 < float(l.split()[1]) < 0.7 for l in lines))   # (half of the compile)
 
     def test_a_progress_that_changes_nothing_is_not_said_again(self):
         lines = said(self.mg, [("stage", "compile", "Compiling")] + [("progress", "0.0001")] * 50)
-        self.assertEqual(lines, ["progress 0.300 Compiling"])
+        self.assertEqual(lines, ["progress 0.250 Compiling"])
 
     def test_check_and_error(self):
         err = io.StringIO()
@@ -128,7 +128,7 @@ class ProgressLinesTests(unittest.TestCase):
                 self.mg.prepare_setup(a)
                 self.assertTrue(self.mg.PROGRESS_LINES)
                 self.assertIs(self.mg.say, self.mg.progress_say, "fail() and every step now say progress lines")
-                self.assertTrue(a.no_prepare_shaders)
+                self.assertFalse(a.no_prepare_shaders, "--prepare prepares the shaders as its last step, with its progress")
                 self.assertNotIn("HOOKSHOT_NGX_SDK", os.environ, "a build is with DLSS only when asked")
                 self.assertIn(a.language, {c for c, _ in self.mg.LANGUAGES})
             finally:

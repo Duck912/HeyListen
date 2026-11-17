@@ -84,7 +84,10 @@ def no_throttle(handle=None):
 # each stage lies on the bar: the build takes (on a PC with the compiler's objects cached, a stage is skipped and the bar jumps over it)
 # a few minutes to read the game, ~10 to translate it, and the compile is the rest)
 PROGRESS_LINES = False
-PROGRESS_SPANS = {"read": (0.00, 0.08), "lift": (0.08, 0.30), "compile": (0.30, 0.93), "finish": (0.93, 1.00)}
+# (shaders: the game's --prepare-shaders run, the programs then the pipelines, as the setup's last step: RecompLauncher's bar
+# runs to the end instead of the first start preparing them behind a black window)
+PROGRESS_SPANS = {"read": (0.00, 0.06), "lift": (0.06, 0.25), "compile": (0.25, 0.80), "finish": (0.80, 0.83),
+                  "shaders": (0.83, 1.00)}
 _bar = {"stage": "read", "shown": -1.0, "text": ""}
 
 
@@ -1010,9 +1013,13 @@ def prepare_shaders(cmd, folder=None, silence=PREPARE_SILENCE):
     some GPUs, issue 711): hookshot --prepare-shaders (host/hos_main.c, gpu/vk/vk_main.cpp), the same work as that first start, in
     the game's folder and environment, as the builders' Play starts it. A PC whose Vulkan can't (exit 3), a run silent for `silence` seconds (then stopped), or
     any other failure leaves the work to the first start, as before: never a failed build. Returns its exit code (None: stopped)"""
+    def on_line(line):   # (--prepare: the game's @@stage and @@progress lines become the launcher's progress lines)
+        if PROGRESS_LINES and line.startswith(("@@stage ", "@@progress ")):
+            words = line[2:].split(" ", 2)
+            say(*words)
     try:
         code = run(cmd, check=False, show=show_prepared, cwd=folder or os.path.dirname(cmd[0]) or None,
-                   base=game_env(), silence=silence)
+                   base=game_env(), silence=silence, on_line=on_line)
     except OSError as e:
         not_prepared(str(e))
         return 1
@@ -1457,7 +1464,8 @@ def prepare_setup(a):
         say = progress_say
     if not getattr(a, "prepare", False):
         return
-    a.no_prepare_shaders = True   # (the game starts its own prepare at the first start: the step opens no window)
+    # (the shaders and the pipelines are prepared as the setup's last step, with no window (hookshot --prepare-shaders opens
+    # none) and their progress on the launcher's bar; a PC whose Vulkan can't leaves them to the first start, as before)
     if not getattr(a, "language_given", False):
         a.language = system_language()
     # (the package's tools, where the builder window points them: Runner.cs. Only a folder that is there; a variable the PC set stays)
@@ -1573,7 +1581,11 @@ def main(a=None):
             # Keep the last usable cache until the new package has been read and validated.
             staged_exefs = os.path.join(game, "exefs")
             try:
-                run(PY + ["nx2/nup.py", a.nup, "--extract", game])
+                # (the extraction's own progress, by bytes, is the read stage's bar: without it the launcher's bar sat still
+                # for the minutes the .nup takes to read)
+                run(PY + ["nx2/nup.py", a.nup, "--extract", game, "--progress"],
+                    on_line=(lambda line: say("progress", line.split()[1])
+                             if PROGRESS_LINES and line.startswith("@@progress ") and len(line.split()) == 2 else None))
                 check_modules(staged_exefs)
                 check_supported_build(staged_exefs)
                 if not os.path.isdir(os.path.join(game, "romfs")):
