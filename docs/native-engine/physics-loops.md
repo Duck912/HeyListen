@@ -968,3 +968,65 @@ Switches: unit names `support` and `relxf` in `HL_MATH_UNITS` (`HL_MATH_CHECK=1`
 function's whole output, 16 and 80 bytes: `Unit.out_len`). Gates: the hash above is of the lifted text on this PC; the gate
 goes in only when the hash matches, and another tree's build takes it out again (the lift's work folder is shared),
 which is the existing rule of `nx2/hl_gates.py`.
+
+## 13. Contact Jacobian set-up `0x81779980` (stream N4: first reading, partial)
+
+Read from the image's instructions (1,413; the first 300 and the structure of the rest: calls, branches, loops, the FP
+census). Not a complete specification: what is established, and what a complete one still needs.
+
+**Where it sits.** Two callers: `0x8177b020` (the direct path the narrow phase takes for new manifolds, through
+`0x81902240` -> `0x81782ca8`) and `0x8177f720`. `0x8177b020` (153 instructions) is the record writer's wrapper: it takes
+the thread's Jacobian stream block (`*(args +0)`, a block whose first 16-bit word is the used byte count, records start
+32 bytes after the block's start plus that count; when fewer than `0xfe0 - size` bytes remain it calls the block
+allocator `0x816ef7bc` in a loop), computes the record's size from the manifold (`0x40 + 0x20 * points`, `0xc0` in the
+other case, plus bits for friction rows, plus a byte from a table at `*0x84cc0818` indexed by a flag byte it builds),
+builds the record's flag byte (`w26`: from body flag masks at the world object's `+0xbb0` and `+0xcc0`, the pair's `+0x99`
+bits, `+0x94 == 2`, a world setting at `+0x758` +0x18), and calls `0x81779980` with: w0 = bit 0 "the second body's
+manifold word at +0x58 is zero" (the two-body form), x1 = the first object (its `+0x58` float, a friction or restitution
+scale), x2 = the pair's body data (offsets used: `+0x40..+0x6f` the two bodies' positions in double and float parts, `+0x94`
+a byte (2 = a special pair), `+0x99`, `+0x9a`, `+0xa0` a pointer copied to the record's `+0x20`, `+0xd8` a float, `+0xe8`
+filter bits, `+0xf0` a 16-bit mask, `+0xf8` the world, `+0x10a` a byte), x3 = the manifold (`+0x10..+0x3f` the transform
+and the two bodies' double translations, `+0x40..+0x5f` four float pairs of translation, `+0x60`, `+0x80` the two bodies'
+inertia rows, `+0xd0` a float tested against `0x5f7f0000` (a huge-value test), `+0xd4` a byte, `+0xf0` a mask, `+0x108` a
+byte), x4 = a float4 of per-axis scales, w5 = a byte from the caller's stack, and on the stack the record's pointer, its
+size and four flag bytes. After the call the wrapper adds a small count to the stream's counter (`+0x10`) and the record's
+size to the block's used count.
+
+**What it writes**: the record of `physics-loops.md` section 10's header table: +0 the 16-bit flags word (built from
+bits: a huge-value test of `+0xd0`, the pair masks `0x3f` of `+0xf0`, `0x1000` from the stack flag, bit 10 from `+0x94 !=
+0`, bit 11 from `+0x108`, bit 13 and `0x80` from a "second body moves" test whose operands are a dot of the relative
+position with a row and its square), +2 a flag byte of the deferred lists (from the caller's flags and `+0x9a`), +3 a
+byte, +4 the point count (`+0x58` of the first object), +5 and +6 bytes (+6 from the two-body form), +7 the manifold's
+`+0xd4`, +8 and +12 the two bodies' ids (their `+0x58` words), +16 a float4 (the normal, with its w lane a factor), +0x20 a
+pointer, +0x28 and +0x2c the two bodies' velocity slots (a body whose slot is `0x7fffffff` gives 0), +0x30, +0x32, +0x34 and
++0x38 sixteen-bit values: the high halves of four floats (the position quantised by dropping the low 16 bits: `shrn #16`),
+then from +0x40 the points, 32 bytes each (two float4: the point's two angular Jacobians, with the right-hand side and the
+effective mass in the w lanes), and the friction rows after them. The deferred lists (flag byte +2 bits 0 to 3) are
+appended through the tables at `*0x84cc1a78 .. 0x84cc1a90`: zeros or copies of the manifold's `+0xd0..+0x10f` words into
+the slots the tables name, in the record, for each point count up to 0x20.
+
+**What it is made of**: no fused operation, no reciprocal or reciprocal-square-root estimate, 4 divisions, 1 square
+root, 4 FMIN and 5 FMAX, one FCVTZS (float4 scaled by a table at `*0x84ca4680 + 0x350` and added to a base vector at
+`*0x84cb8120`... the quantisation of the offset), one SCVTF (the point count), 3 table lookups (TBL: lane shuffles with a
+constant at `0x83e41000 + 0x1a0`), 2 bit-selects. Doubles are used for the translations (the bodies' double parts summed
+and differenced, then narrowed), floats for the rest: the exactness rules of `Exact.h` cover every operation kind present
+(this function needs no `fma` and no estimate). One direct call (`0x81707300`, with two negated pairs of doubles: a small
+numeric helper, 124 instructions' worth not read), and **one indirect call**: a loop over the world's list of contact
+modifiers (the count at the world object's `+0x998`, 16-byte entries of a mask and an object, filtered by the pair's filter
+bits `+0xe8`), each called through its vtable slot `+0x68` with eight arguments (the record among them). That call is the
+function's one callback into actor and phive code: a native version has to decline whenever the list holds an entry whose
+mask meets the pair's bits (or run the translated function whole), because the modifier may write the record the native
+code is building.
+
+**Loops** (back edges): the point copy at `0x8177a188` (16 bytes a step), the sum of the points' inertia terms
+`0x8177a200..a250` (four float4 a round, then singly: a sum of `count - 1` rows in order: the order of the sum is part of
+the result), a per-point loop `0x8177a2e0..a304` and `0x8177a9f0..aa98` (the deferred-list zeroing, up to `0x20`
+points), the modifier loop `0x8177ade0..ae28` and a last per-point loop `0x8177af40..af70`.
+
+**Not yet read** (a native version needs them): `0x8177a260 .. 0x8177a9b8` (the per-point arithmetic itself: about 600
+instructions), `0x8177ab70 .. 0x8177ac04` (the two-body branch and the call's set-up), `0x8177ae4c .. 0x8177af84` (the tail:
+the clamp of the stored right-hand sides, the `0x100` flag on a huge value) and the helper `0x81707300`. Estimate for the
+unit: 6 to 8 days with its check (a plan-then-apply form like U3's: the native side computes the 64 + 32 n bytes of the
+record and the list entries it appends; the OS layer writes or compares them; declined whenever the modifier list matches).
+The wrapper `0x8177b020` could be taken whole instead (153 instructions, one allocator call), which avoids reproducing its
+size rule twice.
