@@ -19,6 +19,7 @@
 #include "common/div_ceil.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/global_helper_policy.h"
+#include "shader_recompiler/backend/spirv/local_memory_pad.h"   // (hookshot SH1)
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 
@@ -698,7 +699,14 @@ void EmitContext::DefineLocalMemory(const IR::Program& program) {
     if (program.local_memory_size == 0) {
         return;
     }
-    const u32 num_elements{Common::DivCeil(program.local_memory_size, 4U)};
+    // (stream SH1, RX_VK_LOCAL_PAD=<words>, off by default: local_memory_pad.h, the driver's compile of the game's two largest mesh programs)
+    static const u32 pad_to{LocalPadNumber(std::getenv("RX_VK_LOCAL_PAD"), kLocalPadDefault)};
+    static const u32 pad_from{LocalPadNumber(std::getenv("RX_VK_LOCAL_PAD_FROM"), kLocalPadFromDefault)};
+    const u32 used_elements{Common::DivCeil(program.local_memory_size, 4U)};
+    const u32 num_elements{PaddedLocalWords(used_elements, pad_to, pad_from)};
+    if (num_elements != used_elements) {
+        LOG_WARNING(Shader_SPIRV, "local memory of {} words declared with {} (RX_VK_LOCAL_PAD)", used_elements, num_elements);
+    }
     const Id element_type{TypeStruct(U32[1])};
     const Id type{TypeArray(element_type, Const(num_elements))};
     const Id pointer{TypePointer(spv::StorageClass::Private, type)};
