@@ -145,8 +145,10 @@ def records(path, want=None):
                 f.seek(size, 1)
                 continue
             data = f.read(size)
-            if len(data) < size or size < 4:
+            if len(data) < size:
                 return
+            if size < 4:
+                continue
             kind = struct.unpack_from("<I", data)[0]
             yield key, kind & ~KIND_ZSTD, data, bool(kind & KIND_ZSTD)
 
@@ -289,10 +291,16 @@ def analyse(spirv):
             sc = idsc.get(w[i + 3])
             mem[(0, sc)] += 1
             idtype[w[i + 2]] = w[i + 1]
-            if cur is not None and sc == 2:
-                cur[7] += 1
+            if cur is not None:
+                if sc == 2:
+                    cur[7] += 1
+                elif sc == 12:
+                    cur[12] += 1
         elif op == OP_STORE:
-            mem[(1, idsc.get(w[i + 1]))] += 1
+            sc = idsc.get(w[i + 1])
+            mem[(1, sc)] += 1
+            if cur is not None and sc == 12:
+                cur[12] += 1
         elif op == OP_ARRAY_LENGTH:
             if cur is not None:
                 cur[6] += 1
@@ -343,15 +351,23 @@ def analyse(spirv):
             calls[callee] += k
     helpers = []
     narrow = []
+    ssbo_narrow = [f for f in funcs if f[3] not in u64_types and f[10] and f[11] and f[2] == 4]   # (the storage buffers' own 8/16-bit stores)
     for f in funcs:
-        if f[3] in u64_types and f[8] >= 1 and f[9] >= 1:
-            helpers.append({"instr": f[4], "calls": calls.get(f[0], 0), "inline": bool(f[1] & 1), "arraylen": f[6],
-                            "ubo_loads": f[7], "ssbo_ac": f[8], "branches": f[9]})
-        elif f[3] in u64_types and f[10] and f[11]:
+        if f[3] not in u64_types:
+            continue
+        if f[10] and f[11] and f[2] == 4:      # (address, value, bit offset, bit count: the 8/16-bit store's compare-exchange loop)
             narrow.append({"instr": f[4], "calls": calls.get(f[0], 0), "cas": f[11]})
+        elif f[8] >= 1 and f[9] >= 1:
+            kind = "load" if f[2] == 1 else "write_or_atomic" if f[2] == 2 else "cas" if f[2] == 3 else "other"
+            helpers.append({"instr": f[4], "calls": calls.get(f[0], 0), "inline": bool(f[1] & 1), "arraylen": f[6],
+                            "ubo_loads": f[7], "ssbo_ac": f[8], "branches": f[9], "params": f[2], "kind": kind})
+    helper_ids = {f[0] for f in funcs if f[3] in u64_types and ((f[10] and f[11] and f[2] == 4) or (f[8] >= 1 and f[9] >= 1))}
+    direct_ssbo = sum(f[12] for f in funcs if f[0] not in helper_ids)   # (storage-buffer loads and stores outside the helpers: accesses the pass bound)
     gm_call_sites = sum(h["calls"] for h in helpers)
     gm_body = sum(h["instr"] for h in helpers)
     gm_effective = sum(h["instr"] * h["calls"] for h in helpers)
+    gm_dead = sum(h["instr"] for h in helpers if h["calls"] == 0)   # (emitted, never called: the driver drops them)
+    gm_loads = [h for h in helpers if h["kind"] == "load"]
     # 16-bit float / 64-bit integer work
     cls = collections.Counter()
     for op, k in ops.items():
@@ -375,11 +391,42 @@ def analyse(spirv):
         "mem": {"%s_%s" % ("st" if a else "ld", ARR_SC.get(b, str(b))): k for (a, b), k in mem.items()},
         "image_sample": img_sample, "image_total": sum(k for op, k in ops.items() if op in IMAGE_OPS or 98 <= op <= 107),
         "gm_helpers": len(helpers), "gm_call_sites": gm_call_sites, "gm_body_instr": gm_body, "gm_effective_instr": gm_effective,
+        "direct_ssbo_accesses": direct_ssbo, "gm_dead_body_instr": gm_dead, "gm_load_call_sites": sum(h["calls"] for h in gm_loads),
+        "gm_load_helper_instr": max([h["instr"] for h in gm_loads if h["calls"]] + [0]),
+        "narrow_store_body_instr": sum(h["instr"] for h in narrow),
+        "ssbo_narrow_store_calls": sum(calls.get(f[0], 0) for f in ssbo_narrow),
         "gm_max_candidates": max([h["arraylen"] for h in helpers] + [0]),
-        "gm_helper_detail": helpers[:40], "narrow_store_helpers": len(narrow), "narrow_store_calls": sum(h["calls"] for h in narrow),
+        "gm_helper_detail": helpers[:12], "narrow_store_helpers": len(narrow), "narrow_store_calls": sum(h["calls"] for h in narrow),
         "calls": ops.get(OP_CALL, 0),
     }
     return out
+
+
+def op_histogram(spirv):
+    """{opcode: count} of a module (no other analysis)"""
+    w = array.array("I")
+    w.frombytes(spirv[:len(spirv) // 4 * 4])
+    ops = collections.Counter()
+    i, n = 5, len(w)
+    while i < n:
+        c = w[i] >> 16
+        if c == 0 or i + c > n:
+            break
+        ops[w[i] & 0xFFFF] += 1
+        i += c
+    return ops
+
+
+def cmd_ops(a):
+    """opcode histograms of the stages of the given keys (a number, or its name where this file knows it)"""
+    names = {v: k for k, v in globals().items() if k.startswith("OP_") and isinstance(v, int)}
+    want = [k.lower().removeprefix("0x") for k in a.key]
+    for key, kind, data, packed in records(a.cache, lambda k: any(("%016x" % k).startswith(x) for x in want)):
+        for nvn, vk, spirv in stages(unpack(data, packed)):
+            h = op_histogram(spirv)
+            print("%016x %s: %d instructions" % (key, STAGES[vk], sum(h.values())))
+            print("   " + ", ".join("%s %d" % (names.get(o, "op%d" % o), c) for o, c in h.most_common(a.top)))
+            break
 
 
 def scan_record(job):
@@ -409,21 +456,23 @@ def cmd_scan(a):
         for key, kind, data, packed in records(a.cache, keep):
             yield key, kind, data, packed
 
-    with open(os.path.join(a.out, "stages.jsonl"), "w") as out, \
-            concurrent.futures.ProcessPoolExecutor(a.jobs) as pool:
-        for res in pool.map(scan_record, jobs(), chunksize=8):
+    pool = concurrent.futures.ProcessPoolExecutor(a.jobs) if a.jobs > 1 else None
+    with open(os.path.join(a.out, "stages.jsonl"), "w") as out:
+        for res in (pool.map(scan_record, jobs(), chunksize=8) if pool else map(scan_record, jobs())):
             n_prog += 1
             for r in res:
                 out.write(json.dumps(r, separators=(",", ":")) + "\n")
                 n_stage += 1
             if n_prog % 2000 == 0:
                 print("%d programs" % n_prog, file=sys.stderr)
+    if pool:
+        pool.shutdown()
     print("%d programs, %d stages -> %s" % (n_prog, n_stage, os.path.join(a.out, "stages.jsonl")))
 
 
 # ---------------------------------------------------------------- report
 
-PROG_RE = re.compile(r"^\S*\s*vk:\s+([\d.]+) ms\s+([\d.]+) runs\s+[\d.]+ us a run\s+([\d.]+) draws\s+[\d.]+ us a draw\s+prog ([0-9a-f]{16})")
+PROG_RE = re.compile(r"vk:\s+([\d.]+) ms\s+([\d.]+) runs\s+[\d.]+ us a run\s+([\d.]+) draws\s+[\d.]+ us a draw\s+prog ([0-9a-f]{16})")
 DISP_RE = re.compile(r"vk:\s+m\s+([\d.]+) ms\s+([\d.]+) x\s+[\d.]+ us\s+[\d.]+ items\s+[\d.]+ MB\s+dispatch\s+prog ([0-9a-f]{16})")
 PASS_RE = re.compile(r"vk:\s+m\s+([\d.]+) ms\s+([\d.]+) x\s+[\d.]+ us\s+[\d.]+ items\s+[\d.]+ MB\s+pass (\d+x\d+)")
 
@@ -484,11 +533,17 @@ def load_costs(paths):
 
 def read_stages(d):
     out = []
-    with open(os.path.join(d, "stages.jsonl")) as f:
-        for ln in f:
-            r = json.loads(ln)
-            if "error" not in r:
-                out.append(r)
+    seen = set()
+    for name in sorted(glob.glob(os.path.join(d, "stages*.jsonl"))):   # (a second scan of other keys may sit beside the first)
+        with open(name) as f:
+            for ln in f:
+                r = json.loads(ln)
+                if "error" in r:
+                    continue
+                ident = (r["key"], r["stage"], r["instr"], r["words"])
+                if ident not in seen:   # (the same stage twice: a record kept for two pipeline states)
+                    seen.add(ident)
+                    out.append(r)
     return out
 
 
@@ -541,8 +596,15 @@ def cmd_report(a):
         print("\nGPU cost per program from %d logs (frame busy %.2f ms): draws %d programs, dispatches %d programs" % (
             nlogs, total, len(draws), len(disp)))
         by_key = collections.defaultdict(list)
-        for r in st:
-            by_key[r["key"]].append(r)
+        variants = collections.Counter()
+        for r in st:   # (a key may have several records, one a pipeline state it was built for: the largest of each stage is shown)
+            variants[(r["key"], r["stage"])] += 1
+            rows = by_key[r["key"]]
+            same = [x for x in rows if x["stage"] == r["stage"]]
+            if not same:
+                rows.append(r)
+            elif r["instr"] > same[0]["instr"]:
+                rows[rows.index(same[0])] = r
         cost = collections.Counter()
         for k, v in draws.items():
             cost[k] += v
@@ -553,9 +615,10 @@ def cmd_report(a):
         for k, ms in cost.most_common(a.top):
             covered += ms
             rows = by_key.get(k, [])
-            line = "; ".join("%s %s i, gm %d x%d, bfue %d, ieq %d, fold %d, cas %d, loop %d, la %d" % (
-                r["stage"][:4], fmt(r["instr"]), r["gm_call_sites"], r["gm_body_instr"], r["bfue"], r["ieq"],
-                r["const_foldable"], r["cas"], r["loops"], r["local_array_bytes"]) for r in rows) or "(not in the cache)"
+            line = "; ".join("%s %s i, gm %d x%d(eff %s), bfue %d, ieq %d, fold %d, cas %d, loop %d, la %dB, f16 %d, tex %d" % (
+                r["stage"][:4], fmt(r["instr"]), r["gm_call_sites"], r["gm_body_instr"], fmt(r["gm_effective_instr"]), r["bfue"],
+                r["ieq"], r["const_foldable"], r["cas"], r["loops"], r["local_array_bytes"], r["f16_ops"], r["image_total"])
+                for r in rows) or "(not in the cache)"
             print("  %6.3f  %5.3f+%5.3f  %s  %s" % (ms, draws.get(k, 0), disp.get(k, 0), k, line))
         print("  top %d programs cover %.2f ms; all listed %.2f ms" % (a.top, covered, sum(cost.values())))
         # what share of the measured programs' ms carries each inefficiency
@@ -584,12 +647,16 @@ def main(argv=None):
     s.add_argument("--out", required=True)
     s.add_argument("--key", action="append", default=[])
     s.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 4) - 2))
+    o = sub.add_parser("ops")
+    o.add_argument("cache")
+    o.add_argument("--key", action="append", required=True)
+    o.add_argument("--top", type=int, default=30)
     r = sub.add_parser("report")
     r.add_argument("dir")
     r.add_argument("--logs", nargs="*", default=[])
     r.add_argument("--top", type=int, default=25)
     a = p.parse_args(argv)
-    return cmd_scan(a) if a.cmd == "scan" else cmd_report(a)
+    return {"scan": cmd_scan, "ops": cmd_ops, "report": cmd_report}[a.cmd](a)
 
 
 if __name__ == "__main__":
