@@ -110,7 +110,7 @@ bool shader_key_on();
 /// the next start after a translator change can tell by a sample of programs how many of them come out differently)
 void program_fingerprinted(uint64_t fp);
 size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const std::function<void(Program&)>& fn,
-                               bool computes = true);   // (computes: and every kept compute program)
+                               bool computes = true, bool fallbacks = false);   // (computes: and every kept compute program)
 /// The precompile of every shader of the game (hookshot_shaders.bin, from nx2/shader_census.py): how many programs it names, 0: none
 size_t seed_open();
 std::string seed_path();   // (hookshot_shaders.bin, beside the game)

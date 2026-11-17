@@ -29,10 +29,12 @@
 #include "vk_paths.h"
 #include "vk_menu.h"
 #include "vk_perf.h"
+#include "perf_report.h"   // (telemetry_available, perf_frame_shown: the two telemetry rows)
 #include "vk_menu_hit.h"
 #include "vk_draw.h"   // (pipeline_cache_save: Restart now keeps what was built)
 #include "oot_cheat_items.h"
 #include "vk_progress.h"   // (StartupView, version_text: the start-up screen)
+#include "vk_imgui.h"   // (the renderer's side of the overlay: begin, fonts, logo, record)
 #include "vk_ui.h"
 #include "vk_menu_keys.h"   // (which gamepad buttons confirm and go back: those A and B are bound to)         // (how it looks: Dear ImGui, vk_imgui.h)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
@@ -355,9 +357,20 @@ const char* hn_resolution(int v, int variant) {
 }
 /// A row with nothing else to choose here: shown without its arrows, Left and Right leave it (and the saved value) alone
 bool row_fixed(const int* value) {
-    return (value == &opts.reflex && !reflex_available()) || (value == &opts.dlss && ur::upscaler_fixed(upscalers_available())) ||
+    return ((value == &opts.send_perf || value == &opts.send_crash) && !telemetry_available()) || (value == &opts.reflex && !reflex_available()) || (value == &opts.dlss && ur::upscaler_fixed(upscalers_available())) ||
            (value == &opts.resolution && ur::resolution_fixed(upscaler())) || (value == &opts.upscale && !filter_needed()) ||
            (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr));
+}
+/// (heylisten) The two telemetry rows: Off or On, and "Not available in this build" when the build has no address to send to
+/// (nx2/addresses.ini's telemetry= is empty), where nothing can be sent whatever the row says
+const char* tx_telemetry(int v) {
+    if (!telemetry_available()) return "Not available in this build";
+    return v ? "On" : "Off";
+}
+const char* hn_telemetry(int v, int variant) {
+    (void)v;
+    if (variant > 0) return nullptr;
+    return telemetry_available() ? nullptr : "This build has no address to send to, so nothing is sent.";
 }
 const char* tx_output_res(int v) {
     static char b[32];
@@ -659,6 +672,15 @@ Row rows[] = {
     {TAB_GAMEPLAY, "Skip title screen", &opts.skip_title, 0, 1, 1, tx_onoff,   // (HL_OPT_SKIP_TITLE, vk_opt_ids.h, host/oot_autoload.c)
      "Starts a launch with the most recent saved game: presses through the title screen and its file list. Does nothing "
      "until the game has a save. Applies after a restart.", nullptr, true, true},
+    {TAB_GAMEPLAY, "Send performance statistics", &opts.send_perf, 0, 1, 1, tx_telemetry,
+     "Off by default. On: the game counts how its frames go (frame times, stutters and what they waited on, per map) and sends "
+     "a summary of the counts, without your name or any ID; what is kept of it is totals for all players. Every 5 minutes of play "
+     "and at exit it writes a summary to perf_pending in the game folder, and sends it at the next start; perf_sent keeps a copy "
+     "of what was sent. Turning it off deletes both folders. See docs/performance-statistics.md.", hn_telemetry, false, true},
+    {TAB_GAMEPLAY, "Send crash reports automatically", &opts.send_crash, 0, 1, 1, tx_telemetry,
+     "Off by default: after a crash a window asks what to do. On: the crash report (the error, your PC's hardware, the end of the "
+     "log, the settings, with your home folder, user name and device names taken out) is sent at once, without the window; if it "
+     "cannot be sent the window shows as usual.", hn_telemetry, false, true},
     {TAB_GAMEPLAY, "Discord status", &opts.discord, 0, 1, 1, tx_onoff,
      "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},
@@ -974,6 +996,8 @@ const char* ini_key(const Row& r) {
     if (r.value == &opts.resolution) return "resolution";
     if (r.value == &opts.upscale) return "upscaling";
     if (r.value == &opts.dlss) return "dlss";   // (as opts.dlss and RX_VK_DLSS)
+    if (r.value == &opts.send_perf) return "send_performance_stats";   // (host/hos_telemetry.h reads both of these)
+    if (r.value == &opts.send_crash) return "send_crash_reports";
     static char k[32];
     size_t n = 0;
     for (const char* p = r.name; *p && n + 1 < sizeof k; p++) k[n++] = *p == ' ' ? '_' : (char)tolower(*p);
@@ -2088,6 +2112,7 @@ void menu_note_present_sizes(uint32_t picture_w, uint32_t picture_h, uint32_t wi
 void menu_note_frame(bool game_frame, int shown) {
     if (shown) {
         shown_frames.fetch_add(shown, std::memory_order_relaxed);
+        perf_frame_shown();   // (the performance summary's frame, when it is on: perf_report.cpp)
         if (opts.show_fps) perf_note_frame();   // (the overlay's frame times: vk_perf.cpp)
     }
     if (game_frame) game_frames.fetch_add(1, std::memory_order_relaxed);
