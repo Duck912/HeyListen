@@ -9,7 +9,11 @@ game. The release holds only the **HeyListen Builder**: no game code, data, keys
 =====
 ### [Open HeyListen in RecompLauncher](https://recomplauncher.com)
 Pick your own `.nup` (Switch 2, version 131072), press **Set Up**, then **Play**: the launcher builds the game on your PC.
-Without the launcher: **Windows** `HeyListenBuilder.exe` (the setup), **Linux** `HeyListen-{TAG}-Linux-x64.AppImage`.
+
+Or download the HeyListen Builder directly:
+### [🪟  Download the Builder for Windows](https://github.com/Sacrappy/HeyListen/releases/download/{TAG}/HeyListenBuilder.exe)
+### [🐧  Download the Builder for Linux (AppImage)](https://github.com/Sacrappy/HeyListen/releases/download/{TAG}/HeyListen-{TAG}-Linux-x64.AppImage)
+
 **Nothing of the game is in these files**: `HeyListen-{TAG}-Windows-x64.zip` is the builder the launcher installs for you.
 
 **Shaders are prepared again once** with this release (the mesh programs are translated differently): the first start
