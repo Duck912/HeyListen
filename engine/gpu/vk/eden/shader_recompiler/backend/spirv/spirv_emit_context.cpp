@@ -1207,12 +1207,13 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         OpBranch(end_label);
         AddLabel(end_label);
     }};
-    // (RX_VK_MESH_G3=1, task and mesh stages, off by default: a name under RX_VK_MESH, so the program cache starts again with it) The
+    // (RX_VK_MESH_G3, task and mesh stages, on by default on every GPU, RX_VK_MESH_G3=0 off: a name under RX_VK_MESH, so a value set
+    // by hand has its own program cache, and the default moved the stamp once) The
     // search below worked each candidate's range out again at every global access, and a mesh program has ~80 of them inlined: two
     // loads, an ArrayLength and a dozen 64-bit operations a candidate, 40% of the code of OoT's 225k-word mesh shader, which NVIDIA runs
     // from the instruction cache's edge (1.1 ms of 1.5 ms came back with the helpers not inlined). Here a range (its aligned base, its
     // length in bytes) is made once, in the first block, and an access is a subtraction and a comparison.
-    static const bool g3_hoist{getenv("RX_VK_MESH_G3") != nullptr && atoi(getenv("RX_VK_MESH_G3")) != 0};
+    static const bool g3_hoist{getenv("RX_VK_MESH_G3") == nullptr || atoi(getenv("RX_VK_MESH_G3")) != 0};
     const bool hoist{g3_hoist && (stage == Stage::Task || stage == Stage::Mesh) && Sirit::ValidId(storage_types.U32.array)};
     struct Range { Id lo, len; };
     std::map<std::pair<size_t, u32>, Range> ranges;   // (a plain buffer: (index, 0); a table's entry: (table + 100000, k))
