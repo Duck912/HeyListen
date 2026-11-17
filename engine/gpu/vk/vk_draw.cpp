@@ -55,6 +55,7 @@
 #include "shaders/taau_upscale_comp_spv.h"
 #include "shaders/movie_upscale_comp_spv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
+#include "precompile_save.h"   // (the pipeline cache written before the title after a long precompile)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -8600,6 +8601,19 @@ void precompile_finished(Pre* pre) {
          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - pre->t0).count(),
          pre->background ? " (in the background, while the game ran)" : "");
     remove(pre->marker.c_str());
+    // (longshot #903) pipelines that took this long were compiled, not found in the caches: the pipeline cache written now, not
+    // after 64 MB of growth in play (RADV keeps a pipeline as its key and its shaders' hashes: 4.3 MB for 32,438 pipelines on a
+    // Steam Deck, so nothing was written and the next start had to find them all again). precompile_save.h. RX_VK_PRECOMPILE_SAVE_S
+    static const int save_s = precompile_save::after_s(getenv("RX_VK_PRECOMPILE_SAVE_S"));
+    const double build_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - pre->t0).count();
+    const char* prepare_only = getenv("LONGSHOT_PREPARE_ONLY");
+    if (precompile_save::due(build_s, save_s, false, false, prepare_only && atoi(prepare_only) != 0)) {
+        const auto s0 = std::chrono::steady_clock::now();
+        pipeline_cache_save(true);
+        logf("vk: precompile: its pipelines took %.0f s (compiled, not found in the caches): the pipeline cache written, in %.0f ms "
+             "(RX_VK_PRECOMPILE_SAVE_S=0: not)", build_s,
+             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0).count());
+    }
 }
 }  // namespace
 
