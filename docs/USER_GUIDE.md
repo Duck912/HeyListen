@@ -200,6 +200,27 @@ The in-game update offer is off unless you turn it on (`HOOKSHOT_UPDATE_CHECK=1`
 Occlusion is off; rare missing or teal textures while walking when VRAM runs short; tested on NVIDIA RTX (Windows; Linux: see its
 section); see the release notes for the full list.
 
+## Privacy: crash reports and performance statistics
+
+HeyListen sends nothing unless you turn it on, and nothing is turned on by default. Two rows on the Gameplay tab of the
+in-game menu (Insert) control it:
+
+- **Send performance statistics**: off by default. On, the game counts how its frames went (frame times, stutters and what
+  they waited on, per map) and sends a summary of the counts at the next start. A summary holds the PC's GPU, driver, CPU,
+  RAM, operating system, the upscaler, preset and frame rate cap, the game's version and the map names. It has no name, no
+  ID and no path, and what the team keeps is totals for all players, nothing per player. `perf_sent` in the game folder keeps
+  a copy of everything that was sent, to read.
+- **Send crash reports automatically**: off by default. After a crash a window says what happened and asks. **Report
+  manually** copies a report to your clipboard and opens a new issue on GitHub for you to paste it into; **Report
+  automatically** shows you the exact report and sends it only when you press Send. With this row on, the report is sent at
+  once and the window shows only if that fails. The report has the crash's error line, the game version, your GPU, CPU,
+  RAM and operating system, the map, the last 150 lines of the game's log and its settings. Your home folder, user name and
+  the names of your audio devices are taken out first. It never has your saves, the game's files or keys.
+
+Turn either row off and what was waiting to be sent (`perf_pending`, `perf_sent`) is deleted. A build with no address
+to send to shows both rows as *Not available in this build* and sends nothing. Details and the exact fields:
+[performance statistics](performance-statistics.md).
+
 ## Problems
 
 The builder's problem page has *Copy for a bug report*. Report issues at

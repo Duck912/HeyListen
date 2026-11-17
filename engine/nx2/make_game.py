@@ -1826,6 +1826,14 @@ def main(a=None):
     if tag:
         with open(os.path.join(out, "hookshot_version.txt"), "w", encoding="utf-8", newline="\n") as f:
             f.write("version=%s\n" % tag)
+            # (the source fingerprint, as the game's first log line names it: the crash report's and the performance summary's
+            # release flag wants the two equal and a release's version, so a checkout's build is not a release)
+            import version as _version
+            f.write("source=%s\n" % _version.fingerprint(ROOT))
+            # (where the game's opt-in reports go: telemetry= from nx2/addresses.ini, EMPTY by default: then nothing is stamped,
+            # nothing can be sent and the menu's two rows say "not available in this build")
+            import addresses as _addresses
+            f.writelines(_addresses.stamp_lines())
             if os.environ.get("HOOKSHOT_BUILDER_EXE"):
                 f.write("builder=%s\n" % os.environ["HOOKSHOT_BUILDER_EXE"])
                 # (the Python builder: builder is its pythonw.exe, and these the arguments before --update, host/hos_update.c)
