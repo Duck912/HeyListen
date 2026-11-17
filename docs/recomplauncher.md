@@ -49,9 +49,11 @@ in [USER_GUIDE.md](USER_GUIDE.md#install-with-recomplauncher).
   row of the menu and every value is one the row takes. The keys are the rows' names with `_` (`frame_rate_limit`,
   `frame_generation`, `skip_title_screen`); `dlss` is the Upscaler, `resolution` the Render resolution, `upscaling` the Window
   scaling filter, `output_res` the Output resolution (see `ini_key` in `vk_menu.cpp`).
-- `saves`, `folders`, `actions`: saves are `HeyListen/user/save` on Windows and `~/.local/share/heylisten/save` on Linux; the
-  log is `hookshot_log.txt` in the game folder (the launcher shows the newest `.log`; ours is `.txt`, so a crash report does not
-  carry it yet).
+- `saves`, `folders`, `actions`: saves are `HeyListen/user/save` on Windows and `~/.local/share/heylisten/save` on Linux. The
+  launcher attaches the newest `.log` of the `logs` folder to a crash report: on Windows the game (`host/hos_run_logs.h`, called
+  from `hos_main.c` once `hookshot_log.txt` is open) keeps `HeyListen/logs/hookshot.log` (this run) and `hookshot.1.log` to
+  `hookshot.4.log` (the runs before), hard links to the same files as `hookshot_log.txt` and `hookshot_log.1.txt` to `.4.txt`,
+  which stay for players. On Linux the game logs to the terminal and the folder is not made (a follow-up).
 
 ## When you add or rename a menu row
 

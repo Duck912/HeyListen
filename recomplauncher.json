@@ -880,7 +880,7 @@
     ],
     "logs": [
       {
-        "path": "{install}/HeyListen"
+        "path": "{install}/HeyListen/logs"
       }
     ],
     "mods": [
@@ -905,7 +905,7 @@
     {
       "id": "logs",
       "label": "Log",
-      "help": "hookshot_log.txt in the game folder: send it with a bug report.",
+      "help": "The log of the last runs (hookshot.log is the newest; the same text is hookshot_log.txt in the game folder): send it with a bug report.",
       "open": "logs"
     },
     {

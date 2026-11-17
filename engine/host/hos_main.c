@@ -10,6 +10,7 @@
                 HOS_NVN_CONTINUE=1 (go on past nvnBootstrapLoader). */
 #include "hos.h"
 #include "hos_paths.h"
+#include "hos_run_logs.h"
 #include "../gpu/vk/vk_api.h"
 #include "../gpu/vk/oot_cheat_items.h"
 #include <math.h>
@@ -1534,7 +1535,12 @@ static int game_main(int argc, char **argv) {
                 MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING);
             }
             memcpy(path + n, "hookshot_log.txt", 17);
-            if (freopen(path, "w", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
+            if (freopen(path, "w", stderr)) {
+                setvbuf(stderr, NULL, _IONBF, 0);
+                char gdir[MAX_PATH + 32];
+                memcpy(gdir, path, n), gdir[n] = 0;
+                hos_run_logs_make(gdir, path);   /* (logs/hookshot.log and .1 to .4: RecompLauncher's crash report) */
+            }
         } else hos_crash_record_prepare(NULL);   /* an externally supplied stderr, not the game's log */
     }
     hos_log("hookshot %s", HOOKSHOT_VERSION);   /* (the log's first line: which build a report comes from) */
