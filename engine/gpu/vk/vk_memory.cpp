@@ -1225,11 +1225,12 @@ uint64_t eager_captures() {
 // copied (85-95% of its pages, section 9). A GPU address below 1 TB is valid only inside a memory pool (NVN), so those pages
 // cannot be read by the GPU. 1: the import ranges are clipped to the game's pools before the capture scans them. 2 (a check):
 // captured as before, and the pages 1 would leave out counted. With 1 or 2 every replay read and buffer binding that reaches
-// into the left-out ranges is counted and the first ones logged (0 expected).
+// into the left-out ranges is counted and the first ones logged (0 expected). Default 1 since 2026-11-17 (PC 3050, castle-move x3:
+// 20.2 -> 22.8 fps, p50 -2.5 ms, 0 reads into left-out ranges, pictures right); RX_VK_CAP_ONLY_GPU=0 captures as before.
 int cap_only_gpu() {
     static const int v = [] {
         const char* e = getenv("RX_VK_CAP_ONLY_GPU");
-        const int m = e ? std::clamp(atoi(e), 0, 2) : 0;
+        const int m = e ? std::clamp(atoi(e), 0, 2) : 1;
         if (m) logf("vk: the capture's imported chunks %s the game's pools (RX_VK_CAP_ONLY_GPU=%d)",
                     m == 1 ? "clipped to" : "checked against", m);
         return m;

@@ -838,7 +838,9 @@ game. It stays as the record kind and descriptor path brick D will use for block
 
 ### The rule and the switch
 
-`RX_VK_CAP_ONLY_GPU` (`gpu/vk/vk_memory.cpp`; default 0, the previous behaviour):
+`RX_VK_CAP_ONLY_GPU` (`gpu/vk/vk_memory.cpp`; **default 1 since 2026-11-17**: PC 3050, castle-move x3 per arm, 20.2 -> 22.8 fps,
+mean frame 49.7 -> 43.9 ms, p50 -2.5 ms, 0 reads or bindings into left-out ranges, pictures right; 0 is the previous behaviour.
+`HL_UBO_MEMO` stays off while it is on):
 - **1**: the capture's ranges are the mirrored imports **clipped to the game's pools** (every pool below 1 TB from
   `host->gpu_pools`, any size), plus the texture storage and the small pools as before (`capture_union_locked`, used by the
   capture, the pre-copy and `capture_ranges_merged`). The replay's own collection (`memory_collect_written`, whose host ranges
