@@ -1774,7 +1774,9 @@ def main(a=None):
     staged = []
     # (Linux) the same launcher, as a script, when this is a packaged builder (the AppImage sets HOOKSHOT_TOOLS). A source
     # checkout leaves hookshot in the folder, as a development build on Windows does when the setup exe is not beside it
-    launcher = os.path.join(os.path.dirname(os.path.abspath(ROOT)), "HookshotBuilder-Setup.exe")
+    launcher = os.path.join(os.path.dirname(os.path.abspath(ROOT)), "HeyListenBuilder-Setup.exe")
+    if not os.path.isfile(launcher):   # (an installed builder from before the rename)
+        launcher = os.path.join(os.path.dirname(os.path.abspath(ROOT)), "HookshotBuilder-Setup.exe")
     if LINUX:
         script = os.path.join(ROOT, "builder", "linux", "hookshot-folder")
         launcher = script if os.environ.get("HOOKSHOT_TOOLS") and os.path.isfile(script) else None
