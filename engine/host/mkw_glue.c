@@ -245,7 +245,7 @@ void hos_crash_record_prepare(const char *log_path) {
     char path[4096];
     DWORD n = hos_game_path_a(path, sizeof path);
     if (!n || n >= sizeof path) return;
-    while (n && path[n - 1] != '/' && path[n - 1] != '\') --n;
+    while (n && path[n - 1] != '/' && path[n - 1] != '\\') --n;
     if (!n) return;
     path[n] = 0;
     const char *hos_version(void);
