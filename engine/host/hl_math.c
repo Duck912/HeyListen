@@ -165,10 +165,11 @@ static Unit units[UNITS] = {
     [U3] = {.name = "u3", .guest = 0x817d9d80ULL, .validated = 1, .gate = &hl_gate_on_817d9d80},
     /* (a check only for now: run_sil below) */
     [SIL] = {.name = "sil", .guest = 0x8182dc20ULL, .gate = &hl_gate_on_8182dc20},
-    /* (the narrow-phase leaves of physics-loops.md section 12: written without the game running, off until the check is clean) */
-    [SUPPORT] = {.name = "support", .guest = 0x817472e0ULL, .out_len = 16, .native = support_native, .out_at = support_out,
+    /* (the narrow-phase leaves of physics-loops.md section 12: HL_MATH_CHECK clean in kokiri-idle, castle-move and
+       hyrule-walk on the PC 3050, 2026-11-17: 1.8 M support and 0.18 M relxf calls compared, no mismatch) */
+    [SUPPORT] = {.name = "support", .guest = 0x817472e0ULL, .validated = 1, .out_len = 16, .native = support_native, .out_at = support_out,
                  .inputs = support_inputs, .gate = &hl_gate_on_817472e0},
-    [RELXF] = {.name = "relxf", .guest = 0x817036a0ULL, .out_len = 80, .native = relxf_native, .out_at = relxf_out,
+    [RELXF] = {.name = "relxf", .guest = 0x817036a0ULL, .validated = 1, .out_len = 80, .native = relxf_native, .out_at = relxf_out,
                .inputs = relxf_inputs, .gate = &hl_gate_on_817036a0},
 };
 
