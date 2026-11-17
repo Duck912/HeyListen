@@ -45,6 +45,9 @@ below.
   decoded on the CPU for the graphics in AMD's desktop CPUs, which ended GPU resets in Kokiri Forest), the Steam Deck's Game
   Mode (no recompiling of every pipeline), shader programs over 1 MiB, samplers past the driver's limit, read-backs after a
   timeout and guest pages under an import.
+- **AMD RX 6000 and the Steam Deck on Linux** (#51): mesh work runs on the compute path by default (RDNA 2 only), the fix for device-lost crashes.
+- **RX 6700 / 6800 on Windows** (#57): task and mesh draws run on the compute path on Navi 21, 22 and 23; the foliage and the far trees draw correctly there.
+- `RX_VK_MESH_SHADERS=native` or `compute` chooses the path by hand (NVIDIA and the other GPUs keep the native one by default).
 - **Linux**: the sound output is closed before it is opened again (#44); short sleeps wait on the timer (#43).
 - A stuck GPU's stall report says what it was running; `hookshot_env.txt` takes the hybrid engine's switches.
 
