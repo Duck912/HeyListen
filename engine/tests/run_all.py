@@ -30,6 +30,7 @@ ARGS = {
     "tests/test_staging_burst.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_dead_targets_sweep.py": ["--cxx", "{cxx}"],
     "tests/test_precompile_save.py": ["--cxx", "{cxx}"],
+    "tests/test_settings_atomic.py": ["--cc", "gcc"],
     "tests/test_mma_software.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "tests/test_native_float_atomic_add.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "tests/test_compute_local_memory.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
