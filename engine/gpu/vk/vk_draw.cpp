@@ -6527,9 +6527,14 @@ bool fallback_compute_pipelines(Program& p) {
     // RADV, the frame down to 2-3 fps (#1001); on a GTX 1070 the replay stopped presenting after the first one. Left out,
     // the program costs its draws, as the first failure already did)
     static std::set<std::pair<uint64_t, uint64_t>> failed;
-    std::lock_guard lk(mu);
-    if (!p.fallback_compute.empty()) return true;
-    if (failed.count({p.key, p.variant})) return false;
+    {
+        // (the lock covers the set and the program's pipelines, not the compiles: on the workers and in the precompile several
+        // programs compile at once, which one lock held through AMD's seconds-long compiles made one at a time. One program is
+        // built by one caller: fallback_pipelines_ready and precompile_run take its compute_state first)
+        std::lock_guard lk(mu);
+        if (!p.fallback_compute.empty()) return true;
+        if (failed.count({p.key, p.variant})) return false;
+    }
     std::vector<VkPipeline> made(p.stages.size(), VK_NULL_HANDLE);
     bool any = false;
     for (size_t i = 0; i < p.stages.size(); i++) {
@@ -6545,7 +6550,10 @@ bool fallback_compute_pipelines(Program& p) {
         ci.stage = si;
         ci.layout = p.layout;
         if (const VkResult r = gated_compute(pcache, &ci, &made[i]); r != VK_SUCCESS) {
-            failed.insert({p.key, p.variant});   // (#1317: not compiled again at every draw)
+            {
+                std::lock_guard lk(mu);
+                failed.insert({p.key, p.variant});   // (#1317: not compiled again at every draw)
+            }
             // (what failed and against which limits: a GTX 1080 Ti's black screen after the intro on v2.0.11 had only "could not be
             // made", the result not said. -77: the driver faulted. The workgroup and shared memory are the mesh stage's, against the GPU's)
             static std::atomic<int> told{0};
@@ -6561,8 +6569,42 @@ bool fallback_compute_pipelines(Program& p) {
         pcache_built_since_save++;
     }
     if (!any) return false;
+    std::lock_guard lk(mu);
     p.fallback_compute = std::move(made);
     return true;
+}
+
+/// (hookshot) A fallback program's compute pipelines, compiled on a worker as a compute program's are (see dispatch()): made in
+/// the draw, AMD's compiler took up to 12 s on one, every recording thread stopped behind it, and the game froze in the first
+/// room with foliage (RX 5500M). The draw that starts the build waits up to 50 ms for it, which covers NVIDIA's compiles; a draw
+/// while it still compiles is left out, as a dispatch is. compute_state, which only compute programs use otherwise: 0 before, 1
+/// while it compiles, 2 after (made, or refused and left out for good: fallback_compute_pipelines)
+bool fallback_pipelines_ready(Program& p) {
+    if (p.compute_state.load(std::memory_order_acquire) == 2) return !p.fallback_compute.empty();
+    int none = 0;
+    const bool fresh = p.compute_state.compare_exchange_strong(none, 1);
+    if (fresh) {
+        { ParLock lk; pcache_init(); }
+        Program* job = &p;
+        auto build = [job] {
+            fallback_compute_pipelines(*job);
+            job->compute_state.store(2, std::memory_order_release);
+        };
+        // (issue 496: one at a time on Intel, as compute programs are: serial_builds_on)
+        if (serial_builds_on()) jobs_push_serial(std::move(build), true);
+        else jobs_push(std::move(build), true);
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    while (fresh && p.compute_state.load(std::memory_order_acquire) != 2 &&
+           std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(50))
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
+    if (p.compute_state.load(std::memory_order_acquire) != 2) {
+        static std::atomic<int> told{0};
+        if (told++ < 40) logf("vk: fallback draw of %016llx left out: its compute pipelines are still compiling", (unsigned long long)p.key);
+        st_pending_skips++;
+        return false;
+    }
+    return !p.fallback_compute.empty();
 }
 
 /// The dispatches of a mesh draw, outside any render pass, and the vertex count its graphics draw then covers.
@@ -6578,7 +6620,7 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
         return false;
     }
     FallbackBuffers* f = nullptr;
-    if (!fallback_buffers_of(p, f) || !fallback_compute_pipelines(p)) return false;
+    if (!fallback_buffers_of(p, f) || !fallback_pipelines_ready(p)) return false;
     fallback_payload_address = f->payload_address;
     fallback_records_address = f->records_address;
     const uint32_t capacity = Shader::Backend::SPIRV::MESH_FALLBACK_CAPACITY;
@@ -8576,6 +8618,7 @@ struct Pre {
     };
     std::vector<Item> items;          // graphics pipelines, in the order the notes were written (the order the game first used them)
     std::vector<Program*> computes;   // the compute programs the cache keeps
+    std::vector<Program*> fallbacks;  // the programs translated for the mesh fallback: their compute pipelines (a GPU without mesh shaders)
     std::atomic<size_t> next{0}, done{0}, made{0}, failed{0};
     std::atomic<unsigned> running{0};
     size_t total = 0;
@@ -8650,7 +8693,8 @@ void precompile_run(void (*progress)(size_t done, size_t total), bool wait) {
     const size_t programs_n = program_cache_load_some(wanted, [&](Program& p) {
         ensure_layout(p);
         if (p.compute) pre->computes.push_back(&p);
-    }, all_computes);
+        else if (p.fallback) pre->fallbacks.push_back(&p);   // (hookshot: the mesh fallback's compute pipelines too, before play)
+    }, all_computes, true);
     if (lazy_compute) logf("vk: precompile: the compute programs stay on disk until dispatched (RX_VK_LAZY_COMPUTE)");
     else logf("vk: precompile: compute programs: %s (%zu keys listed as dispatched in play)",
               all_computes ? "every kept one" : (which && !strcmp(which, "none")) ? "none" : "those play dispatched", used.size());
@@ -8679,7 +8723,7 @@ void precompile_run(void (*progress)(size_t done, size_t total), bool wait) {
         int none = 0;
         p->compute_state.compare_exchange_strong(none, 1);   // (being built: a dispatch that meets it before it is ready is left out)
     }
-    pre->total = pre->computes.size() + pre->items.size();
+    pre->total = pre->computes.size() + pre->fallbacks.size() + pre->items.size();
     const size_t total = pre->total;
     const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
     // (below normal, half the CPUs, in the background: the game's own threads come first. Waited for: all of them, as before)
@@ -8713,8 +8757,16 @@ void precompile_run(void (*progress)(size_t done, size_t total), bool wait) {
                 } else {
                     p.compute_state.store(0, std::memory_order_release);   // (a dispatch makes its own, and says why it fails)
                 }
+            } else if (i < pre->computes.size() + pre->fallbacks.size()) {
+                // (a program a draw is already building is left to it: compute_state, as in fallback_pipelines_ready)
+                Program& p = *pre->fallbacks[i - pre->computes.size()];
+                int none = 0;
+                if (p.compute_state.compare_exchange_strong(none, 1)) {
+                    fallback_compute_pipelines(p);
+                    p.compute_state.store(2, std::memory_order_release);
+                }
             } else {
-                Pre::Item& it = pre->items[i - pre->computes.size()];
+                Pre::Item& it = pre->items[i - pre->computes.size() - pre->fallbacks.size()];
                 const VkPipeline made = build_graphics(*it.program, it.note->s, it.at, (VkPrimitiveTopology)it.note->topo);
                 if (made) pre->made++;
                 else pre->failed++;
@@ -8730,8 +8782,8 @@ void precompile_run(void (*progress)(size_t done, size_t total), bool wait) {
     for (unsigned i = 0; i < (total ? nthreads : 0); i++) threads.emplace_back(worker);
     for (std::thread& t : threads) t.detach();   // (never joined: they may outlive this call)
     logf("vk: precompile: %zu programs; %zu graphics pipelines from %zu notes%s (%zu notes name no program) and %zu compute pipelines "
-         "queued in %.0f ms on %u threads, %s", programs_n, pre->items.size(), notes_n,
-         carried ? " carried over from another shader translation" : "", pre->missing, pre->computes.size(),
+         "and %zu mesh fallback programs queued in %.0f ms on %u threads, %s", programs_n, pre->items.size(), notes_n,
+         carried ? " carried over from another shader translation" : "", pre->missing, pre->computes.size(), pre->fallbacks.size(),
          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), total ? nthreads : 0,
          wait ? "waited for" : "built in the background");
     if (!wait || !total) return;
