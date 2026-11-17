@@ -562,6 +562,14 @@ void wait_value(uint64_t v) {
     vkWaitSemaphores(dev.device, &wi, UINT64_MAX);
     (void)completed();   // (RX_VK_POOL_MIRROR: its staged write-backs applied)
 }
+/// (longshot #670) A timeline wait that came back VK_ERROR_DEVICE_LOST, said as a lost device (8 times at most): some drivers mark the
+/// device lost, signal every timeline waited on and leave the counter unwritten, so completed() read 0 and the log showed a wait that
+/// "timed out (done 0)" where the GPU was gone. Only the line: the next submit or the GPU hang watch ends the game, as before
+void wait_lost(const char* what, uint64_t v) {
+    static std::atomic<int> logged{0};
+    if (logged++ >= 8) return;
+    logf("vk: %s %llu came back VK_ERROR_DEVICE_LOST: the GPU device is lost", what, (unsigned long long)v);
+}
 } // namespace
 uint64_t vk_timeline_completed() { return timeline ? completed() : 0; }
 uint64_t vk_timeline_reached() {
@@ -579,10 +587,13 @@ void vk_timeline_wait(uint64_t v) {   // (at most 250 ms: a submission held back
     wi.pValues = &v;
     const uint64_t done0 = completed();
     const int64_t t0 = std::chrono::steady_clock::now().time_since_epoch().count(), sub = vk_value_submitted_ns(v);
-    if (vkWaitSemaphores(dev.device, &wi, 250000000ull) == VK_TIMEOUT) {
+    const VkResult wres = vkWaitSemaphores(dev.device, &wi, 250000000ull);
+    if (wres == VK_TIMEOUT) {
         static std::atomic<int> logged{0};
         if (logged++ < 8) logf("vk: a capture's wait for write-back %llu timed out (done %llu)", (unsigned long long)v, (unsigned long long)completed());
     }
+    const bool lost = wres == VK_ERROR_DEVICE_LOST;
+    if (lost) wait_lost("a capture's wait for write-back", v);
     (void)completed();   // (RX_VK_POOL_MIRROR: its staged write-backs applied)
     {   // (TICK-010) what the capture waits for: how long, how far ahead of the GPU, and how long the GPU had it by then
         static std::mutex mu;
