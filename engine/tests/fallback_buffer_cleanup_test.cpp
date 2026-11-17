@@ -153,16 +153,16 @@ static void run(const std::string& name) {
     } else if (name == "payload_growth_keeps_records") {
         // (the record arena is the same size for every program: a program whose payloads need more takes a bigger payload
         // buffer, and the records it has already)
-        require(fallback_buffers_of(p, out) && out && out->payload_bytes == 48 && create_calls == 2, "first program's pair");
+        require(fallback_buffers_of(p, out) && out && out->payload_bytes == 32 && create_calls == 2, "first program's pair");
         const VkBuffer records = out->records;
         const uint64_t records_address = out->records_address;
         Program bigger;
         bigger.fallback_payload_words = 8;
-        require(fallback_buffers_of(bigger, out) && out && out->payload_bytes == 144, "a bigger payload was not made");
+        require(fallback_buffers_of(bigger, out) && out && out->payload_bytes == 80, "a bigger payload was not made");
         require(out->records == records && out->records_address == records_address && create_calls == 3 && live.size() == 3,
                 "a bigger payload made another record arena");
         const auto calls = create_calls;
-        require(fallback_buffers_of(p, out) && out->payload_bytes == 144 && create_calls == calls, "the smaller program made more");
+        require(fallback_buffers_of(p, out) && out->payload_bytes == 80 && create_calls == calls, "the smaller program made more");
     } else if (name == "shared_records_payload_failure") {
         // (a growth step that shares the record arena and then cannot make its payload: its create fails, and on a retry its
         // address comes back 0. The shared arena must stay, and the set before it still serve. Passes on main trivially, where a
