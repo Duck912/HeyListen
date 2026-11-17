@@ -10,6 +10,16 @@
       "nup_build_id": "e0f3ccfa"
     }
   },
+  "inputs": [
+    {
+      "id": "dlss",
+      "label": "NVIDIA DLSS runtime",
+      "role": "runtime",
+      "shared": "nvidia.dlss",
+      "optional": true,
+      "destination": "HeyListen/ngx/nvngx_dlss.dll"
+    }
+  ],
   "start": {
     "program": [
       "HeyListen/bin/HeyListen.exe",
@@ -70,6 +80,24 @@
           "name": "AMD FidelityFX SDK license",
           "url": "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/7539ae8b6568ad29ed78a753404351daf3b5cca7/Kits/FidelityFX/docs/license.md"
         }
+      },
+      {
+        "id": "send_perf_stats",
+        "label": "Send anonymous performance statistics",
+        "note": "Sends frame rates and the PC's graphics card and settings (no name, no files) after a play session. You can change it later in the game's menu or in Settings, Privacy.",
+        "args": [
+          "--send-perf-stats"
+        ],
+        "default": false
+      },
+      {
+        "id": "send_crash_reports",
+        "label": "Send crash reports automatically",
+        "note": "If the game crashes, its report (what failed, the PC's parts, the log) is sent without asking. Off, the crash window asks each time. Change it later in Settings, Privacy.",
+        "args": [
+          "--send-crash-reports"
+        ],
+        "default": false
       }
     ]
   },
@@ -93,6 +121,9 @@
     },
     {
       "id": "Gameplay"
+    },
+    {
+      "id": "Privacy"
     }
   ],
   "settings": [
@@ -778,6 +809,52 @@
       ],
       "defaults": {
         "audio_output": "0"
+      }
+    },
+    {
+      "id": "send_perf",
+      "label": "Send performance statistics",
+      "help": "Anonymous frame rates, the graphics card and the settings, sent after a play session. Needs a build that has a statistics address; off by default.",
+      "group": "Privacy",
+      "choices": [
+        {
+          "label": "Off",
+          "set": {
+            "send_performance_stats": "0"
+          }
+        },
+        {
+          "label": "On",
+          "set": {
+            "send_performance_stats": "1"
+          }
+        }
+      ],
+      "defaults": {
+        "send_performance_stats": "0"
+      }
+    },
+    {
+      "id": "send_crash",
+      "label": "Send crash reports automatically",
+      "help": "Sends a crash's report without asking. Off, the crash window asks first. Off by default.",
+      "group": "Privacy",
+      "choices": [
+        {
+          "label": "Off",
+          "set": {
+            "send_crash_reports": "0"
+          }
+        },
+        {
+          "label": "On",
+          "set": {
+            "send_crash_reports": "1"
+          }
+        }
+      ],
+      "defaults": {
+        "send_crash_reports": "0"
       }
     }
   ],

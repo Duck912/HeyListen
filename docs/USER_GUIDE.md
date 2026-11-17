@@ -55,7 +55,13 @@ not replace the builder: it runs it for you, with no window.
 2. On its setup screen, give it your copy of the game: the `.nup` file (program `0400486024DEC000`, update v131072, build
    `e0f3ccfa`), or the folder with its `romfs` and `exefs`. It checks that it is the right version.
 3. Tick **NVIDIA DLSS** or **AMD FSR 4** if you want them (each asks you to accept its maker's license; the files are
-   downloaded to your PC and never shared), then let it build. This takes the same 30 to 60 minutes as the builder and needs
+   downloaded to your PC and never shared). On an NVIDIA RTX card the launcher also fetches NVIDIA's own `nvngx_dlss.dll`
+   (the optional **NVIDIA DLSS runtime** item of Easy Setup, which you can switch off) into the game's `ngx` folder.
+   Two more ticks are **off** unless you turn them on: **Send anonymous performance statistics** and **Send crash reports
+   automatically**. They only write `send_performance_stats=1` and `send_crash_reports=1` into the game's
+   `hookshot_options.ini`, the two rows of the in-game menu (Gameplay tab); what they send is in
+   [performance-statistics.md](performance-statistics.md). Change them any time in RecompLauncher's **Settings**, group
+   **Privacy** (Off or On), or in the menu. Then let it build. This takes the same 30 to 60 minutes as the builder and needs
    the same space; the screen shows the progress.
 4. Press **Play**. Video and gameplay settings (fullscreen, resolution, upscaler, frame generation, frame rate, text speed and
    more) are on the game's page in RecompLauncher; they change `hookshot_options.ini` in the game folder, the same file the

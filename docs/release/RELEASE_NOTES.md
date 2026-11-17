@@ -10,6 +10,8 @@ game. The release holds only the **HeyListen Builder**: no game code, data, keys
 - **Windows: HeyListenBuilder.exe**, the setup. Run it; it downloads the builder and its tools (checked by SHA-256) into
   `%LOCALAPPDATA%\HeyListenBuilder` and opens it. Already installed: the builder offers the update itself.
 - **Linux: `HeyListen-{TAG}-Linux-x64.AppImage`** (glibc 2.35 and newer; see the Linux section of the user guide).
+- **RecompLauncher: `HeyListen-{TAG}-Windows-x64.zip`** (the builder with its tools and `recomplauncher.json`, what the
+  launcher installs; about 460 MB) and the AppImage above, which carries the same file. Nothing of the game is in them.
 - `heylisten-setup.txt`, `heylisten-linux.txt`: the lists of parts the setup and the AppImage's update read (you do not
   need to download them). `SHA256SUMS.txt`, `SHA256SUMS-linux.txt`: checksums.
 
@@ -17,6 +19,12 @@ game. The release holds only the **HeyListen Builder**: no game code, data, keys
 start after the update prepares them as a new install does. Later updates start at once.
 
 ## New in this release
+
+**RecompLauncher setup** (v0.4.1). HeyListen's setup screen in RecompLauncher has two new ticks, both off: *Send anonymous
+performance statistics* and *Send crash reports automatically*, also a *Privacy* group in its settings (Off/On, default Off).
+The Builder takes `--send-perf-stats` and `--send-crash-reports` and writes only those two keys of `hookshot_options.ini`.
+NVIDIA's DLSS runtime comes from the launcher's own download on an RTX card (optional); FSR 4 still needs its tick and AMD's
+license. The game now keeps its last runs' logs as `.log` files in a `logs` folder, which the launcher attaches to a crash report.
 
 **No more outlines and light rectangles around the HUD** (issue 16). The game's ASTC textures are re-encoded to BC7 on
 your PC to save video memory, and the encoder stored fully transparent texels as white at alpha 1/255: on dark scenes

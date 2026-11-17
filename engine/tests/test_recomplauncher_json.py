@@ -39,7 +39,8 @@ def menu_rows():
     menu = (ENGINE / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
     ini_key = menu.split("const char* ini_key(const Row& r) {", 1)[1].split("\n}", 1)[0]
     renamed = {  # (rows whose key is not their name)
-        "Output resolution": "output_res", "Render resolution": "resolution", "Window scaling filter": "upscaling", "Upscaler": "dlss"}
+        "Output resolution": "output_res", "Render resolution": "resolution", "Window scaling filter": "upscaling", "Upscaler": "dlss",
+        "Send performance statistics": "send_performance_stats", "Send crash reports automatically": "send_crash_reports"}
     for key in re.findall(r'return "([a-z_0-9]+)";', ini_key):
         assert key in renamed.values(), key   # (a new special case: add it above)
     rows = {}
@@ -154,14 +155,46 @@ class RecompLauncherJsonTests(unittest.TestCase):
         self.assertTrue(parsed.fsr and parsed.fetch_fsr_runtime and parsed.accept_amd_license)
         # (a vendor's SDK is fetched only by ticking its license)
         for option in prepare["options"]:
-            self.assertTrue(option["license"]["url"].startswith("https://"), option["id"])
             self.assertRegex(option["id"], r"^[a-z0-9_]+$")
-        self.assertEqual(sorted(o["id"] for o in prepare["options"]), ["dlss", "fsr4"])
+            if option["id"] in ("dlss", "fsr4"):
+                self.assertTrue(option["license"]["url"].startswith("https://"), option["id"])
+            else:   # (the two opt-in reports: no license, and they start OFF, which the launcher takes as ticked when "default" is left out)
+                self.assertIs(option["default"], False, option["id"])
+                self.assertNotIn("license", option)
+        self.assertTrue(parsed.send_perf_stats and parsed.send_crash_reports)
+        self.assertEqual(sorted(o["id"] for o in prepare["options"]), ["dlss", "fsr4", "send_crash_reports", "send_perf_stats"])
+
+    def test_privacy_settings_write_the_two_opt_in_keys_off_by_default(self):
+        privacy = [x for x in self.doc["settings"] if x.get("group") == "Privacy"]
+        self.assertEqual([x["id"] for x in privacy], ["send_perf", "send_crash"])
+        for x in privacy:
+            self.assertEqual([c["label"] for c in x["choices"]], ["Off", "On"])
+            (key,) = x["defaults"]
+            self.assertIn(key, ("send_performance_stats", "send_crash_reports"))
+            self.assertEqual(x["defaults"][key], "0")
+            self.assertEqual(x.get("in", "main"), "main")
+        self.assertIn("Privacy", [g["id"] for g in self.doc["groups"]])
+
+    def test_dlss_runtime_is_the_launchers_optional_shared_input(self):
+        (inp,) = self.doc["inputs"]
+        self.assertEqual((inp["role"], inp["shared"], inp["optional"]), ("runtime", "nvidia.dlss", True))
+        self.assertEqual(inp["destination"], "HeyListen/ngx/nvngx_dlss.dll")   # (gpu/vk/vk_dlss.cpp: the game folder's ngx folder)
+        src = (ENGINE / "gpu" / "vk" / "vk_dlss.cpp").read_text(encoding="utf-8")
+        self.assertIn('game_dir() / L"ngx"', src)
+
+    def test_set_option_keys_touches_only_its_keys(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(make_game.set_option_keys(d, {"send_performance_stats": "1"}), ["send_performance_stats"])
+            ini = Path(d) / "hookshot_options.ini"
+            self.assertEqual(ini.read_bytes(), b"send_performance_stats=1\n")
+            ini.write_bytes(b"fullscreen=1\r\nsend_crash_reports=0\r\n# note\r\nsend_crash_reports=0\r\ndlss=3")
+            make_game.set_option_keys(d, {"send_crash_reports": "1", "send_performance_stats": "1"})
+            self.assertEqual(ini.read_bytes(), b"fullscreen=1\r\nsend_crash_reports=1\r\n# note\r\ndlss=3\r\nsend_performance_stats=1\r\n")
 
     def test_license_links_are_the_ones_the_build_shows(self):
         ngx = load("ngx_sdk_for_recomplauncher_json", ENGINE / "scripts" / "ngx_sdk.py")
         ffx = load("ffx_sdk_for_recomplauncher_json", ENGINE / "scripts" / "ffx_sdk.py")
-        urls = {o["id"]: o["license"]["url"] for o in self.doc["prepare"]["options"]}
+        urls = {o["id"]: o["license"]["url"] for o in self.doc["prepare"]["options"] if "license" in o}
         self.assertEqual(urls["dlss"], ngx.LICENSE_URL)
         self.assertEqual(urls["fsr4"], ffx.LICENSE_URL)
 

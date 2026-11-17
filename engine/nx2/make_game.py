@@ -1025,6 +1025,30 @@ def prepare_shaders(cmd, folder=None, silence=PREPARE_SILENCE):
     return code
 
 
+def set_option_keys(out, keys):
+    """Writes key=value lines into the game folder's hookshot_options.ini (the file the Insert menu keeps), touching no other key: the first line
+    of a key is replaced and the others of it go (the game takes the last), the rest of the file and its line ends are as they
+    were, and a file that is not there is made with only these. Returns the keys written"""
+    path = os.path.join(out, "hookshot_options.ini")
+    text = ""
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8", errors="surrogateescape", newline="") as f:
+            text = f.read()
+    eol = "\r\n" if "\r\n" in text else "\n"
+    lines = text.splitlines()
+    for key, value in keys.items():
+        found = [i for i, l in enumerate(lines) if l.split("=", 1)[0].strip() == key and "=" in l]
+        if found:
+            lines[found[0]] = "%s=%s" % (key, value)
+            for i in reversed(found[1:]):
+                del lines[i]
+        else:
+            lines.append("%s=%s" % (key, value))
+    with open(path, "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
+        f.write(eol.join(lines) + eol)
+    return list(keys)
+
+
 def folder_language(out):
     """the language a game folder was built in: the code line of its language.txt"""
     try:
@@ -1354,6 +1378,11 @@ def parse_args():
     p.add_argument("--fetch-fsr-runtime", action="store_true",
                    help="with --fsr (Windows): download AMD's FSR runtime (scripts/ffx_sdk.py) and put it in the game folder")
     p.add_argument("--accept-amd-license", action="store_true", help="AMD's FSR SDK license, accepted (with --fetch-fsr-runtime)")
+    # (the opt-in reports, off unless asked: the setup screen's two ticks write the game's own menu rows, nothing else of the file)
+    p.add_argument("--send-perf-stats", action="store_true",
+                   help="write send_performance_stats=1 into the game folder's hookshot_options.ini (the menu's Send performance statistics)")
+    p.add_argument("--send-crash-reports", action="store_true",
+                   help="write send_crash_reports=1 into the game folder's hookshot_options.ini (the menu's Send crash reports automatically)")
     # (RecompLauncher, recomplauncher.json "prepare": the build without a window. --prepare is what its setup step runs)
     p.add_argument("--game", metavar="PATH", help="the game's files: a .nup file, or a folder with romfs and exefs in it (or a .nup)")
     p.add_argument("--progress-lines", action="store_true",
@@ -1814,6 +1843,11 @@ def main(a=None):
     with open(language, "w", encoding="utf-8", newline="\n") as f:
         f.write("# The game's language. Change the line below to one of the codes listed here, save, and start the game again.\n\n%s\n\n" % a.language)
         f.writelines("# %-8s %s\n" % l for l in LANGUAGES)
+    opt_in = {k: "1" for k, on in (("send_performance_stats", getattr(a, "send_perf_stats", False)),
+                                  ("send_crash_reports", getattr(a, "send_crash_reports", False))) if on}
+    if opt_in:   # (the setup screen's ticks: only these keys, the rest of the options file stays)
+        set_option_keys(out, opt_in)
+        print("hookshot_options.ini: %s" % ", ".join("%s=1" % k for k in opt_in), flush=True)
     # (what the game's update offer reads, host/hos_update.c: which release these tools are, and where the builder that made the folder is)
     tag = ""
     for version_name in ("version.txt", "VERSION"):   # (VERSION: the AppImage, which has no version.txt)

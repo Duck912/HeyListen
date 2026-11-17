@@ -31,6 +31,14 @@ in [USER_GUIDE.md](USER_GUIDE.md#install-with-recomplauncher).
     `cpm` and `wgpu-native` found beside the tools, the builder's own work folder (`%LOCALAPPDATA%\HeyListenBuilder`, or the
     folder chosen in the builder) and the PC's language for the game (`language.txt` in the game folder changes it).
   - A failure ends with a line `error: <reason>` on the output and a nonzero exit code.
+  - `--send-perf-stats` / `--send-crash-reports` (make_game.py, so the Windows `--cli` and the AppImage's take them too) write
+    `send_performance_stats=1` / `send_crash_reports=1` into the game folder's `hookshot_options.ini`, changing no other key
+    (`set_option_keys`); left out, they change nothing. The two ticks that pass them start off and have no license; the
+    **Privacy** settings write the same keys through the `config` entry. The telemetry address (`nx2/addresses.ini`) is set at
+    the release, and without it the game's menu rows say "not available in this build".
+  - The `inputs` entry `dlss` (`shared: nvidia.dlss`, optional) has the launcher put NVIDIA's own `nvngx_dlss.dll` at
+    `HeyListen/ngx/nvngx_dlss.dll`, the first folder `gpu/vk/vk_dlss.cpp` looks in. Nothing of NVIDIA's or AMD's is in our
+    repository or release.
   - The two **options** are ticks on the setup screen. Each adds its arguments when on and starts off, because it has a
     license to accept: **NVIDIA DLSS** (`--fetch-ngx-sdk --accept-nvidia-license`, NVIDIA RTX cards) and **AMD FSR 4**
     (`--fsr --fetch-fsr-runtime --accept-amd-license`, Windows, AMD cards). The license links are the ones the builder shows
