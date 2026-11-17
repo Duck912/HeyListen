@@ -57,6 +57,8 @@ cp -a gpu/render/*.h "$T/gpu/render/"
 # (every gpu/vk header the host's sources include: v2.0.6 shipped without oot_cheat_items.h and no Linux build finished, issue 990.
 # tests/test_appimage_headers.py checks that this covers what host/ includes)
 for h in $(grep -rhoE 'gpu/vk/[A-Za-z0-9_]+[.]h' host | sort -u); do if [ -f "$h" ]; then cp -a "$h" "$T/gpu/vk/"; fi; done
+# (the one compat header the host includes: the crash helper and the crash record read the switches by its rule)
+mkdir -p "$T/gpu/vk/compat"; cp -a gpu/vk/compat/hookshot_env.h "$T/gpu/vk/compat/"
 cp -a third_party/opus "$T/third_party/"
 cp -a third_party/kenney_input "$T/third_party/"
 # (zstd's decoder: nx2/build.py compiles it into the game for host/hl_stream.c)

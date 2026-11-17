@@ -133,7 +133,7 @@ def build(cc, temp, glue, threads, main):
     if os.name == "nt":
         cmd += ["-ldbghelp", "-ladvapi32"]
     else:
-        cmd += ["-I", str(ROOT / "host/posix"), "-pthread", "-ldl"]
+        cmd += ["-I", str(ROOT / "host/posix"), "-pthread", "-ldl", "-Wno-attributes"]
     subprocess.run(cmd, check=True, timeout=120)
     return exe
 
