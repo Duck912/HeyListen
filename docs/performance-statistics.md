@@ -65,6 +65,8 @@ Example:
  "log_tail": ["vk: status: 3.1 of 15.9 GB"], "options": "upscaling=1\nquality_preset=3"}
 ```
 
+A crash before the renderer has written its `report:` log lines (a crash at the very start) has no `os`, `cpu` or `gpu` from the log: the helper reads the CPU (with its threads and RAM) and the operating system itself and sends them as `cpu` and `os`, `gpu` is the adapters the log had listed, and `renderer`, which nothing says yet, is left out rather than sent empty.
+
 Privacy: every line is cleaned before it is shown or sent. The home folder is written `~` (or `%USERPROFILE%` on Windows), the
 user name `<user>` (also as a word of its own), the audio and microphone device names `<device>`, control characters are
 dropped, a line is cut at 300 characters, and a setting's value is sent only when it is a number, a size or on/off. The log

@@ -142,6 +142,10 @@ static int fixture_main(int argc, char **argv) {
             fputs(out, stdout);
         }
         free(text);
+    } else if (!strcmp(cmd, "split")) {   /* a system line */
+        char cpu[256], os[256];
+        hos_crash_system_split(argv[2], cpu, sizeof cpu, os, sizeof os);
+        printf("%s|%s\n", cpu, os);
     } else if (!strcmp(cmd, "shown")) {
         printf("%d\n", hos_crash_value_shown(strcmp(argv[2], "-") ? argv[2] : NULL, argv[3]));
     } else if (!strcmp(cmd, "url")) {
@@ -846,6 +850,15 @@ def logic_checks(exe, menu, tmp, form):
     for (name, value), want in shown.items():
         assert int(run(exe, "shown", name, value)) == want, (name, value)
     print("PASS: a setting's value only when it is a number, a size or on/off; never for a secret's name")
+    # a crash before the game's "report:" lines: the helper's system line split into the CPU part and the OS part
+    for line, want in (("AMD Ryzen 7 7800X3D 8-Core Processor (16 threads), 31 GB, Windows 11 (build 26200)",
+                        "AMD Ryzen 7 7800X3D 8-Core Processor (16 threads), 31 GB|Windows 11 (build 26200)"),
+                       ("Intel Core i5 (8 threads), 15 GB, Arch Linux (Linux 7.2.15), KDE (wayland)",
+                        "Intel Core i5 (8 threads), 15 GB|Arch Linux (Linux 7.2.15), KDE (wayland)"),
+                       ("an unknown CPU (4 threads), Windows 10 (build 19045)", "an unknown CPU (4 threads)|Windows 10 (build 19045)"),
+                       ("something else", "something else|"), ("", "|")):
+        assert run(exe, "split", line).rstrip("\n") == want, (line, run(exe, "split", line))
+    print("PASS: the helper's system line splits into the CPU (threads and RAM) and the operating system")
     # the issue link: GitHub's new-issue page with a title and a short body
     url = run(exe, "url", "Game: HeyListen closed unexpectedly during the start", "v3.1.0 (source 1234abcd)",
               "NVIDIA GeForce RTX 3090, NVIDIA 580.95.05", "Ryzen 7 7700 (16 threads), 32 GB, Windows 11 (build 26100)",
@@ -982,7 +995,8 @@ esac
 """, encoding="utf-8")
     curl.chmod(0o755)
     stamp = "version=vtest-1\ntelemetry=https://d.example\ncrash_issue=https://g.example/o/r/issues/81\n"
-    log = ("[hos host] report: os Arch Linux", "[hos host] report: cpu Ryzen 7 7700 (16 threads), 32 GB",
+    log = ("[hos host] report: renderer Vulkan", "[hos host] vk: Test GPU 1, Vulkan 1.4, driver 0x1; mesh shaders yes, host memory import yes",
+"[hos host] report: os Arch Linux","[hos host] report: cpu Ryzen 7 7700 (16 threads), 32 GB",
            "[hos Main] map: Kokiri Forest", "[hos Main] reading %s/secret.txt" % home,
            "[hos host] CRASH: exception 0xc0000005 (read 0x8, guest 0x8) at %s/Games/hookshot+0x1a2b" % home,
            "[hos host] CRASH:   x0 0000000000000001", "[hos host] CRASH: host backtrace: hookshot+0x1a2b libc.so.6+0x10")
@@ -1027,6 +1041,19 @@ esac
     (folder / "hookshot_version.txt").write_text("version=vtest-1\n", encoding="utf-8")
     _, got = game("crash", *log, folder=folder, extra={"CRASH_TEST_CURL": str(curl)})
     assert got[0][1].split("\n")[-1].startswith("Report manually|"), got[0]
+    # a crash before the renderer's "report:" lines (HOS_CRASH_TEST=start): the CPU and the OS from the helper's own reading,
+    # split; the GPU from the adapters the log listed; the renderer, which nothing says yet, left out (never sent empty)
+    early = home / "early"
+    early.mkdir()
+    (early / "hookshot_version.txt").write_text(stamp, encoding="utf-8")
+    early_log = ("[hos host] vk: device 0: NVIDIA GeForce RTX 5070, Vulkan 1.4, driver 0x9a4a8000, type 2",
+                 "[hos host] CRASH: exception 0xc0000005 (write 0x10, guest 0x10) at hookshot+0x1a2b")
+    game("crash", *early_log, folder=early, buttons="0,1,0,0", extra={"CRASH_TEST_CURL": str(curl), "CURL_ANSWER": "sent"})
+    report = json.loads((early / "sent.json").read_text(encoding="utf-8"))
+    assert "renderer" not in report and report["gpu"] == "NVIDIA GeForce RTX 5070", report
+    assert " (" in report["cpu"] and " threads)" in report["cpu"] and not report["cpu"].endswith(report["os"]), report
+    assert report["os"] and report["os"] not in report["cpu"] and ("threads)" not in report["os"]), ("os is the OS part only", report)
+    print("PASS: a crash before the game's report lines: cpu and os split, the gpu from the log's adapters, no empty renderer")
     print("PASS: Report automatically: the game's own report shown, Show all of it, Send with curl, the answer, offered once")
 
     # Send crash reports automatically (the menu row, hookshot_options.ini send_crash_reports=1): the same report posted with no

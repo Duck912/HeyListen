@@ -1038,6 +1038,28 @@ static inline void hos_crash_report_version(char *out, size_t cap, const char *v
     if (!o) snprintf(out, cap, "unknown");
 }
 
+/* The helper's own system line, "<cpu> (<n> threads), <ram> GB, <os>" (hos_crash_dialog.c system_text), split into the CPU part
+   ("<cpu> (<n> threads), <ram> GB") and the operating system's, for a crash before the game wrote its "report:" lines (the
+   renderer writes them once it starts: a crash at the start has none). The split is after the RAM ("... GB, "), else after the
+   threads' parenthesis; a line with neither is all CPU. Both parts are "" when the line is empty */
+static inline void hos_crash_system_split(const char *system, char *cpu, size_t ccap, char *os, size_t ocap) {
+    if (ccap) cpu[0] = 0;
+    if (ocap) os[0] = 0;
+    if (!system || !system[0]) return;
+    const char *end = NULL, *rest = NULL;   /* (where the CPU part ends, where the OS part starts) */
+    for (const char *p = strstr(system, " GB, "); p && !end; p = strstr(p + 1, " GB, ")) {
+        const char *q = p;
+        while (q > system && isdigit((unsigned char)q[-1])) q--;
+        if (q < p && q > system && q[-1] == ' ') end = p + 3, rest = p + 5;   /* (a number before " GB, ": the RAM) */
+    }
+    if (!end) {
+        const char *th = strstr(system, " threads), ");
+        if (th) end = th + 9, rest = th + 11;
+    }
+    if (ccap) snprintf(cpu, ccap, "%.*s", (int)(end ? (size_t)(end - system) : strlen(system)), system);
+    if (rest && ocap) snprintf(os, ocap, "%s", rest);
+}
+
 /* The answer to the send, from the HTTP status (0: no answer: curl could not reach the server, or did not run) and the relay's
    JSON ({"comment": link} or {"error": why}), as the Sent page or the Not sent page says it: 1 sent (*link: the report's own
    comment on the crash issue when the answer names one there, else the issue itself), 0 not (*again: whether trying again

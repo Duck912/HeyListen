@@ -1293,14 +1293,19 @@ static int build_report(const Shown *s, Buf *json, Buf *shown, const char **why)
     const char *devices[1] = {mic};
     const int nd = mic[0] ? 1 : 0;
     hos_crash_report_version(version, sizeof version, in.bare_version);
-    char os[sizeof in.system];
-    snprintf(os, sizeof os, "%s", f->os[0] ? f->os : in.system);
+    /* (a crash before the renderer wrote its "report:" lines: the CPU and the OS from the helper's own reading, split, and the
+       adapters the log listed so far for the GPU; what is not known at all is left out, never sent empty) */
+    char os[sizeof in.system], cpu_own[sizeof in.system];
+    hos_crash_system_split(in.system, cpu_own, sizeof cpu_own, os, sizeof os);
+    if (f->os[0]) snprintf(os, sizeof os, "%s", f->os);
+    const char *cpu_text = f->cpu[0] ? f->cpu : cpu_own;
+    const char *gpu_text = f->gpu[0] ? f->gpu : f->devices;
     const char *place = f->place[0] ? f->place : HOS_CRASH_TITLE_AND_INTRO;
     putf(json, "{\n  \"version\": \"%s\",\n  \"release\": %s", version, in.release ? "true" : "false");
-    put_field(json, ",\n  ", "os", os, HOS_CRASH_MAX_OS, s, devices, nd);
-    put_field(json, ",\n  ", "renderer", f->renderer, HOS_CRASH_MAX_RENDERER, s, devices, nd);
-    put_field(json, ",\n  ", "gpu", f->gpu, HOS_CRASH_MAX_GPU, s, devices, nd);
-    put_field(json, ",\n  ", "cpu", f->cpu, HOS_CRASH_MAX_CPU, s, devices, nd);
+    if (os[0]) put_field(json, ",\n  ", "os", os, HOS_CRASH_MAX_OS, s, devices, nd);
+    if (f->renderer[0]) put_field(json, ",\n  ", "renderer", f->renderer, HOS_CRASH_MAX_RENDERER, s, devices, nd);
+    if (gpu_text[0]) put_field(json, ",\n  ", "gpu", gpu_text, HOS_CRASH_MAX_GPU, s, devices, nd);
+    if (cpu_text[0]) put_field(json, ",\n  ", "cpu", cpu_text, HOS_CRASH_MAX_CPU, s, devices, nd);
     put_field(json, ",\n  ", "map", place, HOS_CRASH_MAX_MAP, s, devices, nd);
     put(json, ",\n  \"crash\": [");
     for (int i = 0; i < crash.n; i++) put_field(json, i ? ",\n    " : "\n    ", NULL, crash.at[i], HOS_CRASH_LINE_LIMIT, s, devices, nd);
@@ -1313,7 +1318,7 @@ static int build_report(const Shown *s, Buf *json, Buf *shown, const char **why)
     putf(shown, "Version: %s\nRelease build: %s\nOperating system: %s\nRenderer: %s\nGraphics card: %s\nCPU and RAM: %s\nMap: %s\n"
                 "Settings: %d (%d changed from the defaults)\n\nThe crash:\n",
          version, in.release ? "Yes" : "No (a local or modified build)", os, f->renderer[0] ? f->renderer : "not known",
-         f->gpu[0] ? f->gpu : "not known", f->cpu[0] ? f->cpu : "not known", place, in.settings, in.changed);
+         gpu_text[0] ? gpu_text : "not known", cpu_text[0] ? cpu_text : "not known", place, in.settings, in.changed);
     for (int i = 0; i < crash.n && i < 12; i++) {
         char line[HOS_CRASH_LINE_LIMIT * 4 + 8];
         snprintf(line, sizeof line, "%s", crash.at[i]);
