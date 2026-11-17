@@ -27,6 +27,12 @@ OS = "windows" if WINDOWS else "linux"
 # skipped, or fails with --strict. Tests not listed run with no arguments and their own defaults.
 ARGS = {
     "tests/test_sampler_retirement.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_staging_burst.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_dead_targets_sweep.py": ["--cxx", "{cxx}"],
+    "tests/test_precompile_save.py": ["--cxx", "{cxx}"],
+    "tests/test_settings_atomic.py": ["--cc", "gcc"],
+    "tests/test_host_alloc_wait.py": ["--cc", "gcc"],
+    "tests/test_audio_speaker_layout.py": ["--cxx", "{cxx}"],
     "tests/test_mma_software.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "tests/test_native_float_atomic_add.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "tests/test_compute_local_memory.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
@@ -191,6 +197,7 @@ MODULES = {
 
 # Checks that cannot run in CI, with why, by OS. Each still runs with --no-skip (or by name).
 SKIP = {
+    "tests/test_udmabuf_limit_unreadable.py": ({"windows"}, "the Linux guest window's start-up check (POSIX file descriptors)"),
     "tests/test_precompile_compute_guard.py": ({"linux"}, "Windows structured exceptions"),
     "tests/test_shader_module_guard.py": ({"linux"}, "Windows structured exceptions"),
     # (the game: these run the lifted code of a real dump against Unicorn)
