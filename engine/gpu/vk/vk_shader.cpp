@@ -1241,7 +1241,7 @@ uint64_t disk_stamp() {
         add(&salign, sizeof salign);
     }
     for (char** e = _environ; e && *e; e++)
-        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH", "RX_VK_NO_INVARIANT", "RX_VK_NO_NAN_GUARD", "RX_VK_MARKERS", "EDEN_"})
+        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH", "RX_VK_FOLD", "RX_VK_NO_INVARIANT", "RX_VK_NO_NAN_GUARD", "RX_VK_MARKERS", "EDEN_"})
             if (!strncmp(*e, pre, strlen(pre))) add(*e, strlen(*e));
     return h;
 }
@@ -2079,6 +2079,11 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
         mrt.mesh_fallback_task = task_t != nullptr;
         mrt.mesh_fallback_task_threads = task_t ? task_t->program.workgroup_size[0] : 0;
         const std::vector<uint32_t> mspirv = Shader::Backend::SPIRV::EmitSPIRV(profile(), mrt, mesh_t->program, bindings);
+        if (getenv("RX_VK_MESH_NOINLINE_ABOVE")) {   // (stream P5: the IR size the threshold is read against, with the SPIR-V's)
+            size_t ir_n = 0;
+            for (const Shader::IR::Block* b : mesh_t->program.blocks) ir_n += b->size();
+            logf("vk: mesh stage: %zu IR instructions, %zu SPIR-V words (RX_VK_MESH_NOINLINE_ABOVE)", ir_n, mspirv.size());
+        }
         kept.push_back(mspirv);
         Stage ms;
         ms.nvn_stage = bank_stage(mesh);
