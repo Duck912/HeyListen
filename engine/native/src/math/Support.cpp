@@ -2,6 +2,7 @@
 // order; the comments name the guest function the sequence is read from (by address, nothing of its code).
 #include "hl/math/Support.h"
 
+#include <cmath>
 #include <cstring>
 
 #include "hl/math/Exact.h"
@@ -63,7 +64,10 @@ bool support_point(const uint8_t* vertices, int32_t n, const float dir[4], const
     } else if (jump == 14) {   // two vertices, the other two lanes padded with a large negative, the rounds from the third
         best[0] = w.dot(0);
         best[1] = w.dot(1);
-        best[2] = best[3] = g.in(t.pad);
+        // (the module's padding is minus infinity in the game: an infinity compares the same on x86 and Arm, so only a NaN
+        // or a subnormal padding is given up on)
+        if (std::isnan(t.pad) || (!is_zero(t.pad) && (bits(t.pad) & 0x7f800000u) == 0)) return false;
+        best[2] = best[3] = t.pad;
         for (int k = 0; k < 4; k++) idx[k] = t.index[k];
         start = 2;
     } else if (jump == 40) {   // exactly three: the lanes at the maximum are told by a mask, the table gives the index

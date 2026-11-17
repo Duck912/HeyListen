@@ -39,7 +39,7 @@ math::SupportTables tables() {
     t.jump[1] = 0;
     t.jump[2] = 14;
     t.jump[3] = 40;
-    t.pad = -3.0e38f;
+    t.pad = -std::numeric_limits<float>::infinity();
     for (uint32_t k = 0; k < 4; k++) {
         t.index[k] = k;
         t.step[k] = 4;
