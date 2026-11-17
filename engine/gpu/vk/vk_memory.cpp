@@ -1619,61 +1619,41 @@ bool submitted_page_reuse(uint64_t page, uint32_t page_gen, uint64_t view, uint6
                           uint64_t cached_view) {
     return cached_view != 0 && page == cached_page && page_gen == cached_gen && view == cached_view;
 }
-struct SubmittedPage {
+struct SubmittedPage {   // (a page no capture holds, as of pgen and view: the read from guest memory stands)
     uint64_t page = ~0ull;
     uint32_t pgen = 0;
     uint64_t view = 0;
-    bool overlay = false;   // (bytes is the capture's copy of the page; otherwise guest memory stands)
-    uint8_t bytes[4096]{};
 };
-// (hookshot) Four pages, not one: a draw's handle reads take turns between its stages' uniform buffers, and with one page
-// kept, every read of the other page took pools_mu and copied a whole captured page again: ~22% of the replay thread in
-// Kokiri's village view (2,224 draws), 50 -> 57 fps with four. RX_VK_SUBMITTED_PAGES=1: one, as before
-constexpr int kSubmittedPages = 4;
+// (hookshot, 11-09/10) 32 of them a thread, by page: a handle program reads a uniform word on one page and a storage buffer
+// word on another, and with one page kept nearly every read missed and took pools_mu (program_for's answer handles). A page a
+// capture holds is not kept: its words are copied from the capture under pools_mu at each read, not the whole 4 KB page into
+// a copy of the thread's own (that copy was a third of the replay's thread in Kokiri Forest on NVIDIA Linux)
+constexpr int kSubmittedPages = 32;
 thread_local SubmittedPage submitted_pages[kSubmittedPages];
-thread_local unsigned submitted_next;
-int submitted_ways() {
-    static const int v = getenv("RX_VK_SUBMITTED_PAGES") ? std::clamp(atoi(getenv("RX_VK_SUBMITTED_PAGES")), 1, kSubmittedPages)
-                                                         : kSubmittedPages;
-    return v;
+// (RX_VK_SUBMITTED_PAGES=1: one slot, every page in it, as before)
+inline SubmittedPage& submitted_page_for(uint64_t page) {   // (a page and its neighbours, and pages 32 apart, in different slots)
+    static const bool one = getenv("RX_VK_SUBMITTED_PAGES") && atoi(getenv("RX_VK_SUBMITTED_PAGES")) == 1;
+    return submitted_pages[one ? 0 : (page + (page >> 5) * 13) & (kSubmittedPages - 1)];
 }
-/// the kept page that answers this read, if one does
-SubmittedPage* submitted_find(uint64_t page, uint32_t pgen, uint64_t view) {
-    for (int i = 0, n = submitted_ways(); i < n; i++)
-        if (submitted_page_reuse(page, pgen, view, submitted_pages[i].page, submitted_pages[i].pgen, submitted_pages[i].view))
-            return &submitted_pages[i];
-    return nullptr;
+inline bool submitted_known(uint64_t page, uint32_t pgen, uint64_t view) {
+    const SubmittedPage& sp = submitted_page_for(page);
+    return submitted_page_reuse(page, pgen, view, sp.page, sp.pgen, sp.view);
 }
-/// the entry a new page goes into: the oldest, in turn
-SubmittedPage& submitted_slot() { return submitted_pages[submitted_next++ % (unsigned)submitted_ways()]; }
-std::atomic<int64_t> st_page_copies{0};
 bool late_fix_slot_pending(uint32_t gen, uint32_t slot, uint64_t* value);   // (TICK-060, below)
 bool guarded_copy(void* dst, const void* src, size_t n);   // (below)
 std::atomic<int64_t> st_late_def_full{0}, st_late_reads{0}, st_late_syncs{0};   // (TICK-060)
 
 bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {
     if (cap_only_gpu()) cap_excl_note(gpu, n, "a replay read as submitted");
-    // (once a capture exists, every uniform word took pools_mu to ask whether its page was in one. The next words are
-    // the same page: the answer is kept until a stamp or a new capture)
-    if (n && capture_on() && captures_seen.load(std::memory_order_relaxed)) {
-        const uint64_t guest = gpu < (1ull << 40) ? gpu : host->gpu_guest(gpu);
-        if (guest) {
-            const uint64_t page0 = guest >> kPageShift, page1 = (guest + n - 1) >> kPageShift;
-            const uint64_t view = cap_view_gen.load(std::memory_order_acquire);
-            if (page0 == page1)
-                if (const SubmittedPage* sp = submitted_find(page0, page_gen(page0), view); sp && sp->overlay) {
-                    std::memcpy(dst, sp->bytes + (guest & 4095), (size_t)n);
-                    return true;
-                }
-        }
-    }
+    // (once a capture exists, every uniform word took pools_mu to ask whether its page was in one. A page in none keeps that
+    // answer until a stamp or a new capture)
     if (!host->gpu_read(gpu, dst, n)) return false;
     if (!n || !capture_on() || !captures_seen.load(std::memory_order_relaxed)) return true;
     const uint64_t guest = gpu < (1ull << 40) ? gpu : host->gpu_guest(gpu);
     if (!guest) return true;
     const uint64_t page0 = guest >> kPageShift, page1 = (guest + n - 1) >> kPageShift;
     const uint64_t view = cap_view_gen.load(std::memory_order_acquire);
-    if (page0 == page1 && submitted_find(page0, page_gen(page0), view)) return true;
+    if (page0 == page1 && submitted_known(page0, page_gen(page0), view)) return true;
     static std::atomic<int64_t> reads{0}, pages_from{0};
     int64_t from = 0;
     {
@@ -1715,28 +1695,17 @@ bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {
             std::memcpy((uint8_t*)dst + (a - guest), (const uint8_t*)b->second.map + (uint64_t)e.slot * 4096 + (a - (page << kPageShift)), z - a);
             from++;
         }
-        if (page0 == page1 && !late_read) {
-            SubmittedPage& submitted_page = submitted_slot();
+        if (page0 == page1 && !late_read && from == 0) {   // (in no capture: guest memory stands for its next words too)
+            SubmittedPage& submitted_page = submitted_page_for(page0);
             submitted_page.page = page0;
             submitted_page.pgen = page_gen(page0);
             submitted_page.view = cap_view_gen.load(std::memory_order_relaxed);
-            submitted_page.overlay = false;
-            const CapEntry e = cap_entry(page0);
-            if (e.gen && e.gen == submitted_page.pgen) {
-                auto b = cap_bufs.find(e.gen);
-                if (b != cap_bufs.end() && b->second.map &&
-                    !(b->second.gmask && e.slot < b->second.gmask->size() && (*b->second.gmask)[e.slot] != 0xff)) {
-                    std::memcpy(submitted_page.bytes, (const uint8_t*)b->second.map + (uint64_t)e.slot * 4096, 4096);
-                    submitted_page.overlay = true;
-                    st_page_copies++;
-                }
-            }
         }
     }
     pages_from += from;
     if (++reads % 20000 == 0)
-        logf("vk: replay reads of guest memory as submitted: %lld (%lld pages from the captures, %lld whole pages kept)",
-             (long long)reads.load(), (long long)pages_from.load(), (long long)st_page_copies.load());
+        logf("vk: replay reads of guest memory as submitted: %lld (%lld pages from the captures)",
+             (long long)reads.load(), (long long)pages_from.load());
     return true;
 }
 
