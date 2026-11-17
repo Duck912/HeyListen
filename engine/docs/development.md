@@ -158,6 +158,7 @@ case-sensitive, and an unknown one is ignored.
 | `RX_VK_COMPUTE_QUICK_FIRST=0/1` | On one-at-a-time compute builds (Intel by default, `RX_VK_COMPUTE_SERIAL`): a dispatch's first pipeline is made without the optimizer and the optimized one after it, on the back lane; the prepare and the precompile ask for the first. Default `1`; `0`: one optimized build, as before |
 | `RX_VK_SKIP_PROG=<prefix>,...` | Leaves out the draws of these programs (default `53509044401d78d2`; `-` leaves out none) |
 | `RX_VK_PIPE_SKIP=0` | A draw whose pipeline is not ready waits for it, instead of being left out when its targets hold an earlier frame |
+| `RX_VK_PIPE_BY_PROGRAM=0` | A graphics pipeline is shared by its key (program code + variant) alone, as before. On (default): it belongs to the program object it was built from, and another object with the same key gets a pipeline of its own (two objects can share a key: a pipeline built for one and drawn with the other ran the wrong shaders under the wrong layout, the GPU hung and the device was lost near water). The log says `vk: pipeline ... was made for another program object` (first 12 times) |
 | `RX_VK_PRECOMPILE=0` or `1` | The shader preparation before the title off or on (on in builds made with `RX_RELEASE=1`, as the builders' are) |
 | `RX_VK_NO_PROGRAM_CACHE` (set) | Neither reads nor writes `hookshot_programs.bin` and the pipeline notes |
 | `RX_VK_MIRROR=0`, `RX_VK_MIRROR_MB=<MB>` | No VRAM mirrors of the game's memory pools (on for discrete cards); their budget |

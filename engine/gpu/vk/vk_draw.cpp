@@ -32,6 +32,7 @@
 
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 
+#include "compat/hookshot_env.h"   // (env_value_off: the switches' one rule)
 #include "vk_paths.h"
 #include "vk_draw.h"
 #include "flat_map.h"
@@ -758,6 +759,7 @@ struct Targets {
 struct PipeEntry {
     std::atomic<bool> ready{false};
     std::atomic<VkPipeline> pipeline{VK_NULL_HANDLE};   // (a fast-linked one first, the worker's full build over it)
+    std::atomic<const Program*> prog{nullptr};   // (the program object whose stages and layout it was built from: graphics_pipeline)
 };
 std::unordered_map<uint64_t, std::unique_ptr<PipeEntry>> pipelines;   // (the replay thread's)
 // (TICK-052: st_draws to st_mesh are bumped at every draw by every recording thread: a cache line a thread, split_count.h)
@@ -1848,18 +1850,40 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
         std::memcpy(f.blend, blend, sizeof blend);
         return e;
     };
-    const uint64_t key = pipeline_key(p, s, at, topo);
+    // (Hookshot 65e2cb91 / 8b1e96ad: a pipeline belongs to the program object it was built from.) The key names a program by its
+    // code and its variant's hash, and two program objects can have both the same: the one the precompile found for a note
+    // (program_find) and the one a draw picks. A draw then ran one program's shaders under the other's layout, descriptors and
+    // constants; with the scene's lit programs a light loop read garbage for its count and the GPU never finished the draw (device
+    // lost near water). Another object with the same key gets a pipeline of its own, under a key of its own (not noted: it holds
+    // an address); a thread's map is by key and object too. RX_VK_PIPE_BY_PROGRAM=0: shared by the key alone, as before
+    static const bool by_program = [] { const char* e = getenv("RX_VK_PIPE_BY_PROGRAM"); return !(e && env_value_off(e)); }();
+    uint64_t key = pipeline_key(p, s, at, topo);
+    const uint64_t own = mix(key, (uint64_t)(uintptr_t)&p);
+    const uint64_t mkey = by_program ? own : key;   // (a thread's map: by key and object)
     static thread_local FlatMap<uint64_t, PipeEntry*> mine;   // (entries live as long as the cache; hookshot: flat, flat_map.h)
-    if (auto m = mine.find(key); m != mine.end()) return FINE_X(FC_PIPE_MAP, 1), remember(m->second);
+    if (auto m = mine.find(mkey); m != mine.end()) return FINE_X(FC_PIPE_MAP, 1), remember(m->second);
     PROF_EXACT();   // (new to this thread, or new: rare, and a pipeline made can take milliseconds)
     ParLock lk;
     auto it = pipelines.find(key);
-    if (it != pipelines.end()) return remember(mine[key] = it->second.get());
+    bool own_key = false;
+    if (by_program && it != pipelines.end()) {
+        const Program* made_for = it->second->prog.load(std::memory_order_acquire);
+        if (made_for && made_for != &p) {
+            static std::atomic<int> told{0};
+            if (told++ < 12)
+                logf("vk: pipeline %016llx was made for another program object of %016llx (variant %016llx): this one gets its own",
+                     (unsigned long long)key, (unsigned long long)p.key, (unsigned long long)p.variant);
+            key = own, own_key = true;
+            it = pipelines.find(key);
+        }
+    }
+    if (it != pipelines.end()) return remember(mine[mkey] = it->second.get());
     pcache_init();
     PipeEntry* e = pipelines.emplace(key, std::make_unique<PipeEntry>()).first->second.get();
+    e->prog.store(&p, std::memory_order_release);
     static const bool sync = getenv("RX_VK_SYNC_PIPELINES") != nullptr;
     if (sync) {
-        pipeline_note(key, p, s, at, topo, color_types);
+        if (!own_key) pipeline_note(key, p, s, at, topo, color_types);   // (its own key holds an address: nothing to note)
         e->pipeline = build_graphics(p, s, at, topo);
         e->ready = true;
         return remember(e);
@@ -1874,14 +1898,15 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
         Targets at;
         VkPrimitiveTopology topo;
         uint64_t key;
+        bool note;                // (false: the entry's key is its own, with an address in it: not noted)
         uint8_t color_types[8];   // (upstream's pipeline state list, state_record)
         uint64_t cold[2];         // (the libraries gpl_link found cold: built by workers after it)
     };
     auto job = std::make_shared<Job>();
-    job->e = e, job->p = &p, job->s = s, job->at = at, job->topo = topo, job->key = key, job->cold[0] = job->cold[1] = 0;
+    job->e = e, job->p = &p, job->s = s, job->at = at, job->topo = topo, job->key = key, job->note = !own_key, job->cold[0] = job->cold[1] = 0;
     std::memcpy(job->color_types, color_types, 8);
     jobs_push([job] {
-        pipeline_note(job->key, *job->p, job->s, job->at, job->topo, job->color_types);
+        if (job->note) pipeline_note(job->key, *job->p, job->s, job->at, job->topo, job->color_types);
         // (linked from the libraries: the draw goes ahead, and the full build below replaces it. Not linked when a library is
         // cold: the entry stays not ready until the full build)
         if (gpl_wanted() && !job->p->fallback) {
@@ -8751,6 +8776,7 @@ void precompile_run(void (*progress)(size_t done, size_t total), bool wait) {
             Targets at = note_targets(*n);
             const uint64_t key = pipeline_key(*p, n->s, at, (VkPrimitiveTopology)n->topo);   // (not the note's own: it is made again)
             if (!pipelines.emplace(key, std::make_unique<PipeEntry>()).second) continue;
+            pipelines.find(key)->second->prog.store(p, std::memory_order_release);   // (whose pipeline it is: graphics_pipeline)
             {
                 std::lock_guard nlk(note_mu);
                 noted.insert(key);
