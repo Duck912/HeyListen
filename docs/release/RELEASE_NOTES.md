@@ -61,6 +61,7 @@ below.
   changed, and passes ordered by the game's own barriers (NVIDIA).
 - **Fewer stalls**: a thread's core is given back when a memory region is freed or an escape ends; a draw binds only the
   vertex streams that changed; flat per-draw caches in the replay; recording threads wait less on the copy lock (#38 to #42).
+- **Fewer textures held back at area loads** (#58): the upload budget is per thread.
 - **Faster program cache**: its records are packed (6.4 GB became 1.7 GB).
 
 ### Opt-in telemetry
