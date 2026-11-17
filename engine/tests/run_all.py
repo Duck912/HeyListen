@@ -27,6 +27,8 @@ OS = "windows" if WINDOWS else "linux"
 # skipped, or fails with --strict. Tests not listed run with no arguments and their own defaults.
 ARGS = {
     "tests/test_sampler_retirement.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_staging_burst.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_dead_targets_sweep.py": ["--cxx", "{cxx}"],
     "tests/test_mma_software.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "tests/test_native_float_atomic_add.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "tests/test_compute_local_memory.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
