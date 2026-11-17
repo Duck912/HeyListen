@@ -56,6 +56,7 @@
 #include "keep_rendered.h"
 #include "target_overlap.h"
 #include "target_pool.h"
+#include "dead_targets.h"
 #include "host_shaders/block_linear_unswizzle_2d_comp_spv.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
@@ -295,6 +296,9 @@ void pool_put(Dead& d) {
 /// (texture_frame, each present) the pool over its bound, or half of it while VRAM is short and all of it while critical, and what waits in it unused for 120
 /// presents: destroyed, at most 16 a present (64 while VRAM is short). Returns how many
 size_t pool_trim() {
+    // (longshot #1255) RX_VK_POOL_IDLE=<presents>, 8 (120 before): target_pool.h
+    static const uint64_t idle =
+        getenv("RX_VK_POOL_IDLE") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_POOL_IDLE"))) : target_pool::kIdlePresents;
     std::lock_guard lk(pool_mu);
     const uint64_t full_cap = pool_cap();
     const uint64_t cap = pool_pressure >= 2 ? 0 : pool_pressure == 1 ? full_cap / 2 : full_cap;
@@ -303,7 +307,7 @@ size_t pool_trim() {
     for (auto it = target_pool.begin(); it != target_pool.end() && n < most;) {
         auto& v = it->second;
         for (size_t i = 0; i < v.size() && n < most;) {   // (the oldest of a shape first: the front)
-            if (pool_bytes <= cap && frame_no - v[i].since <= 120) {
+            if (pool_bytes <= cap && !target_pool::idle_out(frame_no, v[i].since, idle)) {
                 ++i;
                 continue;
             }
@@ -4335,6 +4339,71 @@ static std::vector<uint64_t> drawn_others(const std::vector<const Texture*>& ts)
     return other;
 }
 
+// (longshot #1255) The dead transient targets' switches (texture_frame's eviction reads them too). RX_VK_DEAD_TARGETS=0: none let go
+// before the sweep of every 600 presents; RX_VK_DEAD_EVERY=<presents>: how often they are looked for; RX_VK_DEAD_MIN_UNUSED
+bool dead_targets_on() {
+    static const bool on = !getenv("RX_VK_DEAD_TARGETS") || atoi(getenv("RX_VK_DEAD_TARGETS")) != 0;
+    return on;
+}
+uint64_t dead_every_presents() {
+    static const uint64_t n = getenv("RX_VK_DEAD_EVERY") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_DEAD_EVERY"))) : 1;
+    return n;
+}
+uint64_t dead_min_unused_presents() {
+    static const uint64_t n = getenv("RX_VK_DEAD_MIN_UNUSED") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_DEAD_MIN_UNUSED"))) : 1;
+    return n;
+}
+uint64_t st_dead_swept, st_dead_swept_bytes;   // (let go by dead_targets_sweep so far)
+/// (longshot #1255) Between the eviction's passes (dead_targets.h): the render targets another target was drawn over from another
+/// start since their last use (target_overlap.h), unused for RX_VK_DEAD_MIN_UNUSED presents and done with by the GPU, let go as that
+/// pass lets them go: nothing written back (their storage is another target's now), their images to the target pool
+void dead_targets_sweep(uint64_t completed) {
+    const uint64_t need = dead_min_unused_presents();
+    std::vector<const Texture*> by_start;
+    uint64_t longest = 0;
+    for (auto& kv : textures) {
+        const Texture* t = kv.second.get();
+        if (!t->gpu_written || !t->first_render_frame || !t->guest_size) continue;
+        by_start.push_back(t), longest = std::max(longest, t->guest_size);
+    }
+    if (by_start.empty()) return;
+    std::sort(by_start.begin(), by_start.end(), [](const Texture* a, const Texture* b) { return a->gpu < b->gpu; });
+    std::unordered_set<Texture*> gone;
+    for (auto& kv : textures) {
+        Texture* tex = kv.second.get();
+        if (!tex->gpu_written || !tex->first_render_frame || !tex->guest_size ||
+            !dead_targets::candidate(frame_no, tex->last_frame, need, tex->last_value, completed,
+                                     tex->levels == 1 && tex->layers == 1 && tex->depth <= 1))
+            continue;
+        const uint64_t lo = tex->gpu, hi = tex->gpu + tex->guest_size;
+        auto it = std::lower_bound(by_start.begin(), by_start.end(), lo > longest ? lo - longest : 0,
+                                   [](const Texture* t, uint64_t g) { return t->gpu < g; });
+        for (; it != by_start.end() && (*it)->gpu < hi; ++it)
+            if (*it != tex && target_overlap::shifted_over(lo, hi, tex->last_frame, (*it)->gpu, (*it)->gpu + (*it)->guest_size,
+                                                           (*it)->last_written)) {
+                gone.insert(tex);
+                break;
+            }
+    }
+    if (gone.empty()) return;
+    for (Texture* tex : gone) {   // (each one's end as the eviction's)
+        st_dead_swept++, st_dead_swept_bytes += tex->bytes;
+        watch_tex(tex, "evicted");
+        if (remade_log_on()) {
+            std::lock_guard lk(evicted_mu);
+            if (evicted_at.size() > 20000) evicted_at.clear();   // (a bound: only the recent ones matter)
+            evicted_at[evicted_key(tex->gpu, tex->width, tex->height, tex->nvn_format)] = {frame_no, tex->gpu_written};
+            remade.erase(tex);
+        }
+        destroy_later(*tex);
+        forget_gpu(tex);
+    }
+    for (auto it = textures.begin(); it != textures.end() && !gone.empty();) {
+        if (gone.erase(it->second.get())) it = textures.erase(it);
+        else ++it;
+    }
+}
+
 void texture_frame(uint64_t completed) {
     ledger_frame();   // (RX_VK_LEDGER)
     upload_frame_report();
@@ -4482,7 +4551,12 @@ void texture_frame(uint64_t completed) {
     // may have (other programs use the GPU too). The least recently used go first, down to 7/8 of it; nothing the
     // last 8 presents used, nothing recorded work may still read.
     static uint64_t own = 0;
-    if (frame_no % 10) return;
+    if (!dead_targets::pass_due(frame_no)) {
+        // (longshot #1255) the dead transient targets on the presents between the passes (dead_targets.h)
+        static const bool evicting = !env_on("RX_VK_NO_EVICT");
+        if (dead_targets::sweep_due(frame_no, dead_every_presents(), evicting && dead_targets_on())) dead_targets_sweep(completed);
+        return;
+    }
     uint64_t used = 0, allowed = 0, block_free = 0;
     const bool known = vram_usage(&used, &allowed, &block_free);
     if (known && allowed && used > allowed / 20 * 17) spares_free(~0ull);   // (TICK-031: no spare images near the limit)
@@ -4761,7 +4835,7 @@ void texture_frame(uint64_t completed) {
         logf("vk: BC cache: textures %llu MB, over 3/4 of their budget (%llu MB): transcodes stored from now on",
              (unsigned long long)(total_bytes >> 20), (unsigned long long)(budget >> 20));
     }
-    static const bool dead_targets = !getenv("RX_VK_DEAD_TARGETS") || atoi(getenv("RX_VK_DEAD_TARGETS")) != 0;
+    static const bool dead_targets = dead_targets_on();
     // (TICK-027) a render target another image has since been drawn over (drawn_over, overlapped_later below) holds nothing: it
     // goes once unused for RX_VK_EVICT_OVERWRITTEN_UNUSED frames (8; 0: off), at every call (every 10 frames), under the budget
     // too. Castle Town while walking and turning: ~25 targets a frame made over the same storage at new sizes, the old ones
@@ -4775,8 +4849,7 @@ void texture_frame(uint64_t completed) {
     // dead ones as the game makes new ones. Every 10 presents a burst of ten frames' dead targets came back at once, went over the
     // pool's bound and were destroyed, and the next frames made new ones (target_pool.h). The choice is cheap: 1930 textures
     // ordered in 0.3 ms, 251 chosen in 0.2 (RTX 5070, Ryzen 7 9800X3D)
-    static const uint64_t dead_every =
-        getenv("RX_VK_DEAD_EVERY") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_DEAD_EVERY"))) : 1;
+    static const uint64_t dead_every = dead_every_presents();
     const bool full_pass = !(sweep && frame_no % (dead_targets ? dead_every : 600));
     if (no_evict || (!full_pass && !overwritten_unused)) return;
         std::vector<std::pair<uint64_t, Texture*>> order;
@@ -4833,8 +4906,7 @@ void texture_frame(uint64_t completed) {
     // before, Longshot 1db4c290, #994: with the GPU's own wait on top, a dead target came back to the pool four or five frames late,
     // and the game had made a new one of its shape every frame meanwhile; 80 % of the images made new had last frame's one of their
     // shape alive and unused)
-    static const uint64_t dead_min_unused =
-        getenv("RX_VK_DEAD_MIN_UNUSED") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_DEAD_MIN_UNUSED"))) : 1;
+    static const uint64_t dead_min_unused = dead_min_unused_presents();
     // (hookshot) a small texture the GPU drew in one frame that the game has finalized, with nothing drawn over its storage
     // since: the game may make a texture over that storage again and sample it without drawing it. OoT's terrain does that with its
     // tiles' 260 x 260 RG8 normal maps: drawn when a chunk comes in, finalized when it goes out of range, made again and sampled as
@@ -5119,8 +5191,9 @@ void texture_frame(uint64_t completed) {
     }
     if (n_dead && frame_no >= dead_logged_at + 600) {   // (the dead transient targets let go so far, every 600 presents)
         dead_logged_at = frame_no;
-        logf("vk: render targets drawn over from another start, let go: %llu so far (%llu MB)", (unsigned long long)n_dead,
-             (unsigned long long)(b_dead >> 20));
+        logf("vk: render targets drawn over from another start, let go: %llu so far (%llu MB), %llu of them (%llu MB) between the "
+             "passes", (unsigned long long)(n_dead + st_dead_swept), (unsigned long long)((b_dead + st_dead_swept_bytes) >> 20),
+             (unsigned long long)st_dead_swept, (unsigned long long)(st_dead_swept_bytes >> 20));
     }
     const size_t n = order.size() - textures.size();
     if (n) logf("vk: %zu textures retired (%zu left, %llu MB)", n, textures.size(), (unsigned long long)(total_bytes >> 20));
