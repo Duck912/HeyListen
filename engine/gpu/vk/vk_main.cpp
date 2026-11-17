@@ -29,6 +29,7 @@
 #include "vk_dlss.h"
 #include "vk_fsr4.h"
 #include "vk_reflex.h"
+#include "vk_gpu_clock.h"
 #include "vk_progress.h"
 #include "mesh_mode.h"
 #include "vk_tl_clock.h"   // (RX_VK_TL: the timeline's host time domain)
@@ -234,7 +235,13 @@ static bool env_off(const char* v) {
 }
 static bool native_fadd_wanted(const char* env, VkDriverId driver, uint32_t device, uint32_t version) {
     if (env) return !env_off(env);
-    return driver == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS && (device & 0xFF00u) == 0xE200u && version >= (101u << 14 | 9154u);
+    if (driver != VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS) return false;
+    // (longshot #191, #816) also Meteor Lake and Arrow Lake iGPUs (0x7Dxx, 101.9175 on: the loop lost the device in Kokiri Forest,
+    // Kakariko and on Death Mountain Trail) and Panther Lake's Xe3 iGPUs (0xB0xx, 101.9150 on: on an Arc B390 the loop lost adds of
+    // the exposure's light sums, a milky white haze from the sky on; the native add gave a B580's picture)
+    return ((device & 0xFF00u) == 0x7D00u && version >= (101u << 14 | 9175u)) ||   // (Meteor Lake, Arrow Lake)
+           ((device & 0xFF00u) == 0xE200u && version >= (101u << 14 | 9154u)) ||   // (Battlemage)
+           ((device & 0xFF00u) == 0xB000u && version >= (101u << 14 | 9150u));     // (Panther Lake)
 }
 
 bool create_device() {
@@ -606,6 +613,9 @@ bool create_device() {
     if (dev.buffer_marker) buffer_markers_init();
     coopmat_init();
     reflex_device_created();
+    // (longshot: on the Steam Deck the GPU held at amdgpu's peak power state while the game runs (RX_VK_GPU_CLOCK=0: not), gpu_clock.h;
+    // the device's render node from VK_EXT_physical_device_drm, which needs no enabling to be asked)
+    gpu_clock_device_created(has_extension(exts, VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME));
     if (dev.push_descriptor) {
         VkPhysicalDevicePushDescriptorPropertiesKHR pp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR};
         VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
