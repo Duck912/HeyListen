@@ -28,6 +28,7 @@
 #include "vk_fsr4.h"
 #include "vk_reflex.h"
 #include "vk_progress.h"
+#include "mesh_mode.h"
 #include "vk_tl_clock.h"   // (RX_VK_TL: the timeline's host time domain)
 
 namespace vkx {
@@ -246,7 +247,18 @@ bool create_device() {
     };
     // (RX_VK_FORCE_MESH_FALLBACK=1, a test: mesh shaders not used where they are, so the no-mesh fallback the GTX 10xx and RX 5000
     // cards run (issue 640) can be tried on any GPU)
-    if (getenv("RX_VK_FORCE_MESH_FALLBACK") && atoi(getenv("RX_VK_FORCE_MESH_FALLBACK")) != 0) dev.mesh_shader = false;
+    // (hookshot, issue 2245; the switch is Longshot's 8694e3c6) mesh_mode.h: RX_VK_MESH_SHADERS=native or compute chooses, unset is
+    // Automatic, and RX_VK_FORCE_MESH_FALLBACK=1 is Compute over it. Automatic is the compute path on Linux with an AMD GPU (RADV):
+    // its native task/mesh draws lose the GPU (an RX 6800, issue 51). native keeps them there. A GPU without mesh shaders runs the
+    // compute path whatever the choice
+#ifdef _WIN32
+    constexpr bool linux_os = false;
+#else
+    constexpr bool linux_os = true;
+#endif
+    const mesh_rule::Choice mesh_choice = mesh_rule::effective(
+        mesh_rule::choose(getenv("RX_VK_MESH_SHADERS"), getenv("RX_VK_FORCE_MESH_FALLBACK")), linux_os, dev.props.vendorID);
+    if (mesh_choice.mode == 2) dev.mesh_shader = false;
     else optional(VK_EXT_MESH_SHADER_EXTENSION_NAME, dev.mesh_shader);
     optional(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, dev.external_memory_host);
     optional(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, dev.external_memory_fd);   // (guest memory as udmabufs: vk_memory.cpp import_dma_buf)
@@ -535,6 +547,8 @@ bool create_device() {
     // that write their vertices to buffers, drawn through an ordinary graphics pipeline. It needs buffer device addresses.
     dev.mesh_fallback = !dev.mesh_shader && f12.bufferDeviceAddress && !getenv("RX_VK_NO_MESH_FALLBACK");
     if (dev.mesh_fallback) logf("vk: no mesh shaders: task and mesh programs run as compute shaders (issue 640 fallback)");
+    logf("vk: mesh shaders: %s, from %s: %s", mesh_choice.mode == 2 ? "Compute" : mesh_choice.mode == 1 ? "Native" : "Automatic",
+         mesh_choice.why, dev.mesh_shader ? "native" : dev.mesh_fallback ? "the compute path" : "none");
     if (robust) logf("vk: robust buffer access %s", robust_ok ? "on" : "not supported");
     f.features.robustBufferAccess = robust_ok ? VK_TRUE : VK_FALSE;   // (off by default: the game's accesses stay in their buffers)
     dev.features = f.features;
