@@ -79,8 +79,49 @@ def no_throttle(handle=None):
         pass
 
 
+# (--progress-lines, --prepare: RecompLauncher's headless setup step, recomplauncher.json "prepare". What the builder window reads as @@stage
+# and @@progress lines is said as `progress <0..1> <text>` lines, one per step of the bar, and the other @@ lines are not printed. Where
+# each stage lies on the bar: the build takes (on a PC with the compiler's objects cached, a stage is skipped and the bar jumps over it)
+# a few minutes to read the game, ~10 to translate it, and the compile is the rest)
+PROGRESS_LINES = False
+PROGRESS_SPANS = {"read": (0.00, 0.08), "lift": (0.08, 0.30), "compile": (0.30, 0.93), "finish": (0.93, 1.00)}
+_bar = {"stage": "read", "shown": -1.0, "text": ""}
+
+
+def progress_line(fraction, text):
+    """`progress <0..1> <text>`: never backwards, and not again for a change too small to see under the same text"""
+    fraction = min(1.0, max(_bar["shown"], 0.0, fraction))
+    if text == _bar["text"] and fraction - _bar["shown"] < 0.002 and fraction < 1.0:
+        return
+    _bar["shown"], _bar["text"] = fraction, text
+    print("progress %.3f %s" % (fraction, text), flush=True)
+
+
 def say(*words):
     print("@@" + " ".join(str(w) for w in words), flush=True)
+
+
+def progress_say(*words):
+    """say() for --progress-lines (prepare_setup puts it in say's place): the same events as lines a launcher reads"""
+    kind = words[0] if words else ""
+    if kind == "stage" and len(words) >= 3:
+        _bar["stage"] = words[1]
+        progress_line(PROGRESS_SPANS.get(words[1], (0.0, 0.0))[0], str(words[2]))
+    elif kind == "progress" and len(words) >= 2:
+        lo, hi = PROGRESS_SPANS.get(_bar["stage"], (0.0, 1.0))
+        try:
+            progress_line(lo + (hi - lo) * float(words[1]), _bar["text"] or "Building the game")
+        except ValueError:
+            pass
+    elif kind == "check":
+        print(" ".join(str(w) for w in words[2:]), flush=True)
+    elif kind == "error":
+        text = "error: " + " ".join(str(w) for w in words[1:])
+        print(text, flush=True)   # (the step's last line, where a launcher shows why it failed; and the log)
+        print(text, file=sys.stderr, flush=True)
+    elif kind == "done":
+        progress_line(1.0, "Your game is ready")
+    # (times: the window's own)
 
 
 def check_writable(out):
@@ -293,6 +334,8 @@ def run(cmd, env=None, on_line=None, check=True, output=None, show=None, cwd=ROO
         for line in output_lines(p, silence):
             line = line.rstrip()
             shown = show(line) if show else line
+            if PROGRESS_LINES and shown is not None and shown.startswith("@@"):
+                shown = None   # (a step's @@ lines are the window's: on_line has read them)
             if shown is not None:
                 print(shown, file=output, flush=True)
             lines.append(line)
@@ -1311,14 +1354,112 @@ def parse_args():
     p.add_argument("--fetch-fsr-runtime", action="store_true",
                    help="with --fsr (Windows): download AMD's FSR runtime (scripts/ffx_sdk.py) and put it in the game folder")
     p.add_argument("--accept-amd-license", action="store_true", help="AMD's FSR SDK license, accepted (with --fetch-fsr-runtime)")
+    # (RecompLauncher, recomplauncher.json "prepare": the build without a window. --prepare is what its setup step runs)
+    p.add_argument("--game", metavar="PATH", help="the game's files: a .nup file, or a folder with romfs and exefs in it (or a .nup)")
+    p.add_argument("--progress-lines", action="store_true",
+                   help="say the build's progress as `progress <0 to 1> <text>` lines, for a launcher's setup screen, not as the builder window's @@ lines")
+    p.add_argument("--prepare", action="store_true",
+                   help="the build without a window, for RecompLauncher: --progress-lines, the shaders left to the game's first start, "
+                        "the package's own tools found beside this script, the builder's own work folder and, unless --language, the PC's language")
     a = p.parse_args()
     a.default_work = p.get_default("work")   # (main: the builder's own work folder, stop_stray_compilers)
+    a.language_given = any(w == "--language" or w.startswith("--language=") for w in sys.argv[1:])
     return a
+
+
+def resolve_game(a):
+    """--game <path> as the builder's own arguments: --nup <file>, or --romfs and --exefs of a folder. A folder holding one .nup
+    file is that file. Says what is wrong with a path that is neither"""
+    if not getattr(a, "game", None):
+        return
+    if a.nup or a.romfs or a.exefs:
+        fail("--game replaces --nup, --romfs and --exefs: give one or the other.")
+    path = os.path.abspath(a.game)
+    if os.path.isfile(path):
+        a.nup = path
+        return
+    if not os.path.isdir(path):
+        fail("Your game files were not found at %s. Choose them again." % path)
+    romfs, exefs = os.path.join(path, "romfs"), os.path.join(path, "exefs")
+    if os.path.isdir(romfs) and os.path.isdir(exefs):
+        a.romfs, a.exefs = romfs, exefs
+        return
+    nups = sorted(f for f in os.listdir(path) if f.lower().endswith(".nup") and os.path.isfile(os.path.join(path, f)))
+    if len(nups) == 1:
+        a.nup = os.path.join(path, nups[0])
+        return
+    fail("%s is not a .nup file, and has no romfs and exefs folders%s." % (path, " (and more than one .nup)" if nups else ""))
+
+
+def system_language():
+    """The PC's language as a code of LANGUAGES, else en-US (the builder window's own default)"""
+    name = ""
+    try:
+        if os.name == "nt":
+            import ctypes
+            buf = ctypes.create_unicode_buffer(85)
+            if ctypes.WinDLL("kernel32").GetUserDefaultLocaleName(buf, 85):
+                name = buf.value
+        else:
+            import locale
+            name = (locale.getlocale()[0] or os.environ.get("LANG", "")).split(".")[0]
+    except (OSError, ValueError, AttributeError):
+        name = ""
+    tag = name.replace("_", "-")
+    codes = [c for c, _ in LANGUAGES]
+    if tag in codes:
+        return tag
+    lang, _, rest = tag.partition("-")
+    by_region = {"zh-TW": "zh-Hant", "zh-HK": "zh-Hant", "zh-MO": "zh-Hant", "zh-Hant": "zh-Hant", "zh-CN": "zh-Hans", "zh-SG": "zh-Hans",
+                 "zh-Hans": "zh-Hans", "en-GB": "en-GB", "en-AU": "en-GB", "en-IE": "en-GB", "en-NZ": "en-GB", "fr-CA": "fr-CA",
+                 "pt-BR": "pt-BR", "pt-PT": "pt-BR", "es-ES": "es-ES" if "es-ES" in codes else "es"}
+    if tag in by_region:
+        return by_region[tag]
+    if lang == "es":
+        return "es" if rest in ("ES", "") else "es-419"
+    return lang if lang in codes else "en-US"
+
+
+def prepare_setup(a):
+    """--prepare / --progress-lines: what a headless run needs, before anything is read"""
+    global PROGRESS_LINES, say
+    PROGRESS_LINES = bool(getattr(a, "progress_lines", False) or getattr(a, "prepare", False))
+    if PROGRESS_LINES:
+        say = progress_say
+    if not getattr(a, "prepare", False):
+        return
+    a.no_prepare_shaders = True   # (the game starts its own prepare at the first start: the step opens no window)
+    if not getattr(a, "language_given", False):
+        a.language = system_language()
+    # (the package's tools, where the builder window points them: Runner.cs. Only a folder that is there; a variable the PC set stays)
+    for name, folder in (("EMSDK", "emsdk"), ("RX_CPM", "cpm"), ("WGPU_NATIVE", "wgpu-native")):
+        path = os.path.join(ROOT, folder)
+        if os.path.isdir(path) and not os.environ.get(name):
+            os.environ[name] = path
+    base = os.environ.get("LOCALAPPDATA") if os.name == "nt" else None
+    if base:   # (the builder's own folders: Storage.cs; a build files folder the player chose in the builder (work.txt) stays theirs)
+        builder = os.path.join(base, "HeyListenBuilder")
+        if not any(w == "--work" or w.startswith("--work=") for w in sys.argv[1:]):
+            chosen = ""
+            try:
+                with open(os.path.join(builder, "work.txt"), encoding="utf-8") as f:
+                    chosen = f.read().strip()
+            except OSError:
+                pass
+            a.work = chosen if len(chosen) > 2 and os.path.isabs(chosen) else builder
+        if a.fetch_ngx_sdk and not os.environ.get("HOOKSHOT_NGX_SDK"):
+            os.environ["HOOKSHOT_NGX_SDK"] = os.path.join(builder, "ngx-sdk")
+    elif a.fetch_ngx_sdk and not os.environ.get("HOOKSHOT_NGX_SDK"):
+        os.environ["HOOKSHOT_NGX_SDK"] = os.path.join(os.path.dirname(a.work), "heylisten-builder", "ngx-sdk")
+    if not a.fetch_ngx_sdk:
+        os.environ.pop("HOOKSHOT_NGX_SDK", None)   # (a build is with DLSS only when asked: Runner.cs does the same)
 
 
 def main(a=None):
     if a is None:
         a = parse_args()
+    prepare_setup(a)
+    resolve_game(a)
     if a.jobs is not None and a.jobs < 0:
         fail("--jobs must be 1 or more, or 0 for automatic.")
     a.jobs = chosen_jobs(a.jobs)

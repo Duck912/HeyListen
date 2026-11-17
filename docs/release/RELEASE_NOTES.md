@@ -9,7 +9,7 @@ game. The release holds only the **HeyListen Builder**: no game code, data, keys
 
 - **Windows: HeyListenBuilder.exe**, the setup. Run it; it downloads the builder and its tools (checked by SHA-256) into
   `%LOCALAPPDATA%\HeyListenBuilder` and opens it. Already installed: the builder offers the update itself.
-- **Linux: `HeyListen-{TAG}-x86_64.AppImage`** (glibc 2.35 and newer; see the Linux section of the user guide).
+- **Linux: `HeyListen-{TAG}-Linux-x64.AppImage`** (glibc 2.35 and newer; see the Linux section of the user guide).
 - `heylisten-setup.txt`, `heylisten-linux.txt`: the lists of parts the setup and the AppImage's update read (you do not
   need to download them). `SHA256SUMS.txt`, `SHA256SUMS-linux.txt`: checksums.
 
