@@ -2852,7 +2852,11 @@ int64_t pass_barriers_relaxed() { return st_pass_relaxed.load(std::memory_order_
 bool game_order() {
     static const bool on = [] {
         const char* e = getenv("RX_VK_GAME_ORDER");
-        const bool v = e ? !env_value_off(e) : dev.props.vendorID == 0x10de;
+        // (0, off, false, no in any case: off; anything else on. main has no shared reader for it, vk_coopmat.cpp's is file-local)
+        std::string word = e ? e : "";
+        for (char& c : word) c = (char)std::tolower((unsigned char)c);
+        const bool off = e && (word.empty() || word == "0" || word == "off" || word == "false" || word == "no");
+        const bool v = e ? !off : dev.props.vendorID == 0x10de;
         logf("vk: passes and dispatches right after others ordered by the game's barriers: %s (RX_VK_GAME_ORDER%s)",
              v ? "on" : "off", e ? " set" : v ? "=0: off" : "=1: on");
         return v;
