@@ -12,8 +12,8 @@ static int failures = 0;
 
 int main() {
     // the switch's text
-    CHECK(NoInlineAbove(nullptr) == 0);
-    CHECK(NoInlineAbove("") == 0);
+    CHECK(NoInlineAbove(nullptr) == 30000u);   // (unset: on by default)
+    CHECK(NoInlineAbove("") == 30000u);
     CHECK(NoInlineAbove("0") == 0);
     CHECK(NoInlineAbove("-5") == 0);
     CHECK(NoInlineAbove("abc") == 0);

@@ -258,3 +258,5 @@ arm re-prepares the whole 31,985-program set (about 5 runs of 110 s before "prep
 * Recommendation: **RX_VK_MESH_NOINLINE_ABOVE=30000 on by default** (-1.1 ms GPU, Kokiri +1.5 to +5 fps in the frame-limited runs, Hyrule unchanged);
   the fold is correct and cuts SPIR-V and translation size (-1.4% of the cache, -22% of mesh code, driver compile time) at no GPU cost:
   take it on for the size, with the same stamp move, once someone wants the smaller cache; it is not a speed item.
+
+**Decision (2026-11-17, owner):** both on by default from v0.4.1: `RX_VK_MESH_NOINLINE_ABOVE` = 30000 (`=0`: off), `RX_VK_FOLD_PSEUDO` on (`=0`: off). The shader stamp moves once with the release's other translator changes.

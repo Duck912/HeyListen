@@ -1218,7 +1218,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
     // from the instruction cache's edge (1.1 ms of 1.5 ms came back with the helpers not inlined). Here a range (its aligned base, its
     // length in bytes) is made once, in the first block, and an access is a subtraction and a comparison.
     static const bool g3_hoist{getenv("RX_VK_MESH_G3") == nullptr || atoi(getenv("RX_VK_MESH_G3")) != 0};
-    // (RX_VK_MESH_NOINLINE_ABOVE=n, off by default: a mesh stage of more than n IR instructions keeps its helpers out of line and
+    // (RX_VK_MESH_NOINLINE_ABOVE=n, 30000 by default, =0: off: a mesh stage of more than n IR instructions keeps its helpers out of line and
     // its ranges unhoisted, global_helper_policy.h)
     static const u32 noinline_above{NoInlineAbove(getenv("RX_VK_MESH_NOINLINE_ABOVE"))};
     const bool big_mesh{LeaveHelpersOutOfLine(stage == Stage::Mesh, ir_instruction_count, noinline_above)};

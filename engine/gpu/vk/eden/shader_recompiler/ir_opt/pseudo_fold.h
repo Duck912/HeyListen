@@ -5,7 +5,7 @@
 // operations of the program cache stayed (8.7 k of the 44.9 k instructions of the biggest mesh program), with the IEqual / Select /
 // LogicalNot chains that hang on them. The fold here gives the flag pseudo-operations (zero, sign) their value, as the SPIR-V back end
 // would have made it from the folded result (emit_spirv_integer.cpp: zero = result == 0, sign = result < 0 as signed), and then the
-// instruction folds as any other. RX_VK_FOLD_PSEUDO=1 (default off); a name the program cache's stamp covers (vk_shader.cpp).
+// instruction folds as any other. RX_VK_FOLD_PSEUDO (on by default, =0: off); a name the program cache's stamp covers (vk_shader.cpp).
 #pragma once
 
 #include <cstdint>
@@ -14,9 +14,9 @@
 namespace Shader::Optimization {
 
 /// The switch's text: on for a number other than 0; unset, empty or anything else: off
-inline bool FoldPseudoEnabled(const char* text) {
+inline bool FoldPseudoEnabled(const char* text) {   // (on by default; RX_VK_FOLD_PSEUDO=0: off)
     if (!text || !*text) {
-        return false;
+        return true;
     }
     char* end{};
     const long value{std::strtol(text, &end, 10)};

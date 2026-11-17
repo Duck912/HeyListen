@@ -48,8 +48,8 @@ bool IsImmU32(const IR::Value& v, u32 expect) {
 int main(int argc, char** argv) {
     const bool on{argc > 1 && !std::strcmp(argv[1], "on")};
     CHECK(Optimization::FoldPseudoEnabled(on ? "1" : "0") == on);
-    CHECK(!Optimization::FoldPseudoEnabled(nullptr));
-    CHECK(!Optimization::FoldPseudoEnabled(""));
+    CHECK(Optimization::FoldPseudoEnabled(nullptr));   // (unset: on by default)
+    CHECK(Optimization::FoldPseudoEnabled(""));
     CHECK(!Optimization::FoldPseudoEnabled("abc"));
     CHECK(Optimization::ZeroFlagOf(0) && !Optimization::ZeroFlagOf(1));
     CHECK(Optimization::SignFlagOf(0x80000000u) && !Optimization::SignFlagOf(0x7FFFFFFFu));

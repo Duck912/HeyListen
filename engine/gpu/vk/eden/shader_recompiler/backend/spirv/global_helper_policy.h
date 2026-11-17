@@ -15,10 +15,12 @@
 
 namespace Shader::Backend::SPIRV {
 
-/// The limit a switch's text names: a decimal number of IR instructions; empty, unset, zero, negative or not a number: 0 (off)
+/// The limit a switch's text names: a decimal number of IR instructions. Unset or empty: the default, 30000 (stream P5: on by
+/// default, -1.1 ms of GPU in Kokiri Forest on an RTX 3050); zero, negative or not a number: 0 (off)
+inline constexpr std::uint32_t kNoInlineAboveDefault = 30000;
 inline std::uint32_t NoInlineAbove(const char* text) {
     if (!text || !*text) {
-        return 0;
+        return kNoInlineAboveDefault;
     }
     char* end{};
     const long long value{std::strtoll(text, &end, 10)};
