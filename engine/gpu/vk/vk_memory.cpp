@@ -4114,11 +4114,15 @@ bool import_in_background(uint64_t guest, uint64_t size) {
     return true;
 }
 } // namespace
+uint64_t test_vram_bytes(uint64_t heap) {
+    static const uint64_t cap = getenv("RX_VK_TEST_VRAM_MB") ? (uint64_t)std::max(0, atoi(getenv("RX_VK_TEST_VRAM_MB"))) << 20 : 0;
+    return cap && heap > cap ? cap : heap;
+}
 uint64_t device_vram_bytes() {
     uint64_t vram = 0;
     for (uint32_t h = 0; h < dev.memory.memoryHeapCount; h++)
         if (dev.memory.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) vram = std::max(vram, (uint64_t)dev.memory.memoryHeaps[h].size);
-    return vram;
+    return test_vram_bytes(vram);
 }
 bool preset_caps_memory() {
     static const uint64_t nominal_gb[] = {0, 4, 6, 8, 12, 16};
@@ -4131,9 +4135,7 @@ uint64_t mirror_budget() {
     // (a quarter of the card, at most the 3 GB it was for all: on a 6 GB laptop those and the textures were past what the card has)
     static const uint64_t b = [] {
         if (const char* e = getenv("RX_VK_MIRROR_MB")) return (uint64_t)atoi(e) << 20;
-        uint64_t vram = 0;
-        for (uint32_t h = 0; h < dev.memory.memoryHeapCount; h++)
-            if (dev.memory.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) vram = std::max(vram, (uint64_t)dev.memory.memoryHeaps[h].size);
+        const uint64_t vram = device_vram_bytes();
         // (cards of 6 GB or less only: on 8 GB ones, a 3070 or a 4060, the game's memory read over PCIe instead left the GPU at a few
         // percent and the frame stuttering)
         if (vram && vram <= (6ull << 30) + (512ull << 20)) return vram / 8;
@@ -7234,6 +7236,9 @@ void memory_end_submission(VkCommandBuffer cmd) {
                 const struct { uint64_t table; uint32_t count, pad; } pc{t->address, (uint32_t)chunks.size(), 0};
                 vkCmdPushConstants(cmd, wbd_pipe.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
                 const uint32_t n = (uint32_t)chunks.size();
+                // (its own marker: without one a fault in it read as the last pool's copy, "write-back of pool", in the
+                // device-lost logs of an RTX 5060 and a GTX 1660 Ti, issues 899 and 1008)
+                checkpoint_mark(cmd, n, 'w');
                 vkCmdDispatch(cmd, std::min<uint32_t>(n, 65535u), (n + 65534u) / 65535u, 1);
             }
         }

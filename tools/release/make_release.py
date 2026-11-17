@@ -154,7 +154,7 @@ def main():
     llvm = out_of(py + [parts_py, "llvm-mingw", os.path.join(cache, "llvm")], env=env).splitlines()[-1]
     setup_dir = os.path.join(ENGINE, "builder", "setup")
     rc_o = os.path.join(work, "setup_rc.o")
-    setup = os.path.join(work, "HookshotBuilder-Setup.exe")
+    setup = os.path.join(work, "HeyListenBuilder-Setup.exe")
     run([os.path.join(llvm, "bin", "x86_64-w64-mingw32-windres.exe"), "setup.rc", "-O", "coff", "-o", rc_o], cwd=setup_dir)
     run([os.path.join(llvm, "bin", "x86_64-w64-mingw32-clang.exe"), "-O2", "-mwindows", "-municode", "setup.c", rc_o,
          "-lwinhttp", "-lbcrypt", "-lcomctl32", "-lshell32", "-lole32", "-o", setup], cwd=setup_dir)
