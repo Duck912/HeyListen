@@ -52,4 +52,52 @@ inline Choice effective(Choice c, bool linux_os, uint32_t vendor_id) {
     return c;
 }
 
+/// (hookshot, https://github.com/NotRexed/Hookshot/issues/996; Hookshot d1d6caa7, 1396428d, f95d80f5, Longshot ce4deca9) The GPUs
+/// whose task + mesh draws take the compute fallback by default, while their mesh-only draws stay native (a distinct mode from
+/// Compute, which runs every program as compute); asked only on Windows, where AMD's driver timed out on the native task + mesh
+/// path of RDNA 2: Navi 22 first (an RX 6700 XT, whose Market dog drew as a flat pale silhouette: HeyListen issue 57), then
+/// Navi 21: on an RX 6800 XT (driver 0x800161) the native path lost the device within minutes at Hyrule Castle's entrance, while
+/// the fallback played 25 minutes there with none. Navi 23: an RX 6600 (driver 0x800161) lost the device on the session's first
+/// task + mesh draws (reported in Mako by sharkiix, no log published); another RX 6600 on the same driver played 15-20 minutes
+/// on the native path and lost it only at the driver's VRAM limit, and the fallback costs VRAM of its own (fallback_buffers_of,
+/// vk_draw.cpp). Navi 24 (0x743f: RX 6400, 6500 XT; 0x7421 to 0x7424: RX 6300, Pro W6300 to W6500M) is not on by default: no
+/// report, 4 GB cards. RX_VK_TASK_MESH_FALLBACK=1 to try.
+/// Which IDs a chip brings: all its IDs that the PCI ID database (pci-ids.ucw.cz) or libdrm's amdgpu.ids name a card for,
+/// consumer, mobile and Pro alike, as they share the chip and the driver's mesh path; not its USB or audio functions, nor
+/// IDs neither list names a card for (Navi 22's 0x73c3, its SR-IOV function 0x73ce). Untested ones go in with their chip
+inline bool task_mesh_fallback_default(uint32_t vendor, uint32_t device) {
+    if (vendor != kVendorAmd) return false;
+    switch (device) {
+    case 0x73a1:   // Navi 21: Radeon Pro V620
+    case 0x73a2:   // Navi 21: Radeon Pro W6900X
+    case 0x73a3:   // Navi 21: Radeon Pro W6800
+    case 0x73ab:   // Navi 21: Radeon Pro W6800X, W6800X Duo
+    case 0x73ae:   // Navi 21: Radeon Pro V620 MxGPU
+    case 0x73bf:   // Navi 21: RX 6800, 6800 XT, 6900 XT
+    case 0x73af:   // Navi 21: RX 6900 XT (XTXH boards)
+    case 0x73a5:   // Navi 21: RX 6950 XT
+    case 0x73df:   // Navi 22: RX 6700, 6700 XT, 6750 XT, 6750 GRE 12GB, 6700M, 6800M, 6850M XT
+    case 0x73e0:   // Navi 23: RX 6600M
+    case 0x73e1:   // Navi 23: Radeon Pro W6600M
+    case 0x73e3:   // Navi 23: Radeon Pro W6600
+    case 0x73ef:   // Navi 23: RX 6650 XT, 6650M, 6650M XT, 6700S, 6800S
+    case 0x73ff:   // Navi 23: RX 6600, 6600 XT, 6600 LE, 6600M, 6600S
+        return true;
+    default:
+        return false;
+    }
+}
+
+/// Whether the draws that have a task stage run as compute on a GPU that has mesh shaders: the default for the device on Windows
+/// (task_mesh_fallback_default), off when the choice is Native (RX_VK_MESH_SHADERS=native: the card's own mesh shaders for every
+/// draw), and RX_VK_TASK_MESH_FALLBACK, when set, decides over both (0 native, anything else but 0 the fallback). The caller adds
+/// that the GPU has mesh shaders and buffer device addresses. With Compute chosen the GPU has no mesh shaders here: the whole
+/// compute path, which covers these draws, runs instead
+inline bool task_mesh_fallback_wanted(bool windows, uint32_t vendor, uint32_t device, int choice_mode, const char* env) {
+    bool on = windows && task_mesh_fallback_default(vendor, device);
+    if (choice_mode == 1) on = false;
+    if (env) on = std::atoi(env) != 0;
+    return on;
+}
+
 }  // namespace mesh_rule

@@ -1724,7 +1724,7 @@ uint64_t ledger_context() {
         for (size_t i = 0; i < n; i++) h = (h ^ ((const uint8_t*)d)[i]) * 1099511628211ull;
     };
     const uint64_t fixed[] = {kStateStamp, kPipeKeyVersion, dev.props.vendorID, dev.props.deviceID, dev.props.driverVersion,
-                              dev.props.apiVersion, (uint64_t)dev.mesh_shader | (uint64_t)dev.mesh_fallback << 1 |
+                              dev.props.apiVersion, (uint64_t)dev.mesh_shader | (uint64_t)dev.mesh_fallback << 1 | (uint64_t)dev.task_mesh_fallback << 7 |
                               (uint64_t)dev.eds3_blend << 2 | (uint64_t)dev.eds3_polygon << 3 | (uint64_t)dev.eds3_clamp << 4 |
                               (uint64_t)dev.eds3_a2c << 5 | (uint64_t)dev.push_descriptor << 6};
     add(fixed, sizeof fixed);
@@ -2122,6 +2122,16 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
         IntelDriverGate gate(cold != nullptr);
         if (gate.busy) return intel_gate_busy(), *cold = true, VK_NULL_HANDLE;
         r = guarded_graphics_held(part >= 0 || driver_cache_only ? VK_NULL_HANDLE : pcache, &ci, &pl);
+        // (d1d6caa7) the AMD Windows compiler can reject an ordinary graphics pipeline with its optimizer on, on the cards that run
+        // task + mesh draws as compute (issue 996): once more without it
+        if (dev.props.vendorID == 0x1002 && dev.task_mesh_fallback && !p.mesh && part < 0 && r == VK_ERROR_UNKNOWN &&
+            !(ci.flags & VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT)) {
+            ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+            pl = VK_NULL_HANDLE;
+            r = guarded_graphics_held(pcache, &ci, &pl);
+            if (r == VK_SUCCESS)
+                logf("vk: graphics pipeline for %016llx recovered with optimization disabled", (unsigned long long)p.key);
+        }
     }
     if (cold && r == VK_PIPELINE_COMPILE_REQUIRED) return *cold = true, VK_NULL_HANDLE;
     if (part >= 0) {
@@ -6567,6 +6577,8 @@ bool fallback_compute_pipelines(Program& p) {
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage = si;
         ci.layout = p.layout;
+        if (dev.task_mesh_fallback || getenv("RX_VK_NOOPT"))   // (d1d6caa7: AMD's Windows compiler, issue 996)
+            ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
         if (const VkResult r = gated_compute(pcache, &ci, &made[i]); r != VK_SUCCESS) {
             {
                 std::lock_guard lk(mu);

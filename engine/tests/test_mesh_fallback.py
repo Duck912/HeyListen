@@ -190,7 +190,7 @@ def main():
         raise SystemExit("a fallback draw does not use the mesh program's topology")
     if "if (p.fallback) topo = p.fallback_topology;" not in draw:
         raise SystemExit("the fallback's points, lines or triangles are not used")
-    if "p->mesh != dev.mesh_shader || p->fallback != dev.mesh_fallback" not in mesh_shader:
+    if "p->fallback != fallback || p->mesh == fallback" not in mesh_shader:
         raise SystemExit("a cached program from a GPU with the other mesh path is used")
     # (the fallback's compute pipelines are compiled on a worker, not in the draw: AMD took up to 12 s on one and the game froze
     # behind it. And before play, in the precompile, with every program translated for the fallback: white foliage until then)
