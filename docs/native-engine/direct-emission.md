@@ -950,3 +950,25 @@ Question: does the back end replay late, answer the game's waits early, and is t
 - **D. `RX_VK_SYNC_HONEST=1`** (default off, 20 lines, `vk_replay.cpp` `value_end`): a fence waits for the recording the last
   piece went into. Early answers 99% -> 0.1%; the main thread blocks in sync waits 3.2 ms a frame (0.98 waits a frame, median 2.9 ms),
   none before; 71 fps against 70 (one run each, noise); the capture's count does not move (73 pages a frame against 87).
+
+## 13. The user-uniform slot memo (`HL_UBO_MEMO=1`, off by default; stream HLE1)
+
+**What it takes out.** On the PC 3050 (kokiri-idle, fine profile, 3,005 draws a frame) the replay's user-uniform lookups are 2.00 ms a
+frame summed over threads: 4.76 calls a draw (a build resolves every uniform slot of the program, 5.5 a build, although one or two
+changed since the draw before), ~0.14 us a call; 0.02 a draw is an overlay copy and none a stream copy, so nearly every call ends as a
+pool-range memo hit of `gpu_buffer_bind` after the ledger marks, the capture checks, the stream's reservation and the update list's
+guard, gap and copy caches.
+
+**The memo.** `engine/gpu/vk/ubo_memo.h`: per thread, per (stage, slot), the last answer (buffer, offset) with the key it was made under:
+the range and the size the program reads, `gpu_bind_stamp()` (what `gpu_buffer_bind`'s own memo is keyed by), the update list's epoch and
+this thread's place in it (`ub_view`: every append and prune moves the epoch, a segment's worker moves its limit), and the replay
+segment. An entry is made only from an answer that was the pool's buffer itself (not an inline block, an overlay copy or a stream copy),
+below 1 TB (no virtual pool), and not when the list's epoch moved during the lookup. Left off: `RX_VK_LEDGER`, `RX_VK_CAP_ONLY_GPU`,
+`RX_VK_UB_SNAPSHOT`, `RX_VK_UB_CUR_ONLY`.
+
+**Check.** `HL_UBO_MEMO_CHECK=1` (implies the switch): every hit also runs the full lookup and compares buffer, offset and range; the
+mismatches are counted, the first twelve logged, a line every 10 s (`hl ubo memo check: N memo hits compared, M mismatches`).
+`engine/tests/test_ubo_slot_memo.py`: the header against a made-up world (6 million steps, the stamp, list and segment moving, the list
+moving during a lookup): 1.79 M hits, 0 mismatches; and the wiring of `uniform_range`.
+
+RESULTS_PLACEHOLDER
