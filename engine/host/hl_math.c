@@ -9,8 +9,8 @@
      sphere  0x800a8400  a model's bounding sphere over its bones' spheres, called directly: HL_GATE
      u3      0x817d9d80  the per-body box update of the solver's last substep (u1, u2 and the segment's box inside),
                          called directly: HL_GATE; it writes through pointers it computes (run_body)
-     support 0x817472e0  the support point of a 1 to n vertex set along a direction (narrow phase), reached through a
-                         pointer: HL_ANSWER; its answer is 16 bytes
+     support 0x817472e0  the support point of a 1 to n vertex set along a direction (narrow phase), called directly (a thunk
+                         tail-calls it): HL_GATE; its answer is 16 bytes
      relxf   0x817036a0  the placement of one precise transform relative to another (narrow phase), called directly:
                          HL_GATE; its answer is 80 bytes
      sil     0x8182dc20  subIntegrateLastStep (u3's caller), called directly: HL_GATE; a check of its motions' steps and
@@ -147,7 +147,7 @@ static int relxf_inputs(const Ctx *c, Span *s) {
     return 2;
 }
 
-extern volatile int hl_gate_on_80ba6d80, hl_gate_on_81746440, hl_gate_on_800a8400, hl_gate_on_817d9d80, hl_gate_on_8182dc20, hl_gate_on_817036a0;
+extern volatile int hl_gate_on_80ba6d80, hl_gate_on_81746440, hl_gate_on_800a8400, hl_gate_on_817d9d80, hl_gate_on_8182dc20, hl_gate_on_817036a0, hl_gate_on_817472e0;
 enum { U2, AFFINE, U1, SPHERE, U3, SIL, SUPPORT, RELXF, UNITS };
 /* validated: HL_MATH_CHECK=1 over full runs of kokiri-idle, castle-move and hyrule-walk (PC 3050, 2026-11-13) compared
    0.95 M (u2), 27 M (affine), 2.0 M (u1), 1.9 M (sphere) calls with no mismatch (physics-loops.md section 8); u3 over
@@ -167,7 +167,7 @@ static Unit units[UNITS] = {
     [SIL] = {.name = "sil", .guest = 0x8182dc20ULL, .gate = &hl_gate_on_8182dc20},
     /* (the narrow-phase leaves of physics-loops.md section 12: written without the game running, off until the check is clean) */
     [SUPPORT] = {.name = "support", .guest = 0x817472e0ULL, .out_len = 16, .native = support_native, .out_at = support_out,
-                 .inputs = support_inputs},
+                 .inputs = support_inputs, .gate = &hl_gate_on_817472e0},
     [RELXF] = {.name = "relxf", .guest = 0x817036a0ULL, .out_len = 80, .native = relxf_native, .out_at = relxf_out,
                .inputs = relxf_inputs, .gate = &hl_gate_on_817036a0},
 };
@@ -690,11 +690,5 @@ HL_GATE(817d9d80, "fff55648d2f990a0") { return run_body(&units[U3], c); }
 HL_GATE(8182dc20, "34e889a38dac6751") { return run_sil(&units[SIL], c); }
 HL_GATE(817036a0, "b55701fae919e72f") { return run(&units[RELXF], c); }
 
-static int support_on(void) {
-    start();
-    return units[SUPPORT].native_on || units[SUPPORT].check_on;
-}
-static void support_answer(Ctx *A64_NOESC c) {
-    if (!run(&units[SUPPORT], c)) units[SUPPORT].translated(c);
-}
-HL_ANSWER(0x817472e0ULL, support_answer, support_on, "the support point of a small vertex set")
+/* (reached through a thunk that tail-calls it directly, f_81743538, and not through the answer table: a gate) */
+HL_GATE(817472e0, "94e7125010797ae2") { return run(&units[SUPPORT], c); }
