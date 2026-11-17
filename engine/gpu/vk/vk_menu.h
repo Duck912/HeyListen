@@ -71,6 +71,10 @@ extern Options opts;
 bool preset_caps_memory();
 /// The card's video memory: its largest device-local heap (vk_memory.cpp), 0 when not known
 uint64_t device_vram_bytes();
+/// (a test: RX_VK_TEST_VRAM_MB=<n> takes the card's VRAM as at most n MB wherever the renderer sizes something by it: the
+/// mirrors' budget, the DLSS model row's small-card preset. With RX_VK_TEST_ALLOWED_MB a large card plays a small one's whole
+/// policy. Unset: the card's own)
+uint64_t test_vram_bytes(uint64_t heap);
 
 void menu_init();             // (the options from the file, once)
 void menu_set_gpu_count(int count);
