@@ -430,6 +430,7 @@ public:
     // the payload, map and record buffers, pushed as device addresses; a generated vertex stage reads the records.
     bool mesh_fallback{};
     bool wants_mesh_fallback{};
+    u32 ir_instruction_count{};   ///< (hookshot, global_helper_policy.h) the program's IR instructions, counted before the emission
     Id mesh_fallback_word_ptr{};   ///< PhysicalStorageBuffer pointer to a block of one u32
     u32 mesh_fallback_payload_member_index{};
     u32 mesh_fallback_records_member_index{};
