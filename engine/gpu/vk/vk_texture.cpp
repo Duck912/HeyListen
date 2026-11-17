@@ -251,6 +251,28 @@ std::mutex pool_mu;
 std::unordered_map<uint64_t, std::vector<Pooled>> target_pool;   // by pool_key_of
 uint64_t pool_bytes, pool_n, st_pool_reused, st_pool_made, st_pool_destroyed;
 uint8_t pool_pressure = 0;   // (VRAM near what the driver allows: texture_frame's budget) 0 normal, 1 short (>90%: half the pool), 2 critical (>97%: all given back)
+// (Hookshot 2972 by NotRexed, Longshot 91a1ae8b; issue 55 and 62) the commit the textures leave free for the rest of the system:
+// texture_frame's commit rule. RX_VK_COMMIT_RESERVE_MB (default 2560, 0: off). Windows only: Linux overcommits, and its limit is
+// not one commit can reach
+static uint64_t commit_reserve() {
+    static const uint64_t v = getenv("RX_VK_COMMIT_RESERVE_MB") ? (uint64_t)std::max(0, atoi(getenv("RX_VK_COMMIT_RESERVE_MB"))) << 20
+                                                                : 2560ull << 20;
+    return v;
+}
+// (what Windows lets the process commit before its limit, RAM plus the page file: GlobalMemoryStatusEx's ullAvailPageFile, the
+// limit less the whole system's commit. false where it cannot be read)
+static bool commit_headroom(uint64_t* free_bytes) {
+#if defined(_WIN32)
+    MEMORYSTATUSEX m{};
+    m.dwLength = sizeof m;
+    if (!GlobalMemoryStatusEx(&m)) return false;
+    *free_bytes = m.ullAvailPageFile;
+    return true;
+#else
+    (void)free_bytes;
+    return false;
+#endif
+}
 uint64_t pool_cap() {
     // (Longshot 1db4c290, #994) RX_VK_TARGET_POOL_MB=<MB>, else a twelfth of what the driver allows, 256 to 768 MB (target_pool.h)
     static const uint64_t mb = [] {
@@ -4989,6 +5011,29 @@ void texture_frame(uint64_t completed) {
                  (unsigned long long)(over >> 20));
     }
     refusals_seen = refusals;
+    // (Longshot 91a1ae8b) and Windows' commit limit (RAM plus the page file): every VRAM block is charged to the process's commit, as
+    // the guest's memory is. A run on an RTX 4060 Ti held private commit at the VRAM blocks plus ~21 GB the whole way (19.3 GB at the
+    // start, 35.4 GB in Hyrule Field with 13.3 GB of blocks); a 16 GB PC with a fixed 32 GB page file reached its 47.9 GB limit
+    // at 33.9 GB of its own, a guest commit failed while an area loaded, and the game's next write there crashed it. HeyListen
+    // issues 55 and 62: the renderer's own C++ allocation was the one refused (0x20474343) on a 32 GB PC. Below the reserve the
+    // shortfall comes off the textures' budget, as the driver's limit's excess does above; the eviction and the compaction then
+    // give blocks back. RX_VK_COMMIT_RESERVE_MB=<MB> (default 2560; 0: off)
+    {
+        uint64_t commit_free = 0;
+        const uint64_t reserve = commit_reserve();
+        if (reserve && commit_headroom(&commit_free) && commit_free < reserve) {
+            const uint64_t over = reserve - commit_free;
+            budget = std::min(budget, total_bytes > over ? total_bytes - over : 0);
+            static uint64_t said_at;
+            if (!said_at || frame_no - said_at >= 600) {
+                said_at = frame_no;
+                logf("vk: commit limit near: %llu MB of commit left (reserve %llu MB); the textures' budget down to %llu MB of "
+                     "their %llu MB (RX_VK_COMMIT_RESERVE_MB)", (unsigned long long)(commit_free >> 20),
+                     (unsigned long long)(reserve >> 20), (unsigned long long)(budget >> 20),
+                     (unsigned long long)(total_bytes >> 20));
+            }
+        }
+    }
     // (TICK-023) from what the driver allows (VK_EXT_memory_budget), less a margin: the whole process held to
     // RX_VK_VRAM_TARGET_PCT of it (80), the textures getting what the rest (mirrors, pools, pipelines, streams, swapchain and the
     // free space VMA's blocks hold) leaves. A 12 GB card ran at 9.8 of 10.9 GB allowed with the textures at 5.6 GB under the
