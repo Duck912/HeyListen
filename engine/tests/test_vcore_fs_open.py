@@ -43,6 +43,9 @@ HARNESS = r"""
 #include <strings.h>
 #define _stricmp strcasecmp
 #endif
+#ifndef MAX_PATH
+#define MAX_PATH 260
+#endif
 typedef void *HANDLE;
 typedef unsigned long DWORD;
 #define INVALID_HANDLE_VALUE ((HANDLE)(intptr_t)-1)

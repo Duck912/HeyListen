@@ -37,6 +37,17 @@ def block(source, marker):
     return source[start:end] + (";" if source[end:end + 1] == ";" else "")
 
 
+def strip_thread_log(text):
+    """(HeyListen: HOS_VCORE_LOG's per-thread report and the holder's stack sample walk Windows threads and use the profiling
+    switch: the fixture has none of them, so these three are stubs)"""
+    for marker, stub in (("static void vc_thread_log(double secs) {", "static void vc_thread_log(double secs) { (void)secs; }"),
+                         ("static void vc_thread_note(HosThread *t, int64_t waited) {", "static void vc_thread_note(HosThread *t, int64_t waited) { (void)t; (void)waited; }"),
+                         ("static void vc_where(HosThread *h, char *out, size_t cap) {", "static void vc_where(HosThread *h, char *out, size_t cap) { (void)h; if (cap) out[0] = 0; }")):
+        if marker in text:
+            text = text.replace(block(text, marker), stub, 1)
+    return text
+
+
 HARNESS = r"""
 #define _CRT_SECURE_NO_WARNINGS   /* (the vcore block reads its switches with getenv: the MSVC CRT warns of it) */
 #include <stdarg.h>
@@ -54,6 +65,11 @@ typedef struct { void *p; } CONDITION_VARIABLE, *PCONDITION_VARIABLE;
 typedef struct { uint64_t x[32]; volatile int poll; } Ctx;
 static int64_t now_ns = 1000000000;
 static int64_t hos_now_ns(void) { return now_ns; }
+static int hos_jt_on;   /* (HOS_JOBTRACE off: host/hos.h's marks do nothing) */
+enum { JT_VC_WAIT_B = 13, JT_VC_WAIT_E };
+#define HOS_JT(t, a, b) ((void)(t), (void)(a), (void)(b))
+static uint64_t hos_jt_lr(void) { return 0; }
+static void Sleep(unsigned ms) { (void)ms; }   /* (a background throttle's sleep: off here) */
 static int escapes_logged;
 static void hos_log(const char *fmt, ...) { if (strstr(fmt, "ran without a core")) escapes_logged++; }
 static int hos_cores(void) { return 2; }
@@ -233,7 +249,7 @@ def main():
     end = src.index("\n#else", src.index("int hos_cv_sleep(void *cv, void *lk, unsigned ms) {", start))
     fixture = (HARNESS.replace("@STRUCT@", block(src, "struct HosThread {") + "\ntypedef struct HosThread HosThread;")
                .replace("@CORE@", block(src, "int hos_thread_core(HosThread *t) {"))
-               .replace("@VCORES@", src[start:end]))
+               .replace("@VCORES@", strip_thread_log(src[start:end])))
     compiler = shutil.which(args.cxx)
     if not compiler:
         raise SystemExit("C++ compiler not found: " + args.cxx)
