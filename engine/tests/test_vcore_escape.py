@@ -50,6 +50,18 @@ def strip_thread_log(text):
 
 HARNESS = r"""
 #define _CRT_SECURE_NO_WARNINGS   /* (the vcore block reads its switches with getenv: the MSVC CRT warns of it) */
+#ifndef _WIN32
+#define _GNU_SOURCE   /* (Linux: the vcore block's holder report uses dl_iterate_phdr and pthread_once) */
+#include <link.h>
+#include <pthread.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+#include <sys/uio.h>
+#include <dirent.h>
+#include <sys/syscall.h>
+#include <time.h>
+#endif
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>

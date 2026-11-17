@@ -128,8 +128,7 @@ class RecompLauncherJsonTests(unittest.TestCase):
         start = self.doc["start"]
         self.assertEqual(start["program"], ["HeyListen/bin/HeyListen.exe", "HeyListen/bin/hookshot"])
         # (make_game.py puts the game there: the Windows launcher layout, bin/ beside image.bin, and the Linux one)
-        self.assertIn("HeyListen.exe", make_game.BESIDE)
-        self.assertIn("hookshot", ["hookshot", "hookshot_vk.so", "libSDL2-2.0.so.0"])
+        self.assertTrue("HeyListen.exe" in make_game.BESIDE or "hookshot" in make_game.BESIDE)   # (BESIDE is the host platform's)
 
     def test_prepare_takes_arguments_make_game_has(self):
         prepare = self.doc["prepare"]
