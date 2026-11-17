@@ -92,12 +92,12 @@ class TargetImagePoolTests(unittest.TestCase):
         self.assertIn("pool_put(*it);", loop[:loop.index("destroy_image(")])
         trim = frame.index("pool_trim();")
         self.assertLess(trim, frame.index("if (frame_no % 10) return;"))   # (every present, not every tenth)
-        self.assertIn("pool_pressed = known && pressure > allowed / 10 * 9;", frame)
+        self.assertIn("pool_pressure = !known ? 0 : used > allowed / 100 * 97 ? 2 : pressure > allowed / 10 * 9 ? 1 : 0;", frame)
 
     def test_the_trim_is_bounded_a_present_and_gives_back_idle_and_excess_images(self):
         trim = block(self.tex, "size_t pool_trim()")
-        self.assertIn("pool_pressed ? 0 : pool_cap()", trim)
-        self.assertIn("pool_pressed ? 64 : 16", trim)
+        self.assertIn("pool_pressure >= 2 ? 0 : pool_pressure == 1 ? full_cap / 2 : full_cap", trim)
+        self.assertIn("pool_pressure ? 64 : 16", trim)
         self.assertIn("frame_no - v[i].since <= 120", trim)
         self.assertIn("pool_bytes <= cap", trim)
         self.assertIn("pool_destroy(v[i]);", trim)

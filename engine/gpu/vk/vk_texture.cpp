@@ -248,7 +248,7 @@ struct Pooled {
 std::mutex pool_mu;
 std::unordered_map<uint64_t, std::vector<Pooled>> target_pool;   // by pool_key_of
 uint64_t pool_bytes, pool_n, st_pool_reused, st_pool_made, st_pool_destroyed;
-bool pool_pressed;   // (VRAM near what the driver allows: texture_frame's budget)
+uint8_t pool_pressure = 0;   // (VRAM near what the driver allows: texture_frame's budget) 0 normal, 1 short (>90%: half the pool), 2 critical (>97%: all given back)
 uint64_t pool_cap() {
     // (Longshot 1db4c290, #994) RX_VK_TARGET_POOL_MB=<MB>, else a twelfth of what the driver allows, 256 to 768 MB (target_pool.h)
     static const uint64_t mb = [] {
@@ -292,12 +292,13 @@ void pool_put(Dead& d) {
     target_pool[d.pool_key].push_back(Pooled{d.image, d.allocation, std::move(d.view_map), d.bytes, frame_no});
     pool_bytes += d.bytes, pool_n++;
 }
-/// (texture_frame, each present) the pool over its bound, or all of it while VRAM is short, and what waits in it unused for 120
+/// (texture_frame, each present) the pool over its bound, or half of it while VRAM is short and all of it while critical, and what waits in it unused for 120
 /// presents: destroyed, at most 16 a present (64 while VRAM is short). Returns how many
 size_t pool_trim() {
     std::lock_guard lk(pool_mu);
-    const uint64_t cap = pool_pressed ? 0 : pool_cap();
-    const size_t most = pool_pressed ? 64 : 16;
+    const uint64_t full_cap = pool_cap();
+    const uint64_t cap = pool_pressure >= 2 ? 0 : pool_pressure == 1 ? full_cap / 2 : full_cap;
+    const size_t most = pool_pressure ? 64 : 16;
     size_t n = 0;
     for (auto it = target_pool.begin(); it != target_pool.end() && n < most;) {
         auto& v = it->second;
@@ -4507,7 +4508,9 @@ void texture_frame(uint64_t completed) {
     // out. RX_VK_BUDGET_BY_BLOCKS=1: as before)
     static const bool by_blocks = getenv("RX_VK_BUDGET_BY_BLOCKS") != nullptr;
     const uint64_t pressure = by_blocks ? used : used - std::min(used, block_free);
-    pool_pressed = known && pressure > allowed / 10 * 9;   // (the target pool given back meanwhile)
+    // (the target pool meanwhile: half given back above 90%, all above 97% of the driver's own count. All of it at 90% on a
+    // 6 GB card flushed a 96 MB pool in Castle Town's market: ~98k vkCreateImage / vkDestroyImage in a session, Longshot #637)
+    pool_pressure = !known ? 0 : used > allowed / 100 * 97 ? 2 : pressure > allowed / 10 * 9 ? 1 : 0;
     if (known && pressure > allowed / 10 * 9) {
         const uint64_t over = pressure - allowed / 10 * 9;
         budget = std::min(budget, total_bytes > over ? total_bytes - over : 0);
@@ -4581,7 +4584,7 @@ void texture_frame(uint64_t completed) {
             logf("vk: render target images: %llu reused from the pool, %llu made new, %llu destroyed from it; it holds %llu "
                  "(%llu MB)%s", (unsigned long long)st_pool_reused, (unsigned long long)st_pool_made,
                  (unsigned long long)st_pool_destroyed, (unsigned long long)pool_n, (unsigned long long)(pool_bytes >> 20),
-                 pool_cap() ? (pool_pressed ? ", VRAM short: given back" : "") : " (RX_VK_TARGET_POOL_MB=0)");
+                 pool_cap() ? (pool_pressure >= 2 ? ", VRAM critical: given back" : pool_pressure == 1 ? ", VRAM short: halved" : "") : " (RX_VK_TARGET_POOL_MB=0)");
         }
         uint32_t samplers_made = 0, samplers_waiting = 0, samplers_limit = 0;   // (longshot #442: a count that grows without end shows)
         uint64_t samplers_retired = 0, samplers_destroyed = 0;
