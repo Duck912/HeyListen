@@ -929,3 +929,42 @@ effect on the chain is below their share; the solver's own `solveJacobians` (sec
 (section 9) stay the serial ones. A fresh sampled profile of a build with U1 to U3 native was not taken in this
 session (the machine was reserved for a release check): the table is re-aggregated from the old samples and must be
 redone with `build/hotfn/drive.py` before the order is relied on.
+
+## 12. Two narrow-phase leaves, native and unchecked (stream N4; written without the game running)
+
+Written from the image's instructions (`0x817472e0`: 186, `0x817036a0`: 111), tested without the game
+(`engine/native/tests/support_test.cpp`: a brute-force argmax over sets of 1 to 40 vertices, ties, the give-ups, the
+relative placement against the identity and a plain formula, the C surface). **Not yet compared with the translation in
+the game**: both units are `validated` 0, off by default, and have never been run in the game or built into it; they
+come on only after `HL_MATH_CHECK=1` shows zero mismatches in the three scenes and a heavy one.
+
+**Support point `0x817472e0`** (unit `support`, reached through a pointer: `HL_ANSWER`; `hl/math/Support.h`). x0 = a
+vertex set header (a relative 32-bit offset, 0 meaning none, then the count n), x1 = a direction (float4: x, y, z used),
+x2 = a 16-byte output. Vertices are 12 bytes (x y z). It jumps on n & 3 through a four-byte table: 1 vertex (n = 1 mod 4),
+2 (n = 2 mod 4: the other two lanes padded with a module constant, a large negative, and the lane indices), exactly 3
+(n = 3: three dot products, the lane at the maximum found by a compare mask and a 8-byte table giving the index: the
+highest lane at the maximum), or the first four (n = 0 mod 4, and any n = 3 mod 4 but 3). Each case fills four lane
+maxima and four lane indices; then rounds of four vertices each from the vertex `start` (1, 2 or 3) by fours while the
+count allows: dots are `(x dx + y dy) + z dz`, each product rounded; a lane takes the new vertex only when strictly
+greater; the rounds read up to three vertices past the end (Havok's padding). The end picks per pair the first of a tie
+(lane 0 against 1, lane 2 against 3), then the pair with the greater maximum, ties to the first pair. The output is the
+chosen vertex's 12 bytes and, in the fourth word, its index or-ed with 0x3f000000. The tables are read from guest memory
+at each call by the OS layer (jump bytes `0x83eb4560`, mask table `0x83eb09b0`, the padding float at +0x30 of the block
+the pointer at `0x84ca4680` holds, the step and lane indices at +0x40 and +0x50 of the block the pointer at `0x84cb8120`
+holds), so the native code assumes none of them. Declines: n < 1, no array, an unknown jump byte, and any dot-product
+operand or result outside the exactness rules (a vertex the rounds read past the end that is not an ordinary float
+included). Callers: through a pointer only (no direct caller in the lifted code).
+
+**Relative placement `0x817036a0`** (unit `relxf`, direct callers `0x819855f8` (2), `0x8197943c`, `0x8197be18`,
+`0x819836c0`: `HL_GATE`, hash `b55701fae919e72f`). x1 = transform a, x2 = transform b (precise transforms of 76 bytes:
+three float4 rows, high translation at +48, low at +64 and +72), x0 = an 80-byte result: the rows `out_r = c2 b_rz + (c0
+b_rx + c1 b_ry)` per lane with c0, c1, c2 the columns of a's rows (the fourth lanes of the columns are the second and last
+float of a's third row), then the translation `((b high + b low) - (a high + a low))` in binary64, rotated by a's rows
+(`z + (x + y)` per row, in binary64), stored as a float high part (x, y, z, z) and the float low part (what the float left,
+three floats), and a zero word at +76. Reads all before it writes. Declines on any used input or result outside the rules
+(inputs that nothing reads are not looked at).
+
+Switches: unit names `support` and `relxf` in `HL_MATH_UNITS` (`HL_MATH_CHECK=1` to compare; the check compares the
+function's whole output, 16 and 80 bytes: `Unit.out_len`). Gates: the hash above is of the lifted text on this PC; the gate
+goes in only when the hash matches, and another tree's build takes it out again (the lift's work folder is shared),
+which is the existing rule of `nx2/hl_gates.py`.
