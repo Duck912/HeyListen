@@ -1816,6 +1816,8 @@ std::vector<UpSlow> up_slowest;
 std::mutex up_mu;   // (uploads may come from a parallel replay's threads)
 std::atomic<int64_t> frame_upload_ns{0};   // (this frame's time in upload(), every thread's)
 std::atomic<int64_t> st_deferred{0}, st_deferred_frame{0};
+thread_local uint64_t tl_upload_frame = 0;   // (this thread's time in upload() in present tl_upload_frame: upload_defer's budget)
+thread_local int64_t tl_upload_ns = 0;
 // (the upload budget's deferral, measured: this frame's upload time by kind (a new ASTC texture, another new one, one uploaded
 // again), the busiest thread's share of it, and the distinct textures held back. Read and cleared by texture_frame)
 enum UpKind { UK_ASTC_NEW, UK_OTHER_NEW, UK_AGAIN, UK_COUNT };
@@ -1823,7 +1825,7 @@ std::atomic<int64_t> frame_kind_ns[UK_COUNT];
 std::atomic<int64_t> frame_thread_max_ns{0}, st_deferred_tex_frame{0};
 /// (the deferral's age) A run of presents that held new ASTC textures back, from the first until each of them arrived or went (or
 /// 600 presents with neither): how long they waited, in presents and ms, and what took the budget in the presents that deferred.
-/// One log line when it ends (defer_burst_end); nothing while nothing is deferred
+/// One log line when it ends (defer_frame_end); nothing while nothing is deferred
 struct DeferBurst {
     uint64_t first_frame = 0, last_frame = 0;   // (0: none open)
     int64_t first_ns = 0, deferred = 0, arrived = 0, gone = 0, frames = 0, asks = 0, most = 0, told = 0;
@@ -1843,7 +1845,9 @@ void defer_note_done(Texture& tex, bool arrived) {
     if (!tex.defer_frame) return;
     std::lock_guard lk(burst_mu);
     burst.held.erase(tex.id);
-    if (!burst.first_frame || tex.defer_frame < burst.first_frame) {   // (held back in a run that is over: in at last)
+    // (a run opens at the end of its first present: one held back and in again within that present (another thread's lookup,
+    // under the budget) is the run's; one from before the open run, or from a closed run, came in at last)
+    if (burst.first_frame ? tex.defer_frame < burst.first_frame : tex.defer_frame != frame_no) {
         static int told;
         if (arrived && told++ < 40)
             logf("vk: deferral: texture #%u %ux%u x%u NVN %#x, held back at present %llu, in at last %llu presents and %.0f ms later",
@@ -1937,11 +1941,9 @@ bool upload(Texture& tex, const Ranges* dirty) {
     const int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
     frame_upload_ns.fetch_add(ns, std::memory_order_relaxed);
     frame_kind_ns[kind].fetch_add(ns, std::memory_order_relaxed);
-    {   // (this thread's share of the frame's upload time)
-        static thread_local uint64_t tl_frame;
-        static thread_local int64_t tl_ns;
-        if (tl_frame != frame_no) tl_frame = frame_no, tl_ns = 0;
-        tl_ns += ns;
+    {   // (this thread's share of the frame's upload time: upload_defer's budget)
+        if (tl_upload_frame != frame_no) tl_upload_frame = frame_no, tl_upload_ns = 0;
+        const int64_t tl_ns = tl_upload_ns += ns;
         int64_t m = frame_thread_max_ns.load(std::memory_order_relaxed);
         while (tl_ns > m && !frame_thread_max_ns.compare_exchange_weak(m, tl_ns, std::memory_order_relaxed)) {}
     }
@@ -3109,11 +3111,18 @@ namespace {
 /// textures coming in a few frames late. ASTC only: those are the materials' colour, normal and mask textures; uncompressed
 /// ones can be data (height maps, look-up tables) that a frame without would get wrong. RX_VK_UPLOAD_BUDGET_MS=<n>: the
 /// budget (40: only an area load's burst; at 8 the ground's streamed textures waited a frame in ordinary play and the ground
-/// flickered, Discord 2026-11-09), 0: no deferral, as before
+/// flickered, Discord 2026-11-09), 0: no deferral, as before.
+/// (HeyListen) The budget is the looking-up thread's own upload time this present, not every thread's summed: the parallel replay's
+/// segment workers upload side by side, and their sum reached 40 ms when the busiest of them had spent 11-31 ms (the Market's
+/// arrival, RX 9070 XT, "vk: deferral:" lines): 300-450 new ASTC textures were held back in a present whose new ASTC uploads took
+/// 13-36 ms, and a held one is sampled as the null descriptor (black) until a later present's draw looks it up again, 150-280 ms
+/// presents apart while the map loads. RX_VK_UPLOAD_BUDGET_SUM=1: every thread's summed, as before
 bool upload_defer(Texture& tex) {
     static const int64_t budget_ns = (int64_t)(getenv("RX_VK_UPLOAD_BUDGET_MS") ? atof(getenv("RX_VK_UPLOAD_BUDGET_MS")) : 40.0) * 1000000;
+    static const bool summed = getenv("RX_VK_UPLOAD_BUDGET_SUM") && atoi(getenv("RX_VK_UPLOAD_BUDGET_SUM")) != 0;
     if (!budget_ns || !upload_defer_ok || tex.uploaded || !tex.astc || tex.gpu_written) return false;
-    if (frame_upload_ns.load(std::memory_order_relaxed) < budget_ns) return false;
+    const int64_t spent = summed ? frame_upload_ns.load(std::memory_order_relaxed) : tl_upload_frame == frame_no ? tl_upload_ns : 0;
+    if (spent < budget_ns) return false;
     st_deferred.fetch_add(1, std::memory_order_relaxed), st_deferred_frame.fetch_add(1, std::memory_order_relaxed);
     tex.defer_asks++;
     if (tex.defer_seen != frame_no) {   // (the deferral's age: the distinct textures, and when each was first held back)
