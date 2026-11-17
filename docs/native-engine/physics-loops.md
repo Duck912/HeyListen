@@ -892,3 +892,40 @@ contact solver's vtable only (no direct caller).
 
 Not yet: the friction and rolling rows' arithmetic, the paths by P's flags, what the output stream receives, the
 records' size rule, the histogram of paths in the game. No native code for it.
+
+## 11. Where the physics time is now, by leaf (stream N4, static re-aggregation; no run)
+
+Source: the three sampled castle-move runs of `hot-functions.md` (`build/hotfn/r1..r3.recs.json`), taken on a build
+**before** U1, U2, U3 and the affine and sphere kernels were native, so those leaves (`0x81746440` 5.3%, `0x81a040bc`,
+`0x8174bb00`, `0x80168130`) are already gone from the real profile. The 5,678 samples are the chain-flagged samples
+whose stack holds a physics root (narrow phase `0x8191ee00`, solver `0x819b8e20`, BuildJacobians `0x819aeae8`, world step
+`0x803749e0`, point queries `0x82bcfae0`, cloth `0x8016b320`); shares below are of those samples, as innermost `f_`
+(self). The chain flag counts every thread's work inside a chain window, so the six-wide narrow phase is
+over-represented against its effect on the chain (only the last instance to finish counts, `critical-jobs.md`).
+
+| self rank | leaf | insns | share | kind | notes |
+|---:|---|---:|---:|---|---|
+| 1 | `0x8173b340` (EPA, penetration depth; children `0x8173a830`, `0x8173ae00`, `0x81738fa0`, `0x8173a5c0`) | 800 | 10.5% | doubles and floats, 3 indirect calls | no fused op (add/mul/sub 32 and 64 only): bit-exactness is plain IEEE |
+| 2 | `0x81779980` (contact Jacobian set-up for new manifolds, 2 callers `0x8177b020`, `0x8177f720`) | 1,413 | 6.9% | floats and doubles, 2 indirect calls, one callee `0x81707300` | no fused op |
+| 3 | `0x81730760` (GSK iteration) | 2,040 | 5.8% | 4-wide float, 6 indirect calls | no fused op; 10 callers |
+| 4 | `0x81746440` (U1) | 124 | 5.3% | already native | |
+| 5 | `0x81c86720` (cloth link constraints) | 401 | 3.6% | uses the reciprocal square root estimate | cloth, off the narrow phase |
+| 6-7 | `0x81b8c000`, `0x81b5a3c0` (cloth collide and solve) | 17,427 / 4,803 | 3.4%, 3.3% | | |
+| 8 | `0x817472e0` (support point of a 1 to 4 vertex convex: jump table on the count, a direction in x1, 16-byte result in x2) | 186 | 3.1% | 4-wide float with FMIN/FMAX and compare-select; no calls | smallest, self-contained leaf of the top ten |
+| 9 | `0x8003dac0` (phive, fma32 105) | 3,026 | 2.9% | fused | |
+| 10-11 | `0x819783e0`, `0x817036a0` | 1,042 / 111 | 2.4%, 2.3% | `0x817036a0` is doubles only, no calls, 4 callers | second smallest leaf |
+| 12 | `0x8176c980` (GSK driver) | 3,386 | 2.0% | | |
+| 13-14 | `0x81855f40`, `0x817da900` | 252 / 498 | 1.7%, 1.5% | | |
+
+Per root, the samples are: narrow phase 3,100, cloth 1,398, world step 479, BuildJacobians 280, point queries 224,
+solver 197 (the solver is one thread, the narrow phase six: the samples measure CPU, not chain time; the solver's
+chain share stays the largest serial one, section 5).
+
+Reading of it: after the five native units the next compute leaves by measured cost are the penetration-depth routine
+`0x8173b340`, the contact set-up `0x81779980` and the GSK iteration `0x81730760`, none with a fused instruction (so the
+exactness machinery of `Exact.h` covers them without the binary64 detour), and, much cheaper to write, the support
+function `0x817472e0` and the doubles-only `0x817036a0`. Both big three run inside the six-wide narrow phase, so their
+effect on the chain is below their share; the solver's own `solveJacobians` (section 10) and `subIntegrateLastStep`
+(section 9) stay the serial ones. A fresh sampled profile of a build with U1 to U3 native was not taken in this
+session (the machine was reserved for a release check): the table is re-aggregated from the old samples and must be
+redone with `build/hotfn/drive.py` before the order is relied on.
