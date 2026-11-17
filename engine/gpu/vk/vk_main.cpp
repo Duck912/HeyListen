@@ -27,6 +27,7 @@
 #include "vk_dlss.h"
 #include "vk_fsr4.h"
 #include "vk_reflex.h"
+#include "vk_gpu_clock.h"
 #include "vk_progress.h"
 #include "vk_tl_clock.h"   // (RX_VK_TL: the timeline's host time domain)
 
@@ -586,6 +587,9 @@ bool create_device() {
     if (dev.buffer_marker) buffer_markers_init();
     coopmat_init();
     reflex_device_created();
+    // (longshot: on the Steam Deck the GPU held at amdgpu's peak power state while the game runs (RX_VK_GPU_CLOCK=0: not), gpu_clock.h;
+    // the device's render node from VK_EXT_physical_device_drm, which needs no enabling to be asked)
+    gpu_clock_device_created(has_extension(exts, VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME));
     if (dev.push_descriptor) {
         VkPhysicalDevicePushDescriptorPropertiesKHR pp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR};
         VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
