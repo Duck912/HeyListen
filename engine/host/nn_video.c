@@ -53,6 +53,13 @@ typedef struct { uint32_t magic; uint16_t w, h; uint32_t format, tiling; } Pref;
 
 /* (rgba NULL: a picture decoded as NV12 is kept as that alone; its pool makes the RGBA if a reader wants it) */
 typedef struct { uint8_t *rgba, *nv12; int w, h; int64_t pts; int last; } Picture;
+/* (heylisten) every movie's totals this session, for the performance summary (hos_perf_info, gpu/vk/perf_report.cpp): pictures
+   shown (taken by the game), skipped to keep up with the sound, shown late (not measured here: 0), decoding time in ns (not
+   measured: 0), decoders that did not start (0). Added as each happens, so a movie still playing at a summary counts too */
+static int64_t movie_totals[5];
+void hos_movie_stats(int64_t out[5]) {
+    for (int i = 0; i < 5; i++) out[i] = __atomic_load_n(&movie_totals[i], __ATOMIC_RELAXED);
+}
 /* a submission waiting to be decoded (pkt NULL: the stream's end) */
 typedef struct Pending { AVPacket *pkt; struct Pending *next; } Pending;
 #ifdef _WIN32
@@ -643,6 +650,7 @@ static void dec_acquire(Ctx *c) {
             d->qhead = (d->qhead + 1) % MAX_QUEUE, d->qn--;
             skipped++;
         }
+        __atomic_add_fetch(&movie_totals[1], skipped, __ATOMIC_RELAXED);
         if (skipped && video_log()) hos_log("video: %d pictures skipped to catch up with the movie's clock", skipped);
     }
     {   /* (HeyListen) And above 60 fps the game still takes one picture a frame: at 120 the movie ran at twice its speed,
@@ -677,6 +685,7 @@ static void dec_acquire(Ctx *c) {
             return;
         }
     }
+    __atomic_add_fetch(&movie_totals[0], 1, __ATOMIC_RELAXED);   /* (shown: a picture the game took) */
     Picture *p = &d->queue[d->qhead];
     Pool *o = (Pool *)host_of(d->slots[slot], POOL_MAGIC);
     /* (the picture at the pool's size: rows and columns past either are left out) */

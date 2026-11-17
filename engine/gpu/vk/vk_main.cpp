@@ -24,6 +24,8 @@
 #include "gpu_choice.h"
 #include "sparse_queue.h"
 #include "vk_menu.h"
+#include "perf_report.h"
+#include "report_info.h"
 #include "vk_dlss.h"
 #include "vk_fsr4.h"
 #include "vk_reflex.h"
@@ -755,6 +757,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     }
     reflex_swapchain_info(ci);   // (NVIDIA Reflex: latency mode on)
     VkSwapchainKHR sc;
+    if (dev.swapchain) perf_event(perf_report::kSwapchainRecreated);   // (made again in play: the performance summary counts it)
     result = vkCreateSwapchainKHR(dev.device, &ci, nullptr, &sc);
     // Passing oldSwapchain retires it even when creation fails. Nothing may acquire from it again.
     if (dev.swapchain) {
@@ -1111,6 +1114,8 @@ const char* describe() {
 MkwVkRenderer table;
 
 } // namespace
+/// (heylisten) The shaders are being prepared (the start-up screen): the performance summary's "map" then (perf_report.cpp)
+bool shaders_preparing() { return prep_running.load(std::memory_order_relaxed); }
 } // namespace mkwvk
 
 // (hookshot) The window is being closed (host/display.c, host/posix/display_sdl.c, before they end the process): while the
@@ -1124,6 +1129,7 @@ __attribute__((visibility("default")))
 #endif
 void mkwvk_close_asked(void) {
     using namespace mkwvk;
+    perf_report_final(-1);   // (the performance summary's last: ExitProcess is _exit on Linux, so no atexit runs there)
     if (!prep_running.load() || prepare_stopped()) return;
     logf("vk: the window was closed while the shaders were prepared: stopping, what is done is kept");
     prepare_stop();
@@ -1149,6 +1155,7 @@ const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
          dev.props.deviceName, VK_VERSION_MAJOR(dev.props.apiVersion), VK_VERSION_MINOR(dev.props.apiVersion),
          dev.props.driverVersion, dev.mesh_shader ? "yes" : "no", dev.external_memory_host ? "yes" : "no",
          dev.graphics_pipeline_library ? "yes" : "no");
+    mkwvk::report_info::log_lines();   // (the crash report's facts: host/hos_crash_dialog.h reads "vk: driver:" and "report:" lines)
     if (!dev.mesh_shader && !dev.mesh_fallback && !getenv("RX_VK_NO_MESH_WARNING")) {
         // (the game draws its foliage, grass and many effects with mesh shaders: without them those draws are left out and the
         // picture is broken (an RX 580's "static"-like scenes, 2026-11-08). Said once, on its own thread, and the game goes on.)
