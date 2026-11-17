@@ -62,7 +62,8 @@ void hos_out_of_memory(int wait) {
         /* (on a thread of its own either way: on the game's thread that ran out, sead::MainThread, MessageBoxA came back at
            once and showed nothing) */
         HANDLE t = NULL;
-        if (env_on("HOS_HEADLESS")) InterlockedExchange(&oom_state, 2);
+        const char *headless = getenv("HOS_HEADLESS");
+        if (headless && atoi(headless) != 0) InterlockedExchange(&oom_state, 2);
         else if ((t = CreateThread(NULL, 0, oom_box, wait ? (LPVOID)1 : NULL, 0, NULL)) != NULL) CloseHandle(t);
         else InterlockedExchange(&oom_state, 2);
     }

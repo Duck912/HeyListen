@@ -62,8 +62,10 @@ static int sysinfo(struct sysinfo *si) {   /* (left_mb as free RAM, buffers and 
     return 0;
 }
 #endif
-static int env_on(const char *name) { return !strcmp(name, "HOS_HEADLESS") && headless; }
-static const char *test_getenv(const char *name) { return !strcmp(name, "HOS_TEST_ALLOC_REFUSE") ? refuse_env : NULL; }
+static const char *test_getenv(const char *name) {
+    if (!strcmp(name, "HOS_HEADLESS")) return headless ? "1" : NULL;   /* (this tree has no env_on in mkw_glue.c) */
+    return !strcmp(name, "HOS_TEST_ALLOC_REFUSE") ? refuse_env : NULL;
+}
 static void hos_log(const char *fmt, ...) {
     char line[512];
     va_list a;
