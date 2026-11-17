@@ -51,6 +51,7 @@ struct Pool {
     uint64_t lo = 0, hi = 0, last_value = 0, retired_value = 0;
     VkBuffer buffer{}; VkDeviceMemory memory{}; std::vector<VkDeviceMemory> pieces;
     VkDeviceAddress address = 0;
+    bool never_imported = false;
 };
 Pool first_pool{0x1000, 0x2000, 0, 0, handle<VkBuffer>(1), {}, {}, 0x100000};
 Pool second_pool{0x2000, 0x3000, 0, 0, handle<VkBuffer>(2), {}, {}, 0x200000};
@@ -78,6 +79,16 @@ void texture_gpu_wrote(uint64_t gpu, uint64_t size) { writes++; written_gpu = gp
 using VmaAllocation = void*;
 struct DeadMirror { uint64_t value; VkBuffer buffer; VmaAllocation alloc; };
 std::deque<DeadMirror> dead_mirrors;
+// (HeyListen: RX_VK_POOL_MIRROR is off in the fixture: every pool is imported, as the game-free runs before it)
+enum { kGpuBufferRead, kGpuBufferWritten, kGpuBufferUnswizzle };
+enum { kAgainTexture = 5 };
+bool pool_mirror_on() { return false; }
+bool memory_pool_mirror_on() { return false; }
+bool import_again(Pool&, int) { return true; }
+BufferRef gpu_buffer_bind(uint64_t, uint64_t, bool) { return {}; }
+std::atomic<int64_t> st_import_texel_views{0}, st_import_texel_bytes{0};
+std::atomic<int> mirror_reads{0};   // (HeyListen: a mirror read back for the drop policy)
+void import_unpinned(uint64_t, uint64_t) {}   // (HeyListen: the host told a retired import's pages are no longer pinned)
 /* DEAD IMPORT */
 std::deque<DeadImport> dead_imports;
 uint64_t st_retired_imports_freed = 0, st_retired_import_bytes_freed = 0;

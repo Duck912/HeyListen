@@ -5775,6 +5775,7 @@ void reap_mirrors() {   // (pools_mu held)
             logf("vk: addr mirror freed at gpu %#llx (value %llu, completed %llu)", (unsigned long long)vkGetBufferDeviceAddress(dev.device, &da),
                  (unsigned long long)dead_mirrors.front().value, (unsigned long long)mem_completed);
         }
+        release_texel_buffer_views(dead_mirrors.front().buffer);   // (RX_VK_POOL_MIRROR: texel views are made over mirrors too)
         destroy_buffer(dead_mirrors.front().buffer, dead_mirrors.front().alloc);
         dead_mirrors.pop_front();
     }

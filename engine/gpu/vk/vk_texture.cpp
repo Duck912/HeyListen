@@ -4655,7 +4655,7 @@ VkBufferView texel_buffer_view(const nvn_tex* t, const nvn_view* v, bool storage
     // Resolve and stamp even a cache hit: the address can be remapped, and cached-only bindings are not idle.
     // (RX_VK_POOL_MIRROR: a pool never imported is read through its mirror, bound at every use as any buffer is: synced with the
     // CPU's writes, and written back when the view is a storage one)
-    BufferRef b = memory_pool_mirror_on() ? gpu_buffer(t->gpu, size, storage ? kGpuBufferWritten : kGpuBufferRead) : gpu_buffer(t->gpu, size);
+    BufferRef b = gpu_buffer(t->gpu, size, memory_pool_mirror_on() && storage ? kGpuBufferWritten : kGpuBufferRead);
     if (!b || b.offset % std::max<uint64_t>(dev.props.limits.minTexelBufferOffsetAlignment, 1)) return VK_NULL_HANDLE;
     const uint64_t range = std::min<uint64_t>(size, (uint64_t)dev.props.limits.maxTexelBufferElements * bpb);
     if (!range) return VK_NULL_HANDLE;
