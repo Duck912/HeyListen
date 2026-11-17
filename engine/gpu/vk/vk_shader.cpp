@@ -2079,6 +2079,11 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
         mrt.mesh_fallback_task = task_t != nullptr;
         mrt.mesh_fallback_task_threads = task_t ? task_t->program.workgroup_size[0] : 0;
         const std::vector<uint32_t> mspirv = Shader::Backend::SPIRV::EmitSPIRV(profile(), mrt, mesh_t->program, bindings);
+        if (getenv("RX_VK_MESH_NOINLINE_ABOVE")) {   // (stream P5: the IR size the threshold is read against, with the SPIR-V's)
+            size_t ir_n = 0;
+            for (const Shader::IR::Block* b : mesh_t->program.blocks) ir_n += b->size();
+            logf("vk: mesh stage: %zu IR instructions, %zu SPIR-V words (RX_VK_MESH_NOINLINE_ABOVE)", ir_n, mspirv.size());
+        }
         kept.push_back(mspirv);
         Stage ms;
         ms.nvn_stage = bank_stage(mesh);
