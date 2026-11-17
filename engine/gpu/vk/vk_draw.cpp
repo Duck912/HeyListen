@@ -3043,7 +3043,15 @@ VkBuffer null_scratch = VK_NULL_HANDLE;
 bool null_write_on() {
     // (off by default for now: a slot a program also reads would read the scratch's last writes instead of the null
     // descriptor's zeros, and it is not shown yet to cure the RADV hang; RX_VK_NULL_WRITE=1 for the Deck's test)
-    static const bool on = getenv("RX_VK_NULL_WRITE") && atoi(getenv("RX_VK_NULL_WRITE")) != 0;
+    // (RX6800 test build: on by default on Mesa's RADV, where the only clean Steam Deck run of issue 14 had it on. RX_VK_NULL_WRITE=0: off)
+    static const bool on = [] {
+        const char* e = getenv("RX_VK_NULL_WRITE");
+        if (e) return atoi(e) != 0;
+        VkPhysicalDeviceDriverProperties drv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+        VkPhysicalDeviceProperties2 pr{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &drv};
+        vkGetPhysicalDeviceProperties2(dev.physical, &pr);
+        return drv.driverID == VK_DRIVER_ID_MESA_RADV;
+    }();
     return on;
 }
 /// The scratch buffer (made on first use, host-visible and zeroed, never read back), or no buffer if it could not be made
