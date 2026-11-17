@@ -244,8 +244,9 @@ class RecompLauncherJsonTests(unittest.TestCase):
         main = next(c for c in self.doc["config"] if c["id"] == "main")
         self.assertEqual(main["format"], "ini")
         self.assertEqual([f["path"] for f in main["file"]], [GAME + "/hookshot_options.ini"])
-        for path in [f["path"] for f in self.doc["folders"]["game"]] + [f["path"] for f in self.doc["folders"]["logs"]]:
+        for path in [f["path"] for f in self.doc["folders"]["game"]]:
             self.assertEqual(path, GAME)
+        self.assertEqual([f["path"] for f in self.doc["folders"]["logs"]], [GAME + "/logs"])   # (host/hos_run_logs.h)
         self.assertIn(GAME + "/user/save", self.doc["saves"])
         for action in self.doc["actions"]:
             self.assertIn(action.get("open", action.get("clear", "").split("/")[0]), self.doc["folders"])
