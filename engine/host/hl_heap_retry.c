@@ -32,10 +32,18 @@
    HOS_GPU_ALLOC_TEST_FAIL=<n> or <gpu>,<cpu> (a test): the first n allocations of each kind at these sites (or that many of
    the GPU memory and of the CPU buffers) are refused by the heap they name, as a full heap would, so the retry runs (with
    HOS_GPU_ALLOC_RETRY=0: the game's crash, as shipped). */
-#include "hos.h"
+
+/* (HeyListen) Upstream edits the lifted f_804566e0 in nx2/oot_patches.py. Here the lifted work folder is shared by every
+   worktree, so the four call sites go in as a lift hook (HL_HEAP_HOOK, nx2/hl_gates.py): lines put in around each of them,
+   marked "hl gate 804566e1", the game's own call between them, so a tree that does not ask for the hook takes them out. A
+   site is "pre" (saves the call's arguments, and says whether HOS_GPU_ALLOC_TEST_FAIL refuses it: then the game's call is
+   left out) and "post" (the retry). The saved arguments are per thread: nothing runs between the two lines but the game's call. */
+#include "hl_host.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+HL_HEAP_HOOK(804566e0, "e4279af7934c79d4");   /* the material block's rebuild: its two CPU buffers and two GPU-memory calls */
 
 enum { HEAP_NAME = 0x20, HEAP_START = 0x28, HEAP_SIZE = 0x30, HEAP_PARENT = 0x38, VT_TRY_ALLOC = 0x30, VT_FREE_SIZE = 0x80 };
 
@@ -122,7 +130,9 @@ static void count_moved(int site, uint64_t bytes, int say) {
 }
 
 /* ---- the GPU memory: f_80522050(x0 the memory block, x1 the request: +0 the count, +8 the heap, +0x20 what it is for; x2
-   the size of one). nx2/oot_patches.py makes f_804566e0's two calls of it call this, with the game's function ---- */
+   the size of one). nx2/hl_gates.py's heap hook puts hos_oot_gpu_pre before f_804566e0's two calls of it (1: the call is
+   refused, x0 = 0, and not made) and hos_oot_gpu_post after them, with the game's function ---- */
+static __thread struct { uint64_t a0, a1, a2, lr; int refused, off; } gsv;   /* (the arguments, and what pre decided) */
 static int gpu_alloc_in(Ctx *c, A64Fn game, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t lr, uint64_t heap,
                         uint64_t in) {
     recomp_store64(c, a1 + 8, in);
@@ -131,20 +141,21 @@ static int gpu_alloc_in(Ctx *c, A64Fn game, uint64_t a0, uint64_t a1, uint64_t a
     recomp_store64(c, a1 + 8, heap);
     return (int)(c->x[0] & 1);
 }
-void hos_oot_gpu_alloc(Ctx *c, A64Fn game) {
-    const uint64_t a0 = c->x[0], a1 = c->x[1], a2 = c->x[2], lr = c->x[30];
-    const int on = retry_on() && readable(a1);
-    const int refused = readable(a1) && recomp_load64(c, a1 + 8) && test_fail(0);
-    if (refused && !on) {   /* (the failure alone, as a full heap gives it) */
+int hos_oot_gpu_pre(Ctx *c, uint64_t lr) {
+    const uint64_t a1 = c->x[1];
+    gsv.a0 = c->x[0], gsv.a1 = a1, gsv.a2 = c->x[2], gsv.lr = lr;
+    gsv.refused = readable(a1) && recomp_load64(c, a1 + 8) && test_fail(0);
+    gsv.off = gsv.refused && !retry_on();
+    if (gsv.off)   /* (the failure alone, as a full heap gives it) */
         hos_log("oot: GPU memory refused by HOS_GPU_ALLOC_TEST_FAIL, not tried again (HOS_GPU_ALLOC_RETRY=0) (lr %#llx)",
                 (unsigned long long)lr);
-        c->x[0] = 0;
-        return;
-    }
-    if (!refused) {
-        game(c);
-        if (!on || (c->x[0] & 1)) return;
-    }
+    return gsv.refused;
+}
+void hos_oot_gpu_post(Ctx *c, A64Fn game) {
+    if (gsv.off) return;
+    const uint64_t a0 = gsv.a0, a1 = gsv.a1, a2 = gsv.a2, lr = gsv.lr;
+    const int refused = gsv.refused, on = retry_on() && readable(a1);
+    if (!refused && (!on || (c->x[0] & 1))) return;
     const uint64_t count = recomp_load64(c, a1), heap = recomp_load64(c, a1 + 8), what = recomp_load64(c, a1 + 0x20);
     char name[64], where[160];
     guest_string(c, what, name, sizeof name);
@@ -177,9 +188,19 @@ void hos_oot_gpu_alloc(Ctx *c, A64Fn game) {
 }
 
 /* ---- the CPU buffers: the heap's tryAlloc at 0x8045690c or 0x80456da0 (lr 0x80456910, 0x80456da4) gave x0 = 0 (or
-   HOS_GPU_ALLOC_TEST_FAIL refused it: nx2/oot_patches.py then made no call). Tried in each parent with room; x0 the block,
-   or 0 still ---- */
+   HOS_GPU_ALLOC_TEST_FAIL refused it: the hook then made no call). hos_oot_heap_pre goes before the call (x0 the heap, x1 the
+   size, x2 the alignment: saved; 1 when refused: x0 = 0 and no call), hos_oot_heap_post after it (x0 still 0: tried again).
+   Tried in each parent with room; x0 the block, or 0 still ---- */
+static __thread struct { uint64_t heap, size, align; } csv;
 int hos_oot_heap_refuse(void) { return test_fail(1); }
+int hos_oot_heap_pre(Ctx *c) {
+    csv.heap = c->x[0], csv.size = c->x[1], csv.align = c->x[2];
+    return hos_oot_heap_refuse();
+}
+void hos_oot_heap_retry(Ctx *c, uint64_t heap, uint64_t size, uint64_t align, uint64_t lr);
+void hos_oot_heap_post(Ctx *c, uint64_t lr) {
+    if (!c->x[0]) hos_oot_heap_retry(c, csv.heap, csv.size, csv.align, lr);
+}
 void hos_oot_heap_retry(Ctx *c, uint64_t heap, uint64_t size, uint64_t align, uint64_t lr) {
     if (!retry_on()) {
         hos_log("oot: model buffer, %#llx bytes from heap %#llx, failed: not tried again (HOS_GPU_ALLOC_RETRY=0) (lr %#llx)",

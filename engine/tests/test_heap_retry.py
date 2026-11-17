@@ -1,8 +1,8 @@
-"""The OptimizeChangeBank thread's allocations are tried again when their heap is full (host/oot_heap_retry.c, nx2/oot_patches.py).
+"""The OptimizeChangeBank thread's allocations are tried again when their heap is full (host/hl_heap_retry.c, nx2/hl_gates.py).
 
 Issue 1697 (thread OptimizeChangeBanc writes guest 0x8 a few frames after loading a save) and TomShafford/Hookshot's crash at
 backflip + attack: a model's CPU buffer (a heap's tryAlloc) or GPU memory (f_80522050) came back null from a full heap and the
-game wrote through it. Builds host/oot_heap_retry.c, as it is, over a guest memory of its own with made-up sead heaps (name,
+game wrote through it. Builds host/hl_heap_retry.c, as it is, over a guest memory of its own with made-up sead heaps (name,
 size, parent, a vtable with tryAlloc and getFreeSize) and a stand-in for the game's f_80522050, then checks:
 
 - an allocation that succeeds is the game's alone: one call, nothing logged, nothing changed;
@@ -11,9 +11,10 @@ size, parent, a vtable with tryAlloc and getFreeSize) and a stand-in for the gam
 - the CPU buffer is tried in each parent with room, returned in x0, the other registers and the flags as they were;
 - HOS_GPU_ALLOC_RETRY=0: the game's call alone, as shipped; HOS_GPU_ALLOC_TEST_FAIL=<n>: the first n refused by the named
   heap without calling it (nothing leaks), and the retry makes them;
-- nx2/oot_patches.py makes both edits on lifted text shaped as the lift writes it, once, and a second run changes nothing.
+- nx2/hl_gates.py's heap hook puts its lines around the four calls in lifted text shaped as the lift writes it, once, with the
+  game's own lines and the function's hash unchanged, and a second run changes nothing; taking it out restores the text.
 
-python -I -B tests/test_oot_heap_retry.py [--cc gcc]
+python -I -B tests/test_heap_retry.py [--cc gcc]
 """
 import argparse
 import os
@@ -27,7 +28,7 @@ RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
-import oot_patches  # noqa: E402
+import hl_gates  # noqa: E402
 
 HOS_H = r'''#pragma once
 #include <stdint.h>
@@ -94,8 +95,16 @@ static void game_gpu_alloc(Ctx *c) {
     c->x[0] = room[i] >= size ? (room[i] -= size, 1) : 0;
     c->x[9] = 0xdead;
 }
-void hos_oot_gpu_alloc(Ctx *c, void (*game)(Ctx *));
+int hos_oot_gpu_pre(Ctx *c, uint64_t lr);
+void hos_oot_gpu_post(Ctx *c, void (*game)(Ctx *));
 int hos_oot_heap_refuse(void);
+int hos_oot_heap_pre(Ctx *c);
+void hos_oot_heap_post(Ctx *c, uint64_t lr);
+/* what the hook's lines do around the game's call (nx2/hl_gates.py lift_lines) */
+static void hos_oot_gpu_alloc(Ctx *c, void (*game)(Ctx *)) {
+    if (hos_oot_gpu_pre(c, c->x[30])) c->x[0] = 0; else game(c);
+    hos_oot_gpu_post(c, game);
+}
 void hos_oot_heap_retry(Ctx *c, uint64_t heap, uint64_t size, uint64_t align, uint64_t lr);
 
 #define REQ 0x80030000ull
@@ -225,6 +234,17 @@ int main(int argc, char **argv) {
     hos_oot_heap_retry(&c, H(0), 0x800, 8, 0x80456da4ull);
     CHECK(c.x[0] && room[1] == (1 << 20) - 0x800);
     CHECK(!hos_oot_heap_refuse());
+    /* the hook's pre and post around a call that failed: the arguments saved before, x0 the block after */
+    reset(), room[1] = 1 << 20;
+    c = before;
+    c.x[0] = H(0), c.x[1] = 0x4198, c.x[2] = 8;
+    CHECK(!hos_oot_heap_pre(&c));
+    c.x[0] = 0, c.x[1] = c.x[2] = 0xdead;   /* (the game's call: failed, scratch registers changed) */
+    hos_oot_heap_post(&c, 0x80456910ull);
+    CHECK(c.x[0] && room[1] == (1 << 20) - 0x4198);
+    c.x[0] = 0x80099000ull;   /* (a call that succeeded: left alone) */
+    hos_oot_heap_post(&c, 0x80456910ull);
+    CHECK(c.x[0] == 0x80099000ull && room[1] == (1 << 20) - 0x4198);
     puts("PASS: the model buffer from a full heap: made in its nearest parent with room, x0 alone changed");
     return 0;
 }
@@ -257,23 +277,29 @@ def main():
     p.add_argument("--cc", default="gcc")
     a = p.parse_args()
 
-    out, found = oot_patches.patch_heap_retry(LIFTED)
-    assert found == [2, 2], found
-    assert out.count("hos_oot_gpu_alloc(c, f_80522050)") == 2
-    assert "c->x[30] = 0x80dfe6a4ULL; f_80522050(c);" in out, "another caller of f_80522050 was changed"
-    assert "void f_80522050(Ctx *__restrict A64_NOESC c) {" in out, "f_80522050 itself was changed"
-    for lr in ("0x80456910ULL", "0x80456da4ULL"):
-        assert out.count("hos_oot_heap_retry(c, _hh, _hn, _ha, %s)" % lr) == 1, lr
-    assert out.count(oot_patches.GPU_ALLOC_DECL) == 1 and out.count(oot_patches.HEAP_ALLOC_DECL) == 1
-    assert oot_patches.patch_heap_retry(out) == (out, [2, 2]), "a second run changed the text"
-    other = LIFTED.replace("0x80456910ULL", "0x80456914ULL").replace("0x80456da4ULL", "0x80456da8ULL") \
-                  .replace("0x80456f1cULL", "0x80456f20ULL").replace("0x80457098ULL", "0x8045709cULL")
-    assert oot_patches.patch_heap_retry(other) == (other, [0, 0]), "another version's text was edited"
-    import inspect
-    assert "patch_heap_retry(out) if protect_hearts else" in inspect.getsource(oot_patches.apply), \
-        "the edits are made on builds other than the supported one"
-    print("PASS: nx2/oot_patches.py: the four places edited once (f_80522050's other callers left), a second run changes "
-          "nothing, other text is left alone, the supported build only")
+    hook = hl_gates.apply_lift(LIFTED, "804566e0", "heap", ())
+    assert hook is not None, "the hook's anchors were not found in text shaped as the lift writes it"
+    before = hl_gates.text_hash(LIFTED, "804566e0")
+    assert hl_gates.text_hash(hook, "804566e0") == before, "the hook changed the function's hash"
+    marked = [line for line in hook.splitlines() if line.endswith("/* hl gate 804566e1 */")]
+    assert len(marked) == 8, len(marked)
+    assert sum(l.count("{") - l.count("}") for l in marked) == 0, "the hook's braces do not balance"
+    for lr in hl_gates.HEAP_CPU:
+        assert hook.count(hl_gates.HEAP_CPU_LINE % lr) == 1 and hook.count("hos_oot_heap_post(c, %#xULL)" % lr) == 1, lr
+    for lr in hl_gates.HEAP_GPU:
+        assert hook.count(hl_gates.HEAP_GPU_LINE % lr) == 1 and hook.count("hos_oot_gpu_pre(c, %#xULL)" % lr) == 1, lr
+    assert "c->x[30] = 0x80dfe6a4ULL; f_80522050(c);" in hook and hook.count("hos_oot_gpu_post") == 4, \
+        "another caller of f_80522050 was changed"
+    assert "void f_80522050(Ctx *__restrict A64_NOESC c) {" in hook and hook.count("c->x[0] = 0x1ULL;") == 1, \
+        "f_80522050 itself was changed"
+    assert hl_gates.apply_lift(hook, "804566e0", "heap", ()) == hook, "a second run changed the text"
+    assert hl_gates.apply_text(hook, {}, {}, {}, {})[0] == LIFTED, "taking the hook out did not restore the text"
+    other = LIFTED.replace("0x80456910ULL", "0x80456914ULL")
+    assert hl_gates.apply_lift(other, "804566e0", "heap", ()) is None, "another version's text was hooked"
+    asked = hl_gates.wanted_lifts()
+    assert asked.get("804566e0", (None, None))[1] == "heap", "host/hl_heap_retry.c does not ask for the hook"
+    print("PASS: nx2/hl_gates.py: the heap hook's four places once (f_80522050's other callers left), hash unchanged, a second "
+          "run changes nothing, taking it out restores the text, other text is left alone")
 
     cc = shutil.which(a.cc) or shutil.which("gcc") or shutil.which("clang")
     if not cc:
@@ -282,8 +308,10 @@ def main():
     with tempfile.TemporaryDirectory(prefix="heap-retry-") as tmp:
         tmp = Path(tmp)
         (tmp / "hos.h").write_text(HOS_H, encoding="utf-8")
+        (tmp / "hl_host.h").write_text('#include "hos.h"\n#define HL_HEAP_HOOK(a, h) extern const int hook_##a\n',
+                                       encoding="utf-8")
         (tmp / "fixture.c").write_text(FIXTURE, encoding="utf-8")
-        (tmp / "oot_heap_retry.c").write_text((ROOT / "host" / "oot_heap_retry.c").read_text(encoding="utf-8"),
+        (tmp / "oot_heap_retry.c").write_text((ROOT / "host" / "hl_heap_retry.c").read_text(encoding="utf-8"),
                                               encoding="utf-8")
         exe = tmp / ("fixture.exe" if os.name == "nt" else "fixture")
         subprocess.run([cc, "-std=gnu11", "-O1", "-Wall", "-Wextra", "-Werror", "-I", str(tmp), str(tmp / "fixture.c"),
