@@ -51,12 +51,12 @@ math::SupportTables tables() {
 
 float dot_of(const float v[3], const float d[4]) { return (v[0] * d[0] + v[1] * d[1]) + v[2] * d[2]; }
 
-// n vertices then three copies of the first (the padding the rounds read past the end)
+// n vertices then three vertices of garbage (the guest's rounds end exactly at n: nothing past it is read)
 std::vector<float> make_set(int n) {
     std::vector<float> v((size_t)(n + 3) * 3);
     for (int i = 0; i < n * 3; i++) v[(size_t)i] = frand(-4.0f, 4.0f);
     for (int k = 0; k < 3; k++)
-        for (int c = 0; c < 3; c++) v[(size_t)(n + k) * 3 + c] = v[(size_t)c];
+        for (int c = 0; c < 3; c++) v[(size_t)(n + k) * 3 + c] = 100.0f + (float)(k * 7 + c);
     return v;
 }
 

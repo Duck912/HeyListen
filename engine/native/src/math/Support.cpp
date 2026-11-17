@@ -45,14 +45,14 @@ bool support_point(const uint8_t* vertices, int32_t n, const float dir[4], const
     uint32_t chosen;
     const uint8_t jump = t.jump[n & 3];
     // The guest enters by a jump on n & 3: one vertex, two, three (when n is exactly 3; another n of 3 mod 4 takes the
-    // general start), or the first four. The cases start the lane maxima; the rounds then take four vertices each from
-    // `start`.
-    if (jump == 88 || (jump == 40 && n != 3)) {   // the first four vertices, then the rounds from the fourth
-        for (int k = 0; k < 4; k++) {
+    // four-vertex start), or the first four. The cases start the lane maxima; the rounds then take four vertices each from
+    // `start`, which is congruent to n mod 4, so the rounds end exactly at n and read nothing past it.
+    if (jump == 88 || (jump == 40 && n != 3)) {   // the first four vertices, then the rounds from the fifth (a count of 0 mod 4)
+        for (int k = 0; k < 4; k++) {                 // or the fourth (3 mod 4: the guest's second entry, which sets 3)
             best[k] = w.dot(k);
             idx[k] = t.index[k];
         }
-        start = 3;
+        start = jump == 88 ? 4 : 3;
     } else if (jump == 0) {   // the first vertex in all lanes, the rounds from the second
         const float d = w.dot(0);
         for (int k = 0; k < 4; k++) {

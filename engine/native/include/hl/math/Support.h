@@ -23,8 +23,7 @@ struct SupportTables {
     int8_t select[8];
 };
 
-// The vertex of `vertices` (n of them, 12 bytes each, x y z; the guest's rounds also read up to three vertices past the
-// end, as the guest does) with the largest dot product with dir (x, y, z, each product rounded, summed as
+// The vertex of `vertices` (n of them, 12 bytes each, x y z) with the largest dot product with dir (x, y, z, each product rounded, summed as
 // (x dx + y dy) + z dz): the first of equal ones within a lane, the first lane among equal pairs. out receives that vertex's
 // x, y, z and, in the fourth word, its index with 0x3f000000 or-ed in. Gives up for n < 1 or a jump byte it does not know.
 bool support_point(const uint8_t* vertices, int32_t n, const float dir[4], const SupportTables& t, uint8_t out[16]);
