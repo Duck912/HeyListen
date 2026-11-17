@@ -21,6 +21,19 @@ sys.path.insert(0, str(ROOT / "nx2"))
 import vk_pgo   # (the back end's play profile: none in the fixture's work folder, so no flag)
 
 
+# What starting a program needs, kept when the fixture clears the environment: PATH to find the compiler (POSIX falls back to
+# /bin:/usr/bin without it, Windows does not), and on Windows PATHEXT to resolve "clang++" to clang++.exe, SYSTEMROOT/WINDIR for
+# the DLLs a new process loads, COMSPEC, and TEMP/TMP. Nothing the build reads (RX_*, HOOKSHOT_*) is in it.
+PROGRAM_ENV = ("PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "TEMP", "TMP")
+
+
+def program_environment(extra=None):
+    """A cleared environment for the build branch, with only what locating and starting the compiler needs, plus `extra`"""
+    env = {k: os.environ[k] for k in PROGRAM_ENV if k in os.environ}
+    env.update(extra or {})
+    return env
+
+
 def production_code(path):
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     names = {"tree_headers", "vk_sources", "flag_text", "object_key"}
@@ -126,7 +139,7 @@ class ShaderStampCacheTests(unittest.TestCase):
             "NGX_MSVC_RT": "vk_ngx_msvc_rt.cpp",
             "FSR": fsr,   # (HOOKSHOT_FSR=1: vk_fsr4.cpp built with AMD FSR 4)
         }
-        with mock.patch.dict(os.environ, {"RX_RELEASE": "1"} if release else {}, clear=True), warnings.catch_warnings():
+        with mock.patch.dict(os.environ, program_environment({"RX_RELEASE": "1"} if release else {}), clear=True), warnings.catch_warnings():
             # The production key/header helpers use short-lived open(...).read() expressions.
             warnings.simplefilter("ignore", ResourceWarning)
             exec(self.code, namespace)
