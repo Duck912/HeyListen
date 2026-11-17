@@ -102,6 +102,7 @@ ARGS = {
     "tests/test_vcore_held_flush.py": ["--cxx", "{cxx}"],
     "tests/test_audio_in.py": ["--cc", "gcc", "--cxx", "g++"],
     "tests/test_upscale_fallback.py": ["--cxx", "g++"],
+    "tests/test_vcore_fs_write.py": ["--cxx", "{cxx}"],
     "tests/test_reserved_core.py": ["--cxx", "g++"],
     "tests/test_vcore_multiwait_scan.py": ["--cxx", "{cxx}"],
     "tests/test_log_qpc.py": ["--cxx", "g++"],
