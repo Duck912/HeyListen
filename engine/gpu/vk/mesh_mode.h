@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // (hookshot, #1001, issue 2245; the switch from Longshot 8694e3c6) How the game's task and mesh programs run: 0 Automatic
-// (the GPU's own mesh shaders where it has them, the compute fallback where not, and on Linux with an AMD GPU, RADV, the
+// (the GPU's own mesh shaders where it has them, the compute fallback where not, and on Linux with an RDNA 2 AMD GPU, RADV, the
 // compute path), 1 Native (the GPU's own mesh shaders, RADV's too), 2 Compute (the fallback on every GPU). Chosen by the
 // launch switch RX_VK_MESH_SHADERS=native or compute; RX_VK_FORCE_MESH_FALLBACK=1 is Compute over it. Nothing of Vulkan
 // here, so tests/test_mesh_mode_switch.py compiles and runs it without a GPU or a game.
@@ -34,21 +34,37 @@ inline Choice choose(const char* env, const char* force_fallback) {
 
 constexpr uint32_t kVendorAmd = 0x1002;
 
-/// (hookshot, issue 2245) RADV's native task/mesh path deadlocks the GPU: the gfx ring and RADV's gang compute ring end up
-/// waiting on each other, and a mesh-only draw hangs with the compute queue empty (devcoredumps on an RX 6800: no VM fault).
-/// Task + mesh draws alone on the fallback still crash, so only the full compute path is stable there; the reports span
-/// Navi 2x (RX 6800, RX 6600 XT) and the RDNA3 APUs (Steam Deck OLED, ROG Xbox Ally X). On Linux AMD's Vulkan driver is RADV,
-/// so Automatic picks Compute for vendor 0x1002 there. RDNA1 and older have no mesh shaders on RADV: for them a no-op.
-/// linux: the OS the game runs on (RADV is Linux's; Windows' AMD driver is not affected)
-inline bool automatic_is_compute(bool linux_os, uint32_t vendor_id) {
-    return linux_os && vendor_id == kVendorAmd;
+inline bool task_mesh_fallback_default(uint32_t vendor, uint32_t device);
+
+/// RDNA 2 parts not in task_mesh_fallback_default's Windows list: Navi 24 (0x743f RX 6400 and 6500 XT; 0x7421 to 0x7424 RX 6300,
+/// Pro W6300 to W6500M) and the RDNA 2 APUs: Van Gogh (0x163f, Steam Deck), Rembrandt (0x1681), Mendocino (0x164c), Raphael's
+/// (0x164e). On Linux they are RADV's RDNA 2, which hangs on the native mesh path (issue 2245)
+inline bool rdna2_extra(uint32_t device) {
+    switch (device) {
+    case 0x743f: case 0x7421: case 0x7422: case 0x7423: case 0x7424:   // Navi 24
+    case 0x163f: case 0x1681: case 0x164c: case 0x164e:                // Van Gogh, Rembrandt, Mendocino, Raphael
+        return true;
+    default:
+        return false;
+    }
+}
+
+/// (hookshot, issue 2245) RADV's native task/mesh path deadlocks the GPU on RDNA 2: the gfx ring and RADV's gang compute ring end
+/// up waiting on each other, and a mesh-only draw hangs with the compute queue empty (devcoredumps on an RX 6800: no VM fault).
+/// Task + mesh draws alone on the fallback still crash, so only the full compute path is stable there; the reports span Navi 2x
+/// (RX 6800, RX 6600 XT) and Van Gogh (Steam Deck). RDNA 3 and 4 on RADV run the native path without the hang (an RX 9070 XT), and
+/// RDNA 1 and older have no mesh shaders on RADV. So on Linux, with an AMD GPU (RADV) of the RDNA 2 device IDs
+/// (task_mesh_fallback_default's Navi 21 to 23, rdna2_extra), Automatic picks Compute; every other AMD ID stays Automatic.
+/// RX_VK_MESH_SHADERS=native or compute overrides either way. linux_os: the OS the game runs on (Windows' AMD driver is not RADV)
+inline bool automatic_is_compute(bool linux_os, uint32_t vendor_id, uint32_t device_id) {
+    return linux_os && vendor_id == kVendorAmd && (task_mesh_fallback_default(vendor_id, device_id) || rdna2_extra(device_id));
 }
 
 /// The mode a device runs: the choice, with Automatic made Compute where automatic_is_compute says so. why: for the log, the
 /// choice's own reason, or the rule that made Automatic Compute
-inline Choice effective(Choice c, bool linux_os, uint32_t vendor_id) {
-    if (c.mode == 0 && automatic_is_compute(linux_os, vendor_id))
-        return {2, "the default on Linux AMD (RADV's mesh shaders stop the GPU, issue 2245; RX_VK_MESH_SHADERS=native keeps them)"};
+inline Choice effective(Choice c, bool linux_os, uint32_t vendor_id, uint32_t device_id) {
+    if (c.mode == 0 && automatic_is_compute(linux_os, vendor_id, device_id))
+        return {2, "the default on Linux AMD RDNA 2 (RADV's mesh shaders stop the GPU, issue 2245; RX_VK_MESH_SHADERS=native keeps them)"};
     return c;
 }
 
