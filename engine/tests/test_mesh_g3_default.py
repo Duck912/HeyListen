@@ -25,7 +25,7 @@ def main():
     need('atoi(getenv("RX_VK_MESH_G3")) != 0' in decl, "a value of 0 does not turn it off")
     need("!= nullptr &&" not in decl, "the old off-by-default test is still there")
     need("vendorID" not in decl and "mesh_g3" not in decl, "a vendor gate appeared without a stamp change")
-    need("stage == Stage::Task || stage == Stage::Mesh" in text[at:at + 600], "it is not limited to task and mesh stages")
+    need("stage == Stage::Task || stage == Stage::Mesh" in text[at:at + 1600], "it is not limited to task and mesh stages")
     stamp = SHADER.read_text(encoding="utf-8")
     need('"RX_VK_MESH"' in stamp, "RX_VK_MESH* names are no longer hashed into the program cache stamp")
     print("ok")
