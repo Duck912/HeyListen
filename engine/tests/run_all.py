@@ -189,6 +189,7 @@ MODULES = {
 
 # Checks that cannot run in CI, with why, by OS. Each still runs with --no-skip (or by name).
 SKIP = {
+    "tests/test_udmabuf_limit_unreadable.py": ({"windows"}, "the Linux guest window's start-up check (POSIX file descriptors)"),
     "tests/test_precompile_compute_guard.py": ({"linux"}, "Windows structured exceptions"),
     "tests/test_shader_module_guard.py": ({"linux"}, "Windows structured exceptions"),
     # (the game: these run the lifted code of a real dump against Unicorn)

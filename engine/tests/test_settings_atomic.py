@@ -48,7 +48,7 @@ COPY_SIZE = 40000      # (source.ini, generation 1)
 
 def build(cc, tmp):
     exe = tmp / ("settings_atomic_test" + (".exe" if WINDOWS else ""))
-    flags = ["-std=gnu11", "-O1", "-Wall", "-Wextra", "-Werror"]   # (the helper and the fixture: no warning)
+    flags = ["-std=gnu11", "-O1", "-Wall", "-Wextra", "-Werror", "-Wno-error=attributes"]   # (the helper and the fixture: no warning)
     if WINDOWS:
         subprocess.run([cc] + flags + ["-D_CRT_SECURE_NO_WARNINGS", str(ROOT / "tests/settings_atomic_test.c"), "-o", str(exe)], check=True)
     else:
