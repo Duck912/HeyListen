@@ -1524,6 +1524,9 @@ void log_stage_bind(uint32_t op, int stage) {
 }
 
 void maybe_split(VkCommandBuffer& cmd);
+// (longshot #443) A part's end that waits for the next plain draw (maybe_split, split_part): see part_ends_before_draw
+void split_part(VkCommandBuffer& cmd);
+bool part_end_wanted = false;
 bool occ_sync(VkCommandBuffer& cmd);
 // (TICK-056, RX_VK_PRESYNC_EARLY) the dry pass's draw-and-dispatch count at which the mirrors' pre-sync goes to a worker (0: none)
 int64_t presync_kick_at = 0;
@@ -1677,6 +1680,11 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         if (op_timer.on) op_timer.at(h.op);
         const uint8_t* a = p + 8;
         const uint32_t avail = h.size - 8;
+        // (the part's end maybe_split asked for: here, right before a draw with a vertex stage that will be recorded, so that the next
+        // part begins with it and not with a mesh draw or a dispatch)
+        if (!dry && !worker && part_end_wanted && (h.op == NOP_DRAW || h.op == NOP_DRAW_IDX || h.op == NOP_DRAW_INDIRECT) &&
+            s.render_enabled && !s.raster_discard)
+            split_part(cmd);
         if (!worker && ubo_check_on()) ubo_check_refs(h.op, a, avail);
         switch (h.op) {
         case NOP_END: return;
@@ -2385,9 +2393,37 @@ int seg_cap() {
     return v;
 }
 
+/// (longshot #443) Whether a part ends only right before a plain draw (one with a vertex stage), so that no cut leaves a part
+/// beginning with a mesh draw or a dispatch. On an Intel Arc B580 (Windows, driver 32.0.101.9154, native mesh shaders) a command buffer
+/// whose first draws are mesh draws drew every plain draw after them as exploded triangles: white shards over the scene in Kokiri
+/// Forest while moving, in about 2% of the frames (whenever the 120th draw or dispatch fell among the depth pre-pass's mesh draws or
+/// on the culling dispatch before them): 0 of 1,101 frames with it against 40 of 1,121 without, at the same frame rate. A run of
+/// mesh draws or dispatches with no plain draw in it is no longer cut. On by default on Intel, where it was measured;
+/// RX_VK_SPLIT_BEFORE_DRAW=1 turns it on elsewhere, =0 off (a part ends after its 120th draw or dispatch, as before)
+bool part_ends_before_draw() {
+    static const bool on = [] {
+        const char* e = getenv("RX_VK_SPLIT_BEFORE_DRAW");
+        return e ? atoi(e) != 0 : dev.props.vendorID == 0x8086;
+    }();
+    return on;
+}
+
 void maybe_split(VkCommandBuffer& cmd) {
     static const int64_t every = getenv("RX_VK_CHUNK") ? atoll(getenv("RX_VK_CHUNK")) : 120;
     if (!rec_cur || every <= 0 || ++part_work < every || rec_parts + 1 >= kMaxParts || dump_on()) return;
+    if (part_ends_before_draw()) {   // (at the next plain draw: replay(). The submission's end comes first when none follows)
+        part_end_wanted = true;
+        return;
+    }
+    split_part(cmd);
+}
+
+/// The recording's part ends here and the submission goes on in a new one (maybe_split says when)
+void split_part(VkCommandBuffer& cmd) {
+    part_end_wanted = false;
+    // (asked for in another command buffer of the submission: what maybe_split refuses is refused here too, and it asks again at the
+    // next draw it would cut after)
+    if (!rec_cur || rec_parts + 1 >= kMaxParts || dump_on()) return;
     end_pass(cmd);
     // (longshot #189) a part's end does not write the stream's uniform updates recorded so far into guest memory, nor start a new
     // window of them: the submission's last part writes them all, as an unsplit submission does (finish_recording). A uniform
@@ -3590,7 +3626,7 @@ void bench_replay(const std::vector<uint64_t>& handles) {
     Recording& first = begin_recording(value);
     memory_begin_submission();
     full_barrier(first.cmd);
-    rec_cur = &first, rec_cur_value = value, rec_parts = 0, part_work = 0;
+    rec_cur = &first, rec_cur_value = value, rec_parts = 0, part_work = 0, part_end_wanted = false;
     VkCommandBuffer cmd = first.cmd;
     for (uint64_t h : handles)
         if (h) replay(cmd, *cur_state, reinterpret_cast<const uint8_t*>(h));
@@ -3941,7 +3977,7 @@ bool run_submit(const uint64_t* handles, int n, uint64_t value, uint64_t queue, 
         Recording& first = begin_recording(tag);
         memory_begin_submission();
         full_barrier(first.cmd, "barrier (recording start)");
-        rec_cur = &first, rec_cur_value = tag, rec_parts = 0, part_work = 0;
+        rec_cur = &first, rec_cur_value = tag, rec_parts = 0, part_work = 0, part_end_wanted = false;
     }
     VkCommandBuffer cmd = rec_cur->cmd;
     const uint8_t* stop = nullptr;
