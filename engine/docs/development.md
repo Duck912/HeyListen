@@ -198,6 +198,22 @@ case-sensitive, and an unknown one is ignored.
 | `RX_VK_ONLY=1` | Only the Vulkan back end, with no lift |
 | `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
 
+### Crash reports and performance statistics
+
+Both are opt-in and off by default; the addresses and the rows are in [performance statistics](../../docs/performance-statistics.md)
+and the [user guide](../../docs/USER_GUIDE.md#privacy-crash-reports-and-performance-statistics). Without an address in the
+build (`nx2/addresses.ini` `telemetry=` is empty) nothing can be sent and the menu's two rows say "Not available in this build".
+
+| Switch | What it does |
+|---|---|
+| `HL_TELEMETRY_URL=<https address>` | The telemetry server for this run, over the build's address (a test against a local server). Only from the environment: `hookshot_env.txt` is refused it. A bad address (not https, spaces, a login in it) is no address: nothing is sent |
+| `HL_TELEMETRY_TEST_HTTP=1` | With `HL_TELEMETRY_URL`, also takes a plain `http://` address on this PC itself (`127.0.0.1`, `localhost`, `[::1]`), so a test server needs no certificate. For tests only; nothing else is ever sent over http |
+| `HOS_CRASH_TEST=start` or `<seconds>` | The game crashes on purpose (a write to address 16), just after the crash handlers are set up or that many seconds later, to see the crash window. Not taken from `hookshot_env.txt` |
+| `HOS_CRASH_WATCH=0` | No crash window: the helper (`HeyListen --crash-watch <pid> <run id> <game folder> <log> -`, the game's own executable, started early) is not started, and a crash is only recorded in `bug-reports/pending` |
+| `RX_VK_PERF_INTERVAL=<seconds>` | Seconds of play between two performance summaries (60 to 840, 300 by default) |
+| `HL_PERF_MAX_SENDS`, `HL_PERF_TIMEOUT`, `HL_PERF_BACKOFF=0` | The sender's limits: summaries a start (12), a request's seconds (10), and whether a busy server is left alone until its `Retry-After` (on) |
+| `send_crash_reports=1`, `send_performance_stats=1` | The two menu rows as `hookshot_options.ini` keeps them (`Send crash reports automatically`, `Send performance statistics`); anything but `1` is off |
+
 ## The options file
 
 `hookshot_options.ini`, in the game folder, holds the Insert menu's rows as `<key>=<number>`: the row's name in lower

@@ -107,10 +107,10 @@ The first start prepares the game's shaders, which takes a while. Later starts a
 ### On Linux
 
 1. Open the [latest release](https://github.com/Sacrappy/HeyListen/releases/latest) and download
-   `HeyListen-<version>-x86_64.AppImage`. It is HeyListen Builder with everything it needs inside.
+   `HeyListen-<version>-Linux-x64.AppImage`. It is HeyListen Builder with everything it needs inside.
 2. Allow it to run as a program. In most file managers: right-click it, open **Properties**, and turn on
    "Allow executing file as program" (the words differ between desktops). Or in a terminal:
-   `chmod +x HeyListen-*-x86_64.AppImage`.
+   `chmod +x HeyListen-*-Linux-x64.AppImage`.
 3. Double-click it. The HeyListen Builder window opens.
 4. Under **Game files**, choose **.nup file** or **romfs and exefs**, then press **Browse** to pick them. The builder
    checks the version.
@@ -464,10 +464,10 @@ You need:
 <summary>Linux, the AppImage from the command line</summary>
 
 ```sh
-./HeyListen-<version>-x86_64.AppImage --cli --nup ~/your-game.nup --out ~/Games/HeyListen   # make_game.py's options
-./HeyListen-<version>-x86_64.AppImage --play                    # the game the builder built last, without the window
-./HeyListen-<version>-x86_64.AppImage --play ~/Games/HeyListen   # the game in that folder
-./HeyListen-<version>-x86_64.AppImage --update ~/Games/HeyListen # the new release, and that folder built again
+./HeyListen-<version>-Linux-x64.AppImage --cli --nup ~/your-game.nup --out ~/Games/HeyListen   # make_game.py's options
+./HeyListen-<version>-Linux-x64.AppImage --play                    # the game the builder built last, without the window
+./HeyListen-<version>-Linux-x64.AppImage --play ~/Games/HeyListen   # the game in that folder
+./HeyListen-<version>-Linux-x64.AppImage --update ~/Games/HeyListen # the new release, and that folder built again
 ```
 
 `HOOKSHOT_JOBS=<n>` (or `--jobs <n>` with `--cli`) limits how many files compile at once.
