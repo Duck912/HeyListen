@@ -1211,12 +1211,13 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         OpBranch(end_label);
         AddLabel(end_label);
     }};
-    // (RX_VK_MESH_G3=1, task and mesh stages, off by default: a name under RX_VK_MESH, so the program cache starts again with it) The
+    // (RX_VK_MESH_G3, task and mesh stages, on by default on every GPU, RX_VK_MESH_G3=0 off: a name under RX_VK_MESH, so a value set
+    // by hand has its own program cache, and the default moved the stamp once) The
     // search below worked each candidate's range out again at every global access, and a mesh program has ~80 of them inlined: two
     // loads, an ArrayLength and a dozen 64-bit operations a candidate, 40% of the code of OoT's 225k-word mesh shader, which NVIDIA runs
     // from the instruction cache's edge (1.1 ms of 1.5 ms came back with the helpers not inlined). Here a range (its aligned base, its
     // length in bytes) is made once, in the first block, and an access is a subtraction and a comparison.
-    static const bool g3_hoist{getenv("RX_VK_MESH_G3") != nullptr && atoi(getenv("RX_VK_MESH_G3")) != 0};
+    static const bool g3_hoist{getenv("RX_VK_MESH_G3") == nullptr || atoi(getenv("RX_VK_MESH_G3")) != 0};
     // (RX_VK_MESH_NOINLINE_ABOVE=n, off by default: a mesh stage of more than n IR instructions keeps its helpers out of line and
     // its ranges unhoisted, global_helper_policy.h)
     static const u32 noinline_above{NoInlineAbove(getenv("RX_VK_MESH_NOINLINE_ABOVE"))};
