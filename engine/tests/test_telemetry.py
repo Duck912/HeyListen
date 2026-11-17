@@ -292,8 +292,7 @@ def stamp_lines():
     ini = Path(tempfile.mkdtemp(prefix="addresses-")) / "a.ini"
     try:
         check(addresses.address("telemetry") == "https://141-253-120-55.sslip.io" and
-              addresses.stamp_lines() == ["telemetry=https://141-253-120-55.sslip.io
-"],
+              addresses.stamp_lines() == ["telemetry=https://141-253-120-55.sslip.io\n"],
               "nx2/addresses.ini's telemetry= is the release's https address, which the build stamps")
         ini.write_text("[addresses]\ntelemetry = https://t.example/\ncrash_issue = https://g.example/o/r/issues/1\n", encoding="utf-8")
         check(addresses.stamp_lines(str(ini)) == ["telemetry=https://t.example\n", "crash_issue=https://g.example/o/r/issues/1\n"],
