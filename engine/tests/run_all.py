@@ -28,6 +28,8 @@ OS = "windows" if WINDOWS else "linux"
 ARGS = {
     "tests/test_sampler_retirement.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_staging_burst.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_dummy_views.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_sparse_bind_failure.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_dead_targets_sweep.py": ["--cxx", "{cxx}"],
     "tests/test_precompile_save.py": ["--cxx", "{cxx}"],
     "tests/test_settings_atomic.py": ["--cc", "gcc"],

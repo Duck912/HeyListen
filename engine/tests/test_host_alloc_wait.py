@@ -65,8 +65,8 @@ def check_sites():
         body = block(nvn, head)
         if helper not in body or re.search(r"\b(malloc|calloc|realloc)\(", body):
             raise SystemExit("FAIL: %s allocates without %s" % (head, helper))
-    if nvn.count("hos_xmalloc(") != 2:   # (this tree's live_handle_add has no published table: pool_get's two only)
-        raise SystemExit("FAIL: pool_get's two mallocs are not all hos_xmalloc")
+    if nvn.count("hos_xmalloc(") != 3:   # (pool_get's two and live_handle_add's published table record)
+        raise SystemExit("FAIL: the NVN layer's mallocs are not all hos_xmalloc")
     for head in ("static void cmd_reserve_rec(", "static uint8_t *flatten("):
         body = block(nvn, head)
         if "pool_get(" not in body or re.search(r"if \(!\w+\) die\(", body):

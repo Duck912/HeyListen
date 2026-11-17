@@ -60,6 +60,8 @@ VkResult vkQueueBindSparse(VkQueue, uint32_t, const VkBindSparseInfo*, VkFence f
 }
 VkResult vkWaitForFences(VkDevice, uint32_t, const VkFence*, VkBool32, uint64_t) { return VK_SUCCESS; }
 VkResult vkResetFences(VkDevice, uint32_t, const VkFence*) { return VK_SUCCESS; }
+bool late_fix_wait_unlocked() { return true; }   // (this tree's sparse_flush calls it, and the timeline note)
+void vk_tl_note(const char*, uint64_t = 0, uint64_t = 0) {}
 
 /* ACTUAL */
 
