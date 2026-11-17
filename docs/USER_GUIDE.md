@@ -44,6 +44,27 @@ Press **Play**, or use the *HeyListen* shortcut on the desktop or in the Start m
 (the game itself is `bin\HeyListen.exe`, which is what Task Manager shows). **Insert** opens the in-game menu
 (graphics, controls, frame rate, cheats). Frame generation is off by default.
 
+## Install with RecompLauncher
+
+[RecompLauncher](https://recomplauncher.com) installs HeyListen for you, like a PC game, and keeps it up to date. It does
+not replace the builder: it runs it for you, with no window.
+
+1. In RecompLauncher, find **HeyListen** and install it.
+2. On its setup screen, give it your copy of the game: the `.nup` file (program `0400486024DEC000`, update v131072, build
+   `e0f3ccfa`), or the folder with its `romfs` and `exefs`. It checks that it is the right version.
+3. Tick **NVIDIA DLSS** or **AMD FSR 4** if you want them (each asks you to accept its maker's license; the files are
+   downloaded to your PC and never shared), then let it build. This takes the same 30 to 60 minutes as the builder and needs
+   the same space; the screen shows the progress.
+4. Press **Play**. Video and gameplay settings (fullscreen, resolution, upscaler, frame generation, frame rate, text speed and
+   more) are on the game's page in RecompLauncher; they change `hookshot_options.ini` in the game folder, the same file the
+   in-game menu (Insert or F1) saves. Your saves are in the game folder's `user\save` (Windows) or
+   `~/.local/share/heylisten/save` (Linux), and the launcher backs them up.
+
+The game is made in the `HeyListen` folder inside the folder RecompLauncher installed HeyListen in. To build it again (after
+an update that says so, or with the other options ticked), change your copy on the setup screen or reinstall; the builder's
+own window works on the same folder if you start it yourself. The first start prepares the game's shaders, as it does after a
+build made with the builder.
+
 ## Saves
 
 Saves are kept in the game folder, in `user\save\` (keep that folder when you copy or move the game). The builder backs them
@@ -65,7 +86,7 @@ Subsystem for Linux, which has no graphics card for Vulkan (so the game itself w
 notes for exactly what ran), and a contributor reported the Linux build of the `main` branch (not this release) working
 on CachyOS with a Radeon RX 9070 XT (Mesa's RADV driver). Expect problems and report them (see Problems below).
 
-- **Download** `HeyListen-<version>-x86_64.AppImage` from the [latest release](https://github.com/Sacrappy/HeyListen/releases/latest).
+- **Download** `HeyListen-<version>-Linux-x64.AppImage` from the [latest release](https://github.com/Sacrappy/HeyListen/releases/latest).
   It is the builder with a compiler, Python, FFmpeg, SDL2 and the Vulkan back end inside; nothing else is installed.
   The release's `heylisten-linux.txt` is the list of parts the update downloads (you do not need it).
 - **Needs**: a 64-bit Linux with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora, Arch, SteamOS...), a CPU with AVX2,
@@ -73,11 +94,11 @@ on CachyOS with a Radeon RX 9070 XT (Mesa's RADV driver). Expect problems and re
   `--appimage-extract-and-run`), an X11 or Wayland desktop, and a GPU whose driver gives Vulkan 1.3 with mesh shaders
   (`vulkaninfo | grep mesh_shader` lists `VK_EXT_mesh_shader`; Mesa for AMD and Intel, NVIDIA's driver). 12 GB of VRAM
   recommended. Your game is the same `.nup` as above.
-- **Run**: allow the file to run (`chmod +x HeyListen-*-x86_64.AppImage`, or the file manager's "Allow executing file as
+- **Run**: allow the file to run (`chmod +x HeyListen-*-Linux-x64.AppImage`, or the file manager's "Allow executing file as
   program") and start it. Choose your `.nup` (or the `romfs` and `exefs` folders) and the language, keep the game
   folder `~/Games/HeyListen` or choose another, press **Build**, wait (10 to 45 minutes, then the shader preparation at
   the first start), then **Play**. Keep the AppImage where it is: the launcher uses it to update.
-- **Without the window**: `./HeyListen-<version>-x86_64.AppImage --cli --nup ~/your-game.nup --out ~/Games/HeyListen`
+- **Without the window**: `./HeyListen-<version>-Linux-x64.AppImage --cli --nup ~/your-game.nup --out ~/Games/HeyListen`
   builds, `--play [folder]` starts the game, `--update <folder>` updates a folder.
 - **Where things are kept**
   - The game folder (`~/Games/HeyListen`): `HeyListen` is the launcher (Play, and Update when a release is newer; the
