@@ -971,4 +971,11 @@ mismatches are counted, the first twelve logged, a line every 10 s (`hl ubo memo
 `engine/tests/test_ubo_slot_memo.py`: the header against a made-up world (6 million steps, the stamp, list and segment moving, the list
 moving during a lookup): 1.79 M hits, 0 mismatches; and the wiring of `uniform_range`.
 
-RESULTS_PLACEHOLDER
+**Validation (PC 3050, slot b, function and picture only; no speed round).** Build `hle1` at da9607bd. `HL_UBO_MEMO_CHECK=1`: kokiri-idle
+359,376 memo hits compared, castle-move 6,531,552, hyrule-walk 7,043,323: **0 mismatches** in all three (the runs were on a machine shared
+with other streams and the first after a build re-prepares shaders, so their frame counts are low and not a measure). Pictures: the last
+shots of castle-move, hyrule-walk (`HL_UBO_MEMO_CHECK=1`) and kokiri-idle (`HL_UBO_MEMO=1`) show the Castle Town market whole and right,
+as `build/s5/refshots-*` (the scripted character stands elsewhere, the runs being slower). Fine profile, kokiri-idle: user uniform
+buffers 2.0-2.1 ms a frame with the memo (3,016-3,089 draws a frame) against 2.9-3.4 ms in a base run made minutes before on the busy
+machine and 2.00 ms in the C2 run: **not a measurement of the gain**, which is still to be made in a short A/B on an idle machine (the
+fine profile's `user uniform buffers` line, castle-move x3). Default off until then.
