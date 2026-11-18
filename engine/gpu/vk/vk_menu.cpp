@@ -47,6 +47,7 @@
 #include "vk_reflex.h"
 #include "upscaler_rows.h"
 #include "menu_restart.h"
+#include "present_mode.h"
 #ifndef HOOKSHOT_VERSION   // (nx2/build.py gives it to this file: nx2/version.py)
 #define HOOKSHOT_VERSION "unknown"
 #endif
@@ -404,6 +405,31 @@ const char* tx_gpu(int v) {
     // (the whole name shows: the selected row slides through it, see marquee_pos)
     return buf;
 }
+/// V-Sync: Off is the game's own way (mailbox, else immediate: no waiting for the refresh), On is FIFO, Adaptive FIFO_RELAXED
+const char* tx_vsync(int v) {
+    static const char* const t[] = {"Off", "On", "Adaptive"};
+    return t[std::clamp(v, 0, 2)];
+}
+const char* hn_vsync(int v, int variant) {
+    static const char* const t[] = {"No waiting for the screen's refresh: the latest frame is shown at once, for the least delay. The picture can tear where the display does not match.",
+                                    "Frames wait for the screen's refresh: no tearing, a little more delay, and the frame rate cannot pass the refresh rate.",
+                                    "As On, but a frame that misses its refresh is shown at once (it can tear) instead of waiting a whole refresh, so a slow moment does not halve the frame rate."};
+    static const char* const relaxed_gone = "This display or driver has no relaxed V-Sync: On is used instead.";
+    static const char* const env = "RX_VK_FIFO or RX_VK_IMMEDIATE in the environment decide the mode: this row does nothing.";
+    const int i = std::clamp(v, 0, 2);
+    const bool gone = dev.present_modes_known && !present_mode::row_exact(i, dev.present_modes_offered);
+    if (variant < 0) return getenv("RX_VK_FIFO") || getenv("RX_VK_IMMEDIATE") ? env : gone && i == 2 ? relaxed_gone : t[i];
+    return variant == 0 ? t[i] : variant == 1 ? (i == 2 ? relaxed_gone : nullptr) : variant == 2 ? env : nullptr;
+}
+const char* tx_vrr(int v) {
+    static const char* const t[] = {"Off", "On", "Auto"};
+    return t[std::clamp(v, 0, 2)];
+}
+MENU_HINTS(hn_vrr, 0,
+           "Nothing changes: the game presents as the V-Sync row says.",
+           "For a G-Sync or FreeSync screen: V-Sync On, the fullscreen window made so Windows can show it directly, and a frame rate "
+           "limit above 60 held 3 fps under the refresh. New: tell us on the issue tracker whether it works for you.",
+           "On in fullscreen when the display lists a variable refresh range, off otherwise. New: tell us on the issue tracker how it goes.")
 const char* tx_pad_layout(int v);
 // (hookshot) the Microphone row: Off, the system's default, or one of the host's microphones (host/nn_audio_in.c: the
 // ocarina's input streams), told to the host by its name (host->mic_select) whenever it changes. The chosen one is kept by
@@ -620,6 +646,12 @@ Row rows[] = {
      "Fills the whole screen with the game, without the window's border. The same as F11.", nullptr, false, true},
     {TAB_GRAPHICS, "GPU device", &opts.gpu_device, 0, 8, 1, tx_gpu,
      "Which graphics card the game runs on. Applies after a restart.", hn_gpu, true, true},
+    {TAB_GRAPHICS, "V-Sync", &opts.vsync, 0, 2, 1, tx_vsync,
+     "Whether frames wait for the screen's refresh. Applies at once, when the swapchain is made again; RX_VK_FIFO and RX_VK_IMMEDIATE in the "
+     "environment win over it. The overlay's Presentation line shows the mode in use.", hn_vsync, false, true},
+    {TAB_GRAPHICS, "VRR (G-Sync / FreeSync)", &opts.vrr, 0, 2, 1, tx_vrr,
+     "For a variable refresh rate screen, in fullscreen: the game is shown without tearing and without V-Sync's wait. "
+     "Needs G-Sync or FreeSync on in the driver. Linux: the compositor's job.", hn_vrr, false, true},
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
      "show artifacts.", hn_framegen, false, true},
@@ -1008,6 +1040,8 @@ const char* ini_key(const Row& r) {
     if (r.value == &opts.dlss) return "dlss";   // (as opts.dlss and RX_VK_DLSS)
     if (r.value == &opts.send_perf) return "send_performance_stats";   // (host/hos_telemetry.h reads both of these)
     if (r.value == &opts.send_crash) return "send_crash_reports";
+    if (r.value == &opts.vsync) return "vsync";
+    if (r.value == &opts.vrr) return "vrr";
     if (r.value == &opts.update_check) return "update_check";   // (host/hos_update.c reads it, and writes it for "Never ask again")
     static char k[32];
     size_t n = 0;

@@ -24,6 +24,7 @@
 #include "vk_framegen.h"
 #include "vk_internal.h"
 #include "gpu_choice.h"
+#include "present_mode.h"
 #include "sparse_queue.h"
 #include "vk_menu.h"
 #include "perf_report.h"
@@ -768,26 +769,40 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     }
     if (result != VK_SUCCESS || modes.empty())
         logf("vk: querying present modes failed (VkResult %d, count %u); trying mandatory FIFO mode", (int)result, n);
-    VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
-    const bool force_fifo = getenv("RX_VK_FIFO") != nullptr;   // (as on a card or driver with vsync forced)
-    if (!force_fifo) {
-        for (auto m : modes)
-            if (m == VK_PRESENT_MODE_MAILBOX_KHR) mode = m;
-        // (Windows, no mailbox: AMD's driver has none, and FIFO held anything under 60 fps at 30.
-        //  Linux: immediate on NVIDIA's X11 path turns vblank off for every output, so the other
-        //  monitor and other programs tear. RX_VK_IMMEDIATE=1 still asks for it.)
-        const bool want_immediate = getenv("RX_VK_IMMEDIATE") != nullptr;
-#ifdef _WIN32
-        if (want_immediate || mode == VK_PRESENT_MODE_FIFO_KHR)
-#else
-        if (want_immediate)
-#endif
-            for (auto m : modes)
-                if (m == VK_PRESENT_MODE_IMMEDIATE_KHR) mode = m;
+    // (the Insert menu's Presentation row, RX_VK_FIFO and RX_VK_IMMEDIATE over it: present_mode.h)
+    unsigned offered = 0;
+    for (auto m : modes) {
+        if (m == VK_PRESENT_MODE_MAILBOX_KHR) offered |= present_mode::kHasMailbox;
+        if (m == VK_PRESENT_MODE_IMMEDIATE_KHR) offered |= present_mode::kHasImmediate;
+        if (m == VK_PRESENT_MODE_FIFO_RELAXED_KHR) offered |= present_mode::kHasRelaxed;
     }
+    dev.present_modes_offered = offered;
+    dev.present_modes_known = true;   // (the V-Sync row says when it cannot have what it asks)
+    present_mode::Input pin;
+    pin.row = opts.vsync;
+    const present_mode::VrrState vrr = vrr_resolved(true);   // (logs its choice and why, once for each change)
+    pin.vrr = vrr.active;
+    pin.env_fifo = getenv("RX_VK_FIFO") != nullptr;   // (as on a card or driver with vsync forced)
+    pin.env_immediate = getenv("RX_VK_IMMEDIATE") != nullptr;
+    pin.offered = offered;
+#ifdef _WIN32
+    pin.windows = true;
+#endif
+    // (Linux: immediate on NVIDIA's X11 path turns vblank off for every output, so the other monitor and other programs tear:
+    //  only asked for, by RX_VK_IMMEDIATE=1 or the row)
+    const present_mode::Mode picked = present_mode::pick(pin);
+    const VkPresentModeKHR mode = picked == present_mode::kMailboxMode ? VK_PRESENT_MODE_MAILBOX_KHR
+                                  : picked == present_mode::kImmediateMode ? VK_PRESENT_MODE_IMMEDIATE_KHR
+                                  : picked == present_mode::kFifoRelaxedMode ? VK_PRESENT_MODE_FIFO_RELAXED_KHR
+                                                                            : VK_PRESENT_MODE_FIFO_KHR;
+    dev.vrr_active = vrr.active && !pin.env_fifo && !pin.env_immediate;
+    if (vrr.active && picked != present_mode::kFifo && picked != present_mode::kFifoRelaxedMode)
+        logf("vk: VRR: %s is used, the environment's choice: no FIFO", present_mode::mode_name(picked));
     VkSwapchainCreateInfoKHR ci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     ci.surface = dev.surface;
     ci.minImageCount = std::max(caps.minImageCount, 4u);   // (hookshot: mailbox with frame interpolation: an image always free)
+    if (mode == VK_PRESENT_MODE_FIFO_KHR || mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR)
+        ci.minImageCount = std::max(caps.minImageCount, 3u);   // (V-Sync: each image queued is a refresh more of delay; three keep one free)
     if (caps.maxImageCount) ci.minImageCount = std::min(ci.minImageCount, caps.maxImageCount);
     ci.imageFormat = fmt.format;
     ci.imageColorSpace = fmt.colorSpace;
@@ -873,10 +888,14 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     dev.swap_rendered = std::move(rendered);
     dev.swap_format = fmt.format;
     dev.swap_extent = {width, height};
-    dev.present_mode_name = mode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate" : "fifo";
+    dev.present_mode_name = mode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate"
+                            : mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR ? "fifo_relaxed" : dev.vrr_active ? "fifo (VRR)" : "fifo";
     dev.swap_images = std::move(images);
-    logf("vk: swapchain %ux%u, %u images, %s", width, height, n,
-         mode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate" : "fifo");
+    logf("vk: swapchain %ux%u, %u images, %s (V-Sync %s%s)", width, height, n,
+         mode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate"
+         : mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR ? "fifo_relaxed" : "fifo",
+         opts.vsync == present_mode::kOn ? "On" : opts.vsync == present_mode::kAdaptive ? "Adaptive" : "Off",
+         dev.vrr_active ? ", VRR" : "");
     swap_views_make(ci.imageUsage, mutable_view ? view_formats[1] : fmt.format);
     reflex_swapchain_created(sc);   // (NVIDIA Reflex: its sleep mode on the new swapchain)
     return true;
@@ -1286,4 +1305,171 @@ int display_refresh_mhz() {
     cached.store(mhz, std::memory_order_relaxed);
     return mhz;
 }
+} // namespace mkwvk
+
+namespace mkwvk {
+namespace {
+
+#ifdef _WIN32
+/// Whether the display the window is on lists a refresh range wide enough to be variable (FreeSync / G-Sync Compatible), from
+/// its EDID in the registry (Enum\DISPLAY\<id>\<instance>\Device Parameters\EDID). -1: not found. Windows' own VRR flag has no
+/// documented query outside DXGI's tearing support, which every modern GPU says yes to; the EDID range is the usable hint
+int display_variable(int* lo, int* hi) {
+    MONITORINFOEXW mi{};
+    mi.cbSize = sizeof mi;
+    if (!main_window || !GetMonitorInfoW(MonitorFromWindow(main_window, MONITOR_DEFAULTTONEAREST), &mi)) return -1;
+    DISPLAY_DEVICEW dd{};
+    dd.cb = sizeof dd;
+    for (DWORD i = 0; EnumDisplayDevicesW(mi.szDevice, i, &dd, 0); i++) {
+        std::wstring id = dd.DeviceID;   // (MONITOR\<hardware id>\{class guid}\<number>)
+        const size_t a = id.find(L'\\'), b = a == std::wstring::npos ? a : id.find(L'\\', a + 1);
+        if (b == std::wstring::npos) continue;
+        const std::wstring hw = id.substr(a + 1, b - a - 1), drv = id.substr(b + 1);
+        HKEY base = nullptr;
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, (L"SYSTEM\\CurrentControlSet\\Enum\\DISPLAY\\" + hw).c_str(), 0, KEY_READ, &base) !=
+            ERROR_SUCCESS)
+            continue;
+        int result = -1;
+        wchar_t inst[128];
+        for (DWORD k = 0, n = 128; result < 0 && RegEnumKeyExW(base, k, inst, &n, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS;
+             k++, n = 128) {
+            HKEY key = nullptr;
+            if (RegOpenKeyExW(base, inst, 0, KEY_READ, &key) != ERROR_SUCCESS) continue;
+            wchar_t driver[160];
+            DWORD bytes = sizeof driver - sizeof(wchar_t), type = 0;
+            if (RegQueryValueExW(key, L"Driver", nullptr, &type, (LPBYTE)driver, &bytes) == ERROR_SUCCESS && type == REG_SZ) {
+                driver[bytes / sizeof(wchar_t)] = 0;
+                HKEY par = nullptr;
+                unsigned char edid[512];
+                DWORD size = sizeof edid;
+                if (!_wcsicmp(driver, drv.c_str()) && RegOpenKeyExW(key, L"Device Parameters", 0, KEY_READ, &par) == ERROR_SUCCESS) {
+                    if (RegQueryValueExW(par, L"EDID", nullptr, nullptr, edid, &size) == ERROR_SUCCESS)
+                        result = present_mode::edid_variable(edid, (int)size, lo, hi);
+                    RegCloseKey(par);
+                }
+            }
+            RegCloseKey(key);
+        }
+        RegCloseKey(base);
+        if (result >= 0) return result;
+    }
+    return -1;
+}
+#endif
+
+std::atomic<bool> vrr_touched{false};   // (a state other than the default was made: the Off path leaves everything alone until then)
+
+} // namespace
+
+present_mode::VrrState vrr_resolved(bool fresh) {
+    using namespace present_mode;
+    static std::mutex mu;
+    static VrrState st;
+    static int64_t at = 0;
+    static std::atomic<int> logged_key{-1};
+    if (opts.vrr == kVrrOff && !vrr_touched.load(std::memory_order_relaxed)) return VrrState{};
+    std::lock_guard lk(mu);
+    const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    // (cached: a row change shows within a quarter second, and the swapchain is made again then)
+    if (!fresh && at && now - at < 250) return st;
+    at = now;
+    VrrInput in;
+    in.row = opts.vrr;
+    in.fullscreen = opts.fullscreen != 0;
+    in.refresh_mhz = display_refresh_mhz();
+    in.env_forced = getenv("RX_VK_FIFO") != nullptr || getenv("RX_VK_IMMEDIATE") != nullptr;
+    int lo = 0, hi = 0;
+    in.detected = -1;
+#ifdef _WIN32
+    static int detected = -2, dlo = 0, dhi = 0;
+    static HMONITOR detected_for = nullptr;
+    const HMONITOR mon = main_window ? MonitorFromWindow(main_window, MONITOR_DEFAULTTONEAREST) : nullptr;
+    if (in.row == kVrrAuto && (detected == -2 || detected_for != mon)) detected = display_variable(&dlo, &dhi), detected_for = mon;
+    if (in.row == kVrrAuto) in.detected = detected, lo = dlo, hi = dhi;
+#endif
+    st = vrr_resolve(in);
+    if (st.active || st.popup || vrr_touched.load()) vrr_touched = true;
+#ifdef _WIN32
+    static bool popup_applied = false;
+    if (st.popup != popup_applied) {
+        popup_applied = st.popup;
+        // (host/display.c: the fullscreen window as a WS_POPUP that Windows can flip, or as it was; WM_APP + 10 on its thread)
+        if (main_window) PostMessageA(main_window, WM_APP + 10, (WPARAM)(st.popup ? 1 : 0), 0);
+    }
+#endif
+#ifdef _WIN32
+    {   // (does the fullscreen window have what flip needs: WS_POPUP, no caption, the monitor's whole rectangle? Said when that
+        // changes, and as "not" only when it stays so for a second evaluation: the window's thread takes the style a moment after)
+        static int flip_said = -1, not_yet = 0;
+        if (st.active && in.fullscreen && main_window) {
+            const LONG style = GetWindowLongA(main_window, GWL_STYLE);
+            RECT r{};
+            MONITORINFO mi{};
+            mi.cbSize = sizeof mi;
+            const bool covers = GetWindowRect(main_window, &r) && GetMonitorInfoA(MonitorFromWindow(main_window, MONITOR_DEFAULTTONEAREST), &mi) &&
+                                r.left == mi.rcMonitor.left && r.top == mi.rcMonitor.top && r.right == mi.rcMonitor.right && r.bottom == mi.rcMonitor.bottom;
+            const int ok = (style & WS_POPUP) && !(style & WS_CAPTION) && covers ? 1 : 0;
+            not_yet = ok ? 0 : not_yet + 1;
+            if (ok != flip_said && (ok || not_yet >= 2)) {
+                flip_said = ok;
+                logf("vk: VRR: the fullscreen window %s", ok ? "is a borderless popup over the whole monitor: Windows can flip it" :
+                     "is not a popup covering the monitor: Windows composes it and G-Sync / FreeSync may not follow");
+            }
+        } else {
+            flip_said = -1, not_yet = 0;
+        }
+    }
+#endif
+    // (one line for each change: the row, the fullscreen row, the refresh, the choice)
+    const int hz = (in.refresh_mhz + 500) / 1000;
+    const int key = (in.row << 20) | (in.fullscreen << 19) | ((int)st.why << 15) | (st.active << 14) | (hz & 0x3fff);
+    if (key != logged_key.load()) {
+        logged_key = key;
+        char why[160];
+        switch (st.why) {
+        case kWhyOff: snprintf(why, sizeof why, "off"); break;
+        case kWhyForcedByEnv: snprintf(why, sizeof why, "RX_VK_FIFO / RX_VK_IMMEDIATE decide the present mode: VRR leaves the presents alone"); break;
+        case kWhyAutoWindowed: snprintf(why, sizeof why, "Auto, windowed: off (fullscreen is needed to flip)"); break;
+        case kWhyAutoNotFound: snprintf(why, sizeof why, "Auto: the display lists no variable refresh range in its EDID: off"); break;
+        case kWhyAutoDetected: snprintf(why, sizeof why, "Auto: the display's EDID lists %d-%d Hz", lo, hi); break;
+        default: snprintf(why, sizeof why, "On"); break;
+        }
+        if (st.active) {
+            char cap[96];
+            if (st.cap_below > 0) snprintf(cap, sizeof cap, "a frame rate limit above 60 held at %d fps (refresh %d Hz - %d)", hz - st.cap_below, hz, st.cap_below);
+            else snprintf(cap, sizeof cap, "refresh rate unknown: no frame limit cap");
+            logf("vk: VRR: %s; FIFO present mode (V-Sync row: %s), %s, %s; %s%s", why,
+                 opts.vsync == kOn ? "On" : opts.vsync == kAdaptive ? "Adaptive" : "Off, overridden",
+                 in.fullscreen ? "borderless popup window (can flip)" : "windowed: the window cannot flip, G-Sync for windowed mode must be on in the driver", cap,
+                 reflex_available() ? (opts.reflex ? "NVIDIA Reflex on" : "NVIDIA Reflex off (turn it on for the lowest delay)") : "no NVIDIA Reflex here",
+                 framegen_on() ? "; frame generation presents are spaced to the same limit" : "");
+        } else {
+            logf("vk: VRR: %s", why);
+        }
+    }
+    return st;
+}
+
+int present_choice_key() {
+    const present_mode::VrrState s = vrr_resolved(false);
+    return opts.vsync * 4 + (s.active ? 1 : 0) + (s.popup ? 2 : 0);
+}
+
+int vrr_fps_cap() {
+    if (opts.vrr == present_mode::kVrrOff && !vrr_touched.load(std::memory_order_relaxed)) return 0;
+    const present_mode::VrrState s = vrr_resolved(false);
+    const int mhz = display_refresh_mhz();
+    if (!s.active || s.cap_below <= 0 || mhz <= 0) return 0;
+    const int cap = (mhz + 500) / 1000 - s.cap_below;
+    return cap >= 60 ? cap : 0;
+}
+
+int64_t vrr_min_gap_ns() {
+    if (opts.vrr == present_mode::kVrrOff && !vrr_touched.load(std::memory_order_relaxed)) return 0;
+    const present_mode::VrrState s = vrr_resolved(false);
+    const int mhz = display_refresh_mhz();
+    if (!s.active || s.cap_below <= 0 || mhz <= 3000 * s.cap_below) return 0;
+    return (int64_t)(1e12 / (double)(mhz - 1000 * s.cap_below));
+}
+
 } // namespace mkwvk

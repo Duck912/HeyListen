@@ -408,6 +408,7 @@ void display_main() {
     struct { int on_time, late, skipped; int64_t since; } stat{};
     int64_t next_show = 0, shown_at = 0;
     int hist[6] = {};
+    uint64_t shown_left_out = 0;   // (made frames a FIFO swapchain had no refresh for, in this log window)
     for (;;) {
         Job j;
         {
@@ -424,7 +425,9 @@ void display_main() {
         if (!stat.since) stat.since = j.at;
         if (j.at - stat.since > 5000000000LL) {
             logf("vk: frame interpolation: %d frames shown on time, %d late (over 2 ms); shown apart: <7 ms %d, 7-9 %d, 9-12 %d, "
-                 "12-17 %d, 17-25 %d, over 25 %d", stat.on_time, stat.late, hist[0], hist[1], hist[2], hist[3], hist[4], hist[5]);
+                 "12-17 %d, 17-25 %d, over 25 %d%s", stat.on_time, stat.late, hist[0], hist[1], hist[2], hist[3], hist[4], hist[5],
+                 shown_left_out ? " (V-Sync: some made frames left out, the refresh has no room)" : "");
+            shown_left_out = 0;
             memset(hist, 0, sizeof hist);
             stat = {0, 0, 0, j.at};
         }
@@ -434,13 +437,33 @@ void display_main() {
         // that has fallen behind what came starts again from now. RX_VK_PACE=0: as they come.
         const bool pace = opts.pace != 0;
         const bool timed = j.set->shown >= 0;   // (Auto: each frame at its own refresh's time)
-        const int shown = timed ? j.set->shown : j.set->made + 1;
+        int shown = timed ? j.set->shown : j.set->made + 1;
+        // (V-Sync On / Adaptive / VRR: a FIFO swapchain shows one frame a refresh at most, and a set with more frames than the
+        // refreshes in a game frame queued and held the game back. Fixed multipliers then leave out the made frames the refresh
+        // has no room for, spread evenly over the set; the game's own frame, the last, always stays. Auto already counts refreshes)
+        int keep[kMaxMult];
+        int kept = 0;
+        if (!timed && dev.present_mode_name && dev.present_mode_name[0] == 'f') {
+            const int mhz = display_refresh_mhz();
+            const int room = mhz > 0 ? (int)((double)interval * mhz / 1e12 + 0.05) : shown;
+            if (room >= 1 && room < shown) {
+                for (int q = 0; q < room; q++) keep[kept++] = (int)(((int64_t)(q + 1) * shown + room / 2) / room) - 1;
+                keep[kept - 1] = shown - 1;
+                shown_left_out += (uint64_t)(shown - room);
+            }
+        }
+        if (!kept)
+            for (int q = 0; q < shown; q++) keep[kept++] = q;
+        shown = kept;
         const int64_t step = interval / std::max(shown, 1);
+        const int64_t gap = vrr_min_gap_ns();   // (VRR: no two presents closer than the refresh - 3: the display's range)
         if (timed) menu_note_frame(true, 0);   // (the overlay's game rate: Auto counts each game frame, given a refresh or not)
-        for (int k = 0; k < shown; k++) {
+        for (int q = 0; q < shown; q++) {
+            const int k = timed ? q : keep[q];   // (the frame of the set shown: all of them but the ones left out)
             int64_t due = timed ? j.set->due[k] : pace ? next_show : 0;
             const int64_t now = now_ns();
             if (due < now) due = now;
+            if (gap && shown_at && due < shown_at + gap) due = shown_at + gap;
             if (!timed && due > j.at + interval + step) due = j.at + interval + step;
             if (timed && due > now + 100000000) due = now;   // (a game frame time gone wrong: not held back)
             if (due - now > 1000000) wait_until_near(due - now - 1000000);

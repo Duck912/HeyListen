@@ -310,6 +310,64 @@
       }
     },
     {
+      "id": "vsync",
+      "label": "V-Sync",
+      "help": "Whether frames wait for the screen's refresh. Off is the game's own way (the latest frame at once, the least delay, can tear); On waits for the refresh; Adaptive shows a late frame at once instead of waiting.",
+      "group": "Video",
+      "choices": [
+        {
+          "label": "Off",
+          "set": {
+            "vsync": "0"
+          }
+        },
+        {
+          "label": "On",
+          "set": {
+            "vsync": "1"
+          }
+        },
+        {
+          "label": "Adaptive",
+          "set": {
+            "vsync": "2"
+          }
+        }
+      ],
+      "defaults": {
+        "vsync": "0"
+      }
+    },
+    {
+      "id": "vrr",
+      "label": "VRR (G-Sync / FreeSync)",
+      "help": "New: for a variable refresh rate screen, in fullscreen. On: V-Sync On, a borderless window Windows can show directly, and the frame rate limit above 60 held 3 fps under the refresh. Please report on the issue tracker whether it works for you.",
+      "group": "Video",
+      "choices": [
+        {
+          "label": "Off",
+          "set": {
+            "vrr": "0"
+          }
+        },
+        {
+          "label": "On",
+          "set": {
+            "vrr": "1"
+          }
+        },
+        {
+          "label": "Auto",
+          "set": {
+            "vrr": "2"
+          }
+        }
+      ],
+      "defaults": {
+        "vrr": "0"
+      }
+    },
+    {
       "id": "game_speed",
       "label": "Game speed",
       "help": "How the game keeps time below 60 frames a second. Real time keeps its pace; Per frame slows it with the frames.",

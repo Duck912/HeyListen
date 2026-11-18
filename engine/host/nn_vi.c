@@ -120,6 +120,10 @@ static int fps_limit(void) {
     int rx_option(int id, int otherwise);
     int v = env > 0 ? env : rx_option(HL_OPT_FPS_LIMIT, 60);
     v = v < 30 ? 30 : v > 360 ? 360 : v;
+    if (v > 60) {   /* (the VRR row: a few fps under the refresh; 0 when VRR is off, which leaves the limit alone) */
+        const int cap = rx_option(HL_OPT_VRR_CAP, 0);
+        if (cap >= 60 && cap < v) v = cap;
+    }
     return rx_option(0, 1) && v > 60 ? v : 60;   /* (Per frame: the game's steps are whole frames of 1/60 s: 60) */
 }
 static int64_t next_frame_at, window_start, frames_in_window;

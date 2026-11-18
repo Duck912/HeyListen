@@ -193,6 +193,7 @@ void perf_picture(uint32_t w, uint32_t h, const ImVec4& c) {
         static const int lim[] = {60, 90, 120, 144, 165, 240};
         int fps = !opts.realtime ? 60 : lim[opts.fps_limit < 0 || opts.fps_limit > 5 ? 0 : opts.fps_limit];
         if (const char* e = getenv("HOS_FPS_LIMIT")) fps = atoi(e) > 0 ? atoi(e) : fps;
+        if (const int cap = vrr_fps_cap(); fps > 60 && cap >= 60 && cap < fps) fps = cap;   // (the VRR row: held under the refresh)
         if (opts.framegen >= 2) snprintf(v[4], sizeof v[4], "%d fps + frame generation", fps);
         else snprintf(v[4], sizeof v[4], "%d fps", fps);
     }
