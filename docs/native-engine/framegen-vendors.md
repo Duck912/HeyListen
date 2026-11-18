@@ -115,3 +115,19 @@ one for an emulator renderer that already paces its own presents. It needs the d
    Testable here (RTX 5070: up to 4x; the runtime tells the maximum).
 2. **FSR 4 FG**: implement only to the extent it can be written safely without a card (fetch of the FG DLL added to `ffx_sdk.py`, the
    setting, graceful "needs RX 9000" fallback), or leave it as a documented test plan for Mooseca. See the final report for what was done.
+
+## 4. The multiplier per mode, the limit, and what was left of Hookshot's follow-ups (branch feat/fg-menu-limits)
+
+- **ec76f696** (pmwork-personal, "DLSS FG's multiplier stops at its runtime's most + 1") is ported with its author: the multiplier
+  that runs is ramegen_now() (gpu/vk/vk_framegen.cpp), at most the runtime's most + 1 while DLSS FG makes the frames (6x on an
+  RTX 50, 2x on an RTX 40). Here the rule is ramegen_rows.h: the same for DLSS FG, AMD FSR 3.1 FG makes 2x only, the built-in
+  generator Auto and 2x to 8x. The V-Sync, swapchain and translation parts of that commit have no counterpart here.
+- **Frame rate limit**: the rate presented. Fixed multiplier m: the game runs at the limit over m (host/nn_vi.c ps_plan, with
+  HL_OPT_FRAMEGEN_MULT), the multiplier lowered so the game keeps 20 frames a second (60: 3x at most). Off and Auto: the game at the
+  limit. Unlimited (rame_rate_limit=6): nothing held.
+- **02a2e4f0** ("with V-Sync On, frame generation leaves out the made frames the refresh has no room for") and **6438c2ef** ("fixed
+  multipliers on the game's timeline under V-Sync On (FIFO)") are not ported: both belong to Hookshot's V-Sync row and its FIFO
+  swapchain (eat/vsync-vrr here, not on this branch) and to the earlier timeline work (#1362: ixed_on_timeline, ifo_slot)
+  that this tree's k_framegen.cpp does not have; a cherry-pick of 6438c2ef conflicts in k_framegen.cpp and k_internal.h on those
+  functions. They shape how made frames are spread under FIFO, not how many are made or at what rate the game runs, so they do not
+  help the limit. They are the ones to take with the V-Sync row.

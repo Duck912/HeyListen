@@ -75,7 +75,7 @@ def main():
     vk = ROOT / "gpu" / "vk"
     framegen = (vk / "vk_framegen.cpp").read_text(encoding="utf-8")
     dlss = (vk / "vk_dlss.cpp").read_text(encoding="utf-8")
-    rows = (vk / "framegen_rows.h").read_text(encoding="utf-8")
+    rows = (vk / "framegen_rows.h").read_text(encoding="utf-8").replace("#pragma once", "")
     fixture = rows + MAIN
     check_sources(framegen, dlss)
     with tempfile.TemporaryDirectory(prefix="framegen-dlss-cap-") as tmp:

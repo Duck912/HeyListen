@@ -233,13 +233,15 @@ choices and starts the game again, so progress since your last save is lost.
 | Graphics | Quality preset | Custom, Minimum (4GB), Low (6GB), Balanced (8GB), High (12GB), Ultra (16GB+) | Custom |
 | | Fullscreen | Off, On (the same as <kbd>F11</kbd>) | Off |
 | | GPU device | Auto, or each graphics card by name (after a restart) | Auto |
-| | Frame generation | Off, 2x to 8x | Off |
+| | Upscaler | Game's own, NVIDIA DLSS (only in builds with NVIDIA's DLSS SDK, below; on RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on, below), AMD FSR 4 (only in builds with FSR 4, below), Off (every build and GPU, `dlss=6`: no upscaling network, the 3D at the Render resolution stretched to the output, no anti-aliasing; Render resolution steps as for the game's own, Sharpness applies) | Game's own |
+| | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS, FSR 3.1 or FSR 4: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLSS also **DLAA (native)** and with FSR 4 **Native AA (FSR 4)**, after Auto: the 3D at 100% with the upscaler's anti-aliasing (saved as `resolution=7`; they were Upscaler choices before, and an options file that saved them as the Upscaler is read as DLSS or FSR 4 with this) | Auto |
+| | DLSS model | DLSS 4 (Transformer, preset K), DLSS 4.5 (Transformer 2, preset M), DLSS 4.5 (Transformer 2, preset L), NVIDIA default, DLSS 3 (CNN, preset E) (builds with DLSS; used by DLSS, DLAA included) | first run only, by GPU: DLSS 3 under 7 GB of video memory, else DLSS 4 on RTX 20 and 30, DLSS 4.5 (M) on RTX 40 and 50 |
+| | Frame generation by | Built-in / AMD FSR 3.1 (the renderer's own interpolation, and AMD FSR 3.1's at 2x where it runs), NVIDIA DLSS FG (RTX 40 and newer, with a temporal Upscaler and NVIDIA's runtime), AMD FSR 3.1 FG (shown in a build with DLSS, or where AMD FSR 3.1's frame interpolation runs; saved as `frame_generation_by`: 0, 1, 2) | Built-in / AMD FSR 3.1 |
+| | Frame generation | Off, Auto, 2x to 8x, but only what Frame generation by makes: NVIDIA DLSS FG 2x up to its runtime's most (6x on an RTX 50, 2x on an RTX 40) and no Auto, AMD FSR 3.1 FG 2x, Built-in Auto and 2x to 8x. Right under Frame generation by; changing the mode keeps the multiplier within the new mode's | Off |
 | | Frame pacing | Off, On | Off |
 | | NVIDIA Reflex | Off, On, On + Boost (NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
+| | Frame rate limit | 60, 90, 120, 144, 165, 240, Unlimited (saved as `frame_rate_limit` 0 to 6). The rate shown, the game's frames and the made ones: with a fixed Frame generation multiplier the game runs at the limit over it (120 at 3x: the game at 40; the multiplier is lowered where that would leave the game under 20 frames a second). Above 60 needs Game speed on Real time | 60 |
 | | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440 (after a restart) | 2048x1152 |
-| | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on, below), AMD FSR 4, AMD FSR 4 Native AA (only in builds with FSR 4, below), Off (every build and GPU, `dlss=6`: no upscaling network, the 3D at the Render resolution stretched to the output, no anti-aliasing; Render resolution steps as for the game's own, Sharpness applies) | Game's own |
-| | DLSS model | DLSS 4 (Transformer, preset K), DLSS 4.5 (Transformer 2, preset M), DLSS 4.5 (Transformer 2, preset L), NVIDIA default, DLSS 3 (CNN, preset E) (builds with DLSS; used by DLSS and DLAA) | first run only, by GPU: DLSS 3 under 7 GB of video memory, else DLSS 4 on RTX 20 and 30, DLSS 4.5 (M) on RTX 40 and 50 |
-| | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS, FSR 3.1 or FSR 4: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLAA or FSR 4 Native AA: Native | Auto |
 | | Window scaling filter | Off, Catmull-Rom, Lanczos | Off |
 | | Sharpness | 0 to 100%, in steps of 10 | 0% |
 | | Handheld profile | Off, On (after a restart) | Off |
@@ -276,15 +278,20 @@ choices and starts the game again, so progress since your last save is lost.
   `hookshot_log.txt` lists every card as `vk: device <n>`; `RX_VK_DEVICE=<n>` chooses one for a single run and wins
   over the menu.
 - **Frame generation** makes extra frames between the game's own. It adds a little input delay, and fast motion can
-  show artifacts. At 2x, AMD FSR 3.1's frame interpolation makes the frame where it runs (below); at 3x and more, and
-  where it does not run, the renderer's own does. **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay. It paces
+  show artifacts. **Frame generation by** chooses who makes them and sits right above the multiplier, which offers only what
+  that mode makes: **NVIDIA DLSS FG** 2x up to what its runtime makes on the GPU (6x on an RTX 50, 2x on an RTX 40, no Auto;
+  Hookshot ec76f696), **AMD FSR 3.1 FG** 2x, the built-in one Auto and 2x to 8x (at 2x AMD FSR 3.1's frame interpolation makes
+  the frame where it runs, below). A higher value saved before shows and runs as the top of the mode, and changing the mode keeps
+  the multiplier within the new mode's, never raising it. **Frame rate limit** is the rate shown: with a fixed multiplier the
+  game runs at the limit over it (120 at 3x: the game at 40, never under 20 frames a second: the multiplier is lowered where it
+  would), Off or Auto at the limit, Unlimited holds nothing back. **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay. It paces
   the frames that frame generation shows, so it has no effect while Frame generation is Off.
-- **The scaling rows**, in the picture's order: **Output resolution** is the size of the game's whole frame, HUD
-  included. The **Upscaler** fills it from the 3D: the game's own network, NVIDIA DLSS or DLAA (the 3D at full size,
-  edges smoothed), AMD FSR 3.1, or AMD FSR 4 or its Native AA (below). DLSS and DLAA look softer than the game's own: set
-  **Sharpness** to around 80% with them. **DLSS model**
-  chooses their network, DLSS 4 or 4.5 (below). **Render
-  resolution** is the 3D's share of the output. The **Window scaling filter** then scales the frame to your window,
+- **The scaling rows**: the **Upscaler** and the **Render resolution** sit together above the frame generation rows. The
+  **Upscaler** fills the output from the 3D: the game's own network, NVIDIA DLSS, AMD FSR 3.1, AMD FSR 4 (below) or Off.
+  **Render resolution** is the 3D's share of the output; with DLSS its **DLAA (native)** choice draws the 3D at full size with
+  the edges smoothed, and with FSR 4 **Native AA (FSR 4)** (they were Upscaler choices, and a saved one is read as the Render
+  resolution's). DLSS and DLAA look softer than the game's own: set **Sharpness** to around 80% with them. **DLSS model** chooses
+  their network, DLSS 4 or 4.5 (below). **Output resolution** is the size of the game's whole frame, HUD included. The **Window scaling filter** then scales the frame to your window,
   and **Sharpness** sharpens it, by the picture's pixels: when the window is much larger than the picture (the Handheld
   profile's 1536x864 on a 4K screen), a Sharpness kept from an older version is stronger than it was, so a lower one may
   suit.
@@ -550,7 +557,7 @@ themselves can trail for now.
 <details>
 <summary>NVIDIA DLSS (optional, NVIDIA's SDK under NVIDIA's license)</summary>
 
-A game built with NVIDIA's DLSS SDK offers **NVIDIA DLSS** and **NVIDIA DLAA** in the Graphics tab's **Upscaler** row on
+A game built with NVIDIA's DLSS SDK offers **NVIDIA DLSS** in the Graphics tab's **Upscaler** row (and **DLAA (native)** in **Render resolution** with it) on
 NVIDIA RTX cards (`dlss=` in `hookshot_options.ini`, `RX_VK_DLSS=0/1/2` for one run): DLSS Super Resolution in place of
 the game's own upscaler, with camera jitter (**NVIDIA Reflex** needs no SDK and is in
 every build). NVIDIA's files are NVIDIA's, under its own license, the
@@ -610,7 +617,7 @@ of its own downloads (`C:\ProgramData\NVIDIA\NGX\models`) before it uses the gam
 <details>
 <summary>AMD FSR 4 (optional, AMD's DLLs not included)</summary>
 
-A game built with FSR 4 offers **AMD FSR 4** and **AMD FSR 4 Native AA** in the Graphics tab's **Upscaler** row: AMD's
+A game built with FSR 4 offers **AMD FSR 4** in the Graphics tab's **Upscaler** row, and **Native AA (FSR 4)** in **Render resolution** with it: AMD's
 machine-learned temporal upscaler in place of the game's own, on the same inputs as DLSS (the scene's colour and depth, the
 camera's and the characters' motion, and the camera jitter). Native AA draws the 3D at full size and smooths its edges.
 With HDR on **Native**, it takes the game's HDR colour as linear light, so highlights above the paper white are kept
