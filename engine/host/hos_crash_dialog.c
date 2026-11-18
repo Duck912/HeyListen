@@ -1934,24 +1934,35 @@ static void perf_take(const char *name, void *user) {
 static int perf_cmp(const void *a, const void *b) {
     return hos_perf_older((const char *)a, (const char *)b) ? -1 : hos_perf_older((const char *)b, (const char *)a) ? 1 : 0;
 }
+/* What one kind of report is: where its files wait and are kept once sent, where it goes, what it says it is, and its limits. The
+   performance summaries and the pipeline state records (gpu/vk/state_report.h) are sent by the same code, each from its own folders */
+typedef struct PerfFeed {
+    const char *pending, *sent, *path, *agent;
+    long max_body;
+    int max_pending, max_sends, keep_sent;
+} PerfFeed;
+static const PerfFeed perf_summaries = {HOS_PERF_PENDING, HOS_PERF_SENT, HOS_TELEMETRY_PERF_PATH, "heylisten-perf-report",
+                                        HOS_PERF_MAX_BODY, HOS_PERF_MAX_PENDING, HOS_PERF_MAX_SENDS, HOS_PERF_MAX_PENDING};
+static const PerfFeed pipeline_states = {HOS_PIPES_PENDING, HOS_PIPES_SENT, HOS_TELEMETRY_PIPELINES_PATH, "heylisten-pipeline-states",
+                                         HOS_PIPES_MAX_BODY, HOS_PIPES_MAX_PENDING, HOS_PIPES_MAX_SENDS, HOS_PIPES_KEEP_SENT};
 /* (the sent summaries kept as they went, perf_sent/: what the team got, for the player to read; the newest 48) */
-static void perf_keep_sent(const char *dir, const char *name, const char *body, size_t n) {
+static void perf_keep_sent(const char *dir, const PerfFeed *feed, const char *name, const char *body, size_t n) {
     char sent[PATH_MAX_UTF8], path[PATH_MAX_UTF8];
-    if (!join(sent, sizeof sent, dir, HOS_PERF_SENT)) return;
+    if (!join(sent, sizeof sent, dir, feed->sent)) return;
     make_dir(sent);
     if (join(path, sizeof path, sent, name)) replace_text(path, body, n);
     static PerfNames kept;
     kept.n = 0;
     each_name(sent, perf_take, &kept);
     qsort(kept.names, (size_t)kept.n, sizeof kept.names[0], perf_cmp);
-    for (int i = 0; i + HOS_PERF_MAX_PENDING < kept.n; i++)
+    for (int i = 0; i + feed->keep_sent < kept.n; i++)
         if (join(path, sizeof path, sent, kept.names[i])) remove_utf8(path);
 }
 /* One summary posted: the server's HTTP status (0: no answer), its Retry-After in *retry (-1 none) */
-static int perf_post(const char *dir, const char *url, const char *file, long *retry) {
+static int perf_post(const char *dir, const PerfFeed *feed, const char *url, const char *file, long *retry) {
     char curl[PATH_MAX_UTF8], pending[PATH_MAX_UTF8], headers[PATH_MAX_UTF8], answer[PATH_MAX_UTF8], data[PATH_MAX_UTF8 + 1];
     *retry = -1;
-    if (!find_curl(curl, sizeof curl) || !join(pending, sizeof pending, dir, HOS_PERF_PENDING) ||
+    if (!find_curl(curl, sizeof curl) || !join(pending, sizeof pending, dir, feed->pending) ||
         !join(headers, sizeof headers, pending, ".sending.headers") || !join(answer, sizeof answer, pending, ".sending.answer"))
         return 0;
     remove_utf8(headers), remove_utf8(answer);
@@ -1961,7 +1972,7 @@ static int perf_post(const char *dir, const char *url, const char *file, long *r
     snprintf(secs, sizeof secs, "%ld", limit);
     const char *const proto = strncmp(url, "https://", 8) ? "=http" : "=https";   /* (http: only HL_TELEMETRY_TEST_HTTP's loopback) */
     const char *const args[] = {"--disable", "--silent", "--show-error", "--max-time", secs, "--connect-timeout", secs, "--proto", proto,
-                                "--header", "Content-Type: application/json", "--user-agent", "heylisten-perf-report",
+                                "--header", "Content-Type: application/json", "--user-agent", feed->agent,
                                 "--data-binary", data, "--dump-header", headers, "--output", answer, url};
     const int ran = spawn_exe(curl, args, (int)(sizeof args / sizeof args[0]), (int)limit * 1000 + 5000, NULL);
     char *head = ran == 1 ? read_text(headers, 16 << 10, NULL) : NULL;
@@ -1973,18 +1984,18 @@ static int perf_post(const char *dir, const char *url, const char *file, long *r
 /* Sends what waits in dir's perf_pending/ (dir: the game folder), when the player chose to and the build has an address.
    Returns the summaries the server took or refused; -1 when nothing was tried: not chosen, no address, no curl, or the server
    asked to be left alone (the summaries stay for the next start) */
-int hos_perf_send_run(const char *dir) {
+static int perf_feed_run(const char *dir, const PerfFeed *feed) {
     char path[PATH_MAX_UTF8], pending[PATH_MAX_UTF8], url[HOS_TELEMETRY_URL_MAX + 40], base[HOS_TELEMETRY_URL_MAX + 8];
     char stamped[HOS_TELEMETRY_URL_MAX + 8] = "";
     char *ini = join(path, sizeof path, dir, "hookshot_options.ini") ? read_text(path, 256 << 10, NULL) : NULL;
     const int chosen = ini && hos_telemetry_opt_on(ini, HOS_TELEMETRY_KEY_PERF);
     free(ini);
-    if (!chosen || !join(pending, sizeof pending, dir, HOS_PERF_PENDING)) return -1;
+    if (!chosen || !join(pending, sizeof pending, dir, feed->pending)) return -1;
     char *stamp = join(path, sizeof path, dir, "hookshot_version.txt") ? read_text(path, 16 << 10, NULL) : NULL;
     if (stamp) hos_telemetry_stamp_value(stamp, "telemetry", stamped, sizeof stamped);
     free(stamp);
     if (!hos_telemetry_base(getenv(HOS_TELEMETRY_ENV), getenv(HOS_TELEMETRY_TEST_HTTP_ENV), stamped, base, sizeof base) ||
-        !hos_telemetry_join(url, sizeof url, base, HOS_TELEMETRY_PERF_PATH))
+        !hos_telemetry_join(url, sizeof url, base, feed->path))
         return -1;
     char curl[PATH_MAX_UTF8];
     if (!find_curl(curl, sizeof curl)) return -1;
@@ -1993,7 +2004,7 @@ int hos_perf_send_run(const char *dir) {
     each_name(pending, perf_take, &waiting);
     qsort(waiting.names, (size_t)waiting.n, sizeof waiting.names[0], perf_cmp);
     int skip = 0;
-    for (; skip + HOS_PERF_MAX_PENDING < waiting.n; skip++)   /* (too many: the oldest go unsent) */
+    for (; skip + feed->max_pending < waiting.n; skip++)   /* (too many: the oldest go unsent) */
         if (join(path, sizeof path, pending, waiting.names[skip])) remove_utf8(path);
     const int backoff = hos_perf_env_number(getenv("HL_PERF_BACKOFF"), 1, 0, 1) != 0;
     char next[PATH_MAX_UTF8];
@@ -2009,18 +2020,18 @@ int hos_perf_send_run(const char *dir) {
         }
         free(text);
     }
-    const long most = hos_perf_env_number(getenv("HL_PERF_MAX_SENDS"), HOS_PERF_MAX_SENDS, 1, HOS_PERF_MAX_PENDING);
+    const long most = hos_perf_env_number(getenv("HL_PERF_MAX_SENDS"), feed->max_sends, 1, feed->max_pending);
     int done = 0, all = 1;
     for (int i = skip; i < waiting.n && done < most; i++) {
         if (!join(path, sizeof path, pending, waiting.names[i])) continue;
         size_t n = 0;
-        char *body = read_text(path, HOS_PERF_MAX_BODY + 1, &n);
+        char *body = read_text(path, (size_t)feed->max_body + 1, &n);
         int result;
-        if (!body || n == 0 || n > HOS_PERF_MAX_BODY) {
+        if (!body || n == 0 || n > (size_t)feed->max_body) {
             result = HOS_PERF_REFUSED;   /* (unreadable or too big: dropped) */
         } else {
             long retry = -1;
-            const int status = perf_post(dir, url, path, &retry);
+            const int status = perf_post(dir, feed, url, path, &retry);
             if (!status) {   /* (not reached: kept for the next start) */
                 free(body), all = 0;
                 break;
@@ -2038,12 +2049,20 @@ int hos_perf_send_run(const char *dir) {
             }
         }
         remove_utf8(path);   /* (before the copy: nothing between the server's yes and the summary leaving perf_pending/) */
-        if (result == HOS_PERF_SENT_OK && body) perf_keep_sent(dir, waiting.names[i], body, n);
+        if (result == HOS_PERF_SENT_OK && body) perf_keep_sent(dir, feed, waiting.names[i], body, n);
         free(body);
         done++;
     }
     if (all && done == waiting.n - skip) remove_utf8(next);
     return done;
+}
+int hos_perf_send_run(const char *dir) { return perf_feed_run(dir, &perf_summaries); }
+/* The pipeline state records the renderer queued in pipelines_pending/ (gpu/vk/state_report.h), by the same rules, to
+   <the build's address>/telemetry/pipelines. Nothing with HL_TELEMETRY_PIPELINES=0, nor without Send performance statistics. The
+   return is hos_perf_send_run's */
+int hos_pipes_send_run(const char *dir) {
+    if (!hos_telemetry_pipelines_on(getenv(HOS_TELEMETRY_PIPELINES_ENV))) return -1;
+    return perf_feed_run(dir, &pipeline_states);
 }
 #ifdef _WIN32
 static DWORD WINAPI perf_send_thread(void *p) {
@@ -2054,6 +2073,9 @@ static void *perf_send_thread(void *p) {
     void hos_log(const char *fmt, ...);
     const int n = hos_perf_send_run(dir);
     if (n >= 0) hos_log("perf: %d performance summaries sent or refused (Send performance statistics is on)", n);
+    const int m = hos_pipes_send_run(dir);
+    if (m > 0) hos_log("perf: %d pipeline state batches sent or refused (Send performance statistics is on, HL_TELEMETRY_PIPELINES is not 0)", m);
+    else if (n >= 0 && !hos_telemetry_pipelines_on(getenv(HOS_TELEMETRY_PIPELINES_ENV))) hos_log("perf: pipeline state records not sent: HL_TELEMETRY_PIPELINES=0");
     free(dir);
 #ifdef _WIN32
     return 0;
