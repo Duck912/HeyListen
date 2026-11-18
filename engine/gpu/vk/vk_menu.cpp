@@ -234,7 +234,8 @@ const char* dlss_preset_env() {
     return ur::preset_env(e) ? e : nullptr;
 }
 const char* tx_dlss_model(int v) {
-    static const char* const t[] = {"Transformer (K)", "Transformer 2 (M)", "Transformer 2 (L)", "NVIDIA default"};
+    static const char* const t[] = {"DLSS 4 (Transformer, preset K)", "DLSS 4.5 (Transformer 2, preset M)",
+                                    "DLSS 4.5 (Transformer 2, preset L)", "NVIDIA default", "DLSS 3 (CNN, preset E)"};
     if (const char* e = dlss_preset_env()) {
         static char b[48];
         const unsigned p = ur::dlss_preset(v, e);
@@ -242,26 +243,24 @@ const char* tx_dlss_model(int v) {
         else snprintf(b, sizeof b, "NVIDIA default (RX_VK_DLSS_PRESET)");
         return b;
     }
-    if (ur::cnn_for_vram(v, device_vram_bytes())) return "CNN (E)";
     return t[std::clamp(v, 0, ur::kModels - 1)];
 }
-/// The DLSS model: the value chosen (the K row's on a card under 7 GB: why it is E); variant 1: the game's own upscales (the row waits for DLSS or DLAA); variant 2: set for
+/// The DLSS model: the value chosen; variant 1: the game's own upscales (the row waits for DLSS or DLAA); variant 2: set for
 /// this run by RX_VK_DLSS_PRESET
 const char* hn_dlss_model(int v, int variant) {
     static const char* const t[] = {
-        "NVIDIA's transformer model: the one tested most here.",
-        "NVIDIA's second-generation transformer, its pick for Performance: sharper, at a little more GPU time.",
-        "The second-generation transformer as NVIDIA tuned it for Ultra Performance, the smallest Render resolutions.",
+        "DLSS 4: NVIDIA's first transformer model, the lighter one. First-run default on RTX 20 and 30. Applies to every mode.",
+        "DLSS 4.5: NVIDIA's second-generation transformer, sharper. First-run default on RTX 40 and 50; on RTX 20 and 30 (no FP8) "
+        "it costs more GPU time, but you can use it.",
+        "DLSS 4.5, preset L: NVIDIA tuned it for Ultra Performance, but it works in every mode. Costs the most GPU time, more on RTX 20 and 30 (no FP8).",
         "Lets DLSS's runtime pick for each mode: what it picks can change with a runtime update.",
+        "DLSS 3: NVIDIA's older CNN model, lighter on video memory and GPU time. First-run default under 7 GB of video memory.",
     };
     static const char* const unused = "Used by NVIDIA DLSS and DLAA: choose one in the Upscaler row.";
     static const char* const env = "Set for this run by RX_VK_DLSS_PRESET.";
-    static const char* const cnn = "NVIDIA's CNN model, chosen for graphics cards with less than 7 GB of memory: less video "
-                                   "memory and GPU time than the transformer.";
     if (variant < 0) variant = dlss_preset_env() ? 2 : upscaler() == ur::GAME ? 1 : 0;
     if (variant == 1) return unused;
     if (variant == 2) return env;
-    if (variant == 0 && ur::cnn_for_vram(v, device_vram_bytes())) return cnn;
     return variant == 0 ? t[std::clamp(v, 0, ur::kModels - 1)] : nullptr;
 }
 const char* tx_percent(int v) {
@@ -2033,6 +2032,16 @@ void startup_screen(const StartupView* view) {
     startup_on.store(true, std::memory_order_release);
 }
 
+static bool dlss_model_saved;   // (hookshot_options.ini has a dlss_model line)
+void menu_first_run_model(uint32_t vendor_id, uint32_t device_id) {
+    if (dlss_model_saved || vendor_id != 0x10de) return;   // (only NVIDIA GPUs run DLSS; a saved value is never changed)
+    dlss_model_saved = true;
+    opts.dlss_model = ur::default_model(vendor_id, device_id, device_vram_bytes());
+    save();   // (at once: the menu shows the real value, and the player's change is saved on top of it)
+    logf("vk: DLSS model: first run, started at %s for this GPU (%#x), saved to the options file",
+         opts.dlss_model == ur::MODEL_CNN ? "DLSS 3 (CNN, preset E)" : opts.dlss_model == ur::MODEL_M ? "DLSS 4.5 (preset M)" : "DLSS 4 (preset K)",
+         (unsigned)device_id);
+}
 void menu_init() {
     static bool done;
     if (done) return;
@@ -2059,6 +2068,7 @@ void menu_init() {
                 if (!r.value || strcmp(line, ini_key(r))) continue;
                 const int v = atoi(eq + 1);
                 *r.value = r.value == &opts.output_res ? output_choice_text(eq + 1) : std::min(std::max(v, r.lo), r.hi);
+                if (r.value == &opts.dlss_model) dlss_model_saved = true;   // (a saved model is the player's: menu_first_run_model)
             }
             has_resolution |= !strcmp(line, "resolution");
             v2 |= !strcmp(line, "options_version");

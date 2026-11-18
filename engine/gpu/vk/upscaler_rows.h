@@ -100,38 +100,50 @@ inline int step_upscaler(int v, int dir, unsigned available) {
 /// The same, where the choices are DLSS and DLAA only when dlss_ok (a build with NVIDIA's SDK, on a GPU DLSS runs on)
 inline int step_upscaler(int v, int dir, bool dlss_ok) { return step_upscaler(v, dir, bit(GAME) | dlss_bits(dlss_ok)); }
 
-/// The DLSS model row (opts.dlss_model, saved as dlss_model): which of NVIDIA's networks DLSS and DLAA draw with, by its
-/// preset (NVSDK_NGX_DLSS_Hint_Render_Preset_*). 0 the transformer, preset K (the default here, the one tested), or on a
-/// card with less than 7 GB of video memory the CNN, preset E (cnn_for_vram); 1 the second generation transformer, preset M
-/// (NVIDIA's own pick for Performance); 2 the same generation as tuned for Ultra Performance, preset L; 3 NVIDIA's default,
-/// preset 0 (the runtime picks per mode, and a runtime update can change it)
-enum { MODEL_K = 0, MODEL_M = 1, MODEL_L = 2, MODEL_DEFAULT = 3, kModels = 4 };
-/// Preset E, NVIDIA's last CNN model (vk_dlss.cpp checks the number against the SDK's)
+/// The DLSS model row (opts.dlss_model, saved as dlss_model): which of NVIDIA's networks DLSS and DLAA draw with, for EVERY
+/// mode and render size and on any RTX card, by its preset (NVSDK_NGX_DLSS_Hint_Render_Preset_*): 0 DLSS 4, the first
+/// transformer, preset K; 1 DLSS 4.5, the second generation transformer, preset M; 2 DLSS 4.5, preset L; 3 NVIDIA's default,
+/// preset 0 (the runtime picks per mode, and a runtime update can change it); 4 DLSS 3, NVIDIA's last CNN model, preset E (older,
+/// lighter on video memory and GPU time). The saved numbers keep their meaning from before DLSS 4.5 was named (the CNN is a
+/// new number: an old file is unchanged). Nothing overrides a chosen model: not the mode, not the GPU
+enum { MODEL_K = 0, MODEL_M = 1, MODEL_L = 2, MODEL_DEFAULT = 3, MODEL_CNN = 4, kModels = 5 };
+/// Preset E (vk_dlss.cpp checks the number against the SDK's)
 constexpr unsigned kPresetE = 5;
-/// The K row draws with preset E on a card with less than 7 GB of video memory (vram: device_vram_bytes(), 0 when not known:
-/// K), the same rule for DLSS (vk_dlss.cpp wanted_preset) and the row's text: less video memory and GPU time than K (an RTX
-/// 3050 6 GB at Performance, 1080p: 1.55 ms less GPU time and 27 MB less of NGX's memory, the same picture)
-inline bool cnn_for_vram(int model, uint64_t vram) { return model == MODEL_K && vram && vram < (7ull << 30); }
-inline unsigned model_preset(int model, uint64_t vram = 0) {
-    if (cnn_for_vram(model, vram)) return kPresetE;
+/// Presets of NVIDIA's transformers (K = DLSS 4; M and L = DLSS 4.5)
+constexpr unsigned kPresetK = 11, kPresetL = 12, kPresetM = 13;
+/// Whether the GPU has FP8 tensor cores, the reason DLSS 4.5 (M and L) costs RTX 20 and 30 more: an NVIDIA GPU (vendor 0x10de)
+/// of the Ada generation or later. NVIDIA's PCI device ids run by generation: Turing 0x1e00 to 0x21ff, Ampere (GA10x) 0x2200
+/// to 0x25ff, Ada (AD10x) 0x2600 to 0x28ff, Blackwell 0x2900 and up (an RTX 4090 is 0x2684, a 3090 0x2204, a 3050 0x2584, a
+/// 5090 0x2b85), so 0x2600 is the line. The device id is the one Vulkan reports (VkPhysicalDeviceProperties)
+inline bool fp8_gpu(uint32_t vendor_id, uint32_t device_id) { return vendor_id == 0x10de && device_id >= 0x2600; }
+/// The model a first run starts with, by the GPU (only until the player has one in hookshot_options.ini; menu_first_run_model
+/// writes it there at once): with less than 7 GB of video memory (vram: device_vram_bytes(), 0 when not known: not) the CNN, on any
+/// RTX (less video memory and GPU time, the same picture at Performance: an RTX 3050 6 GB, 1080p, 1.55 ms less and 27 MB less of
+/// NGX's memory); else DLSS 4 (K) on RTX 20 and 30, which NVIDIA says pay more for DLSS 4.5; DLSS 4.5 (M) on RTX 40 and 50
+inline int default_model(uint32_t vendor_id, uint32_t device_id, uint64_t vram = 0) {
+    return vram && vram < (7ull << 30) ? MODEL_CNN : fp8_gpu(vendor_id, device_id) ? MODEL_M : MODEL_K;
+}
+/// The row's preset
+inline unsigned model_preset(int model) {
     switch (model) {
-    case MODEL_M: return 13;
-    case MODEL_L: return 12;
+    case MODEL_M: return kPresetM;
+    case MODEL_L: return kPresetL;
     case MODEL_DEFAULT: return 0;
-    default: return 11;   // (K, also for a value past the row)
+    case MODEL_CNN: return kPresetE;
+    default: return kPresetK;   // (K, also for a value past the row)
     }
 }
 /// The preset DLSS is asked for: RX_VK_DLSS_PRESET over the row (env: its value, or nullptr), a letter (A = 1 ... Z = 26,
-/// either case) or 0 for NVIDIA's default; anything else leaves the row's (vram: as model_preset's)
+/// either case) or 0 for NVIDIA's default; anything else leaves the row's
 inline bool preset_env(const char* env) {
     return env && ((*env >= 'A' && *env <= 'Z') || (*env >= 'a' && *env <= 'z') || (env[0] == '0' && !env[1]));
 }
-inline unsigned dlss_preset(int model, const char* env, uint64_t vram = 0) {
-    if (!preset_env(env)) return model_preset(model, vram);
+inline unsigned dlss_preset(int model, const char* env) {
+    if (!preset_env(env)) return model_preset(model);
     if (*env == '0') return 0;
     return (unsigned)(*env >= 'a' ? *env - 'a' + 1 : *env - 'A' + 1);
 }
-/// A preset's letter for the log ('A' + preset - 1), or '0' for NVIDIA's default
+/// A preset's letter for the log ('A' + preset - 1), '0' for NVIDIA's default
 inline char preset_letter(unsigned preset) { return preset ? (char)('A' + preset - 1) : '0'; }
 
 /// The Upscaler row is there only in a build with DLSS or FSR 4 (built: dlss_built() || fsr4_built()): elsewhere the game's own is all there is, and

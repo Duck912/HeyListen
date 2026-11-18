@@ -133,6 +133,8 @@ int main() {
     // the DLSS model row: its presets (NVIDIA's numbers, K = 11), RX_VK_DLSS_PRESET over it, and when it applies
     CHECK("model presets", ur::model_preset(ur::MODEL_K) == 11 && ur::model_preset(ur::MODEL_M) == 13 &&
                                ur::model_preset(ur::MODEL_L) == 12 && ur::model_preset(ur::MODEL_DEFAULT) == 0);
+    CHECK("saved model numbers keep their meaning", ur::MODEL_K == 0 && ur::MODEL_M == 1 && ur::MODEL_L == 2 && ur::MODEL_DEFAULT == 3 &&
+                                                        ur::MODEL_CNN == 4 && ur::kModels == 5 && ur::model_preset(ur::MODEL_CNN) == 5 && ur::kPresetE == 5);
     CHECK("model: a value past the row is K", ur::model_preset(-1) == 11 && ur::model_preset(ur::kModels) == 11);
     CHECK("model without the switch", ur::dlss_preset(ur::MODEL_M, nullptr) == 13 && ur::dlss_preset(ur::MODEL_DEFAULT, nullptr) == 0);
     CHECK("RX_VK_DLSS_PRESET wins", ur::dlss_preset(ur::MODEL_M, "K") == 11 && ur::dlss_preset(ur::MODEL_K, "m") == 13 &&
@@ -140,25 +142,35 @@ int main() {
     CHECK("RX_VK_DLSS_PRESET not a preset", !ur::preset_env(nullptr) && !ur::preset_env("") && !ur::preset_env("1") &&
                                                 !ur::preset_env("05") && ur::dlss_preset(ur::MODEL_M, "7") == 13 &&
                                                 ur::dlss_preset(ur::MODEL_L, "") == 12);
-    // (the K row on a card with less than 7 GB of video memory: NVIDIA's CNN, preset E; the row's text and DLSS both ask
-    // cnn_for_vram. 0: the card's memory not known, K)
+    // the first run's model by the GPU (only when the ini has none): DLSS 4 (K) on RTX 20 and 30, DLSS 4.5 (M) on RTX 40 and 50
     {
-        const uint64_t gb6 = 6ull << 30, gb7 = 7ull << 30, gb8 = 8ull << 30;
-        CHECK("preset E is 5", ur::kPresetE == 5 && ur::preset_letter(ur::kPresetE) == 'E');
-        CHECK("6 GB: the K row draws E", ur::dlss_preset(ur::MODEL_K, nullptr, gb6) == 5 && ur::model_preset(ur::MODEL_K, gb6) == 5 &&
-                                             ur::cnn_for_vram(ur::MODEL_K, gb6) && ur::cnn_for_vram(ur::MODEL_K, gb7 - 1));
-        CHECK("7 GB and more, or not known: K", ur::dlss_preset(ur::MODEL_K, nullptr, gb8) == 11 &&
-                                                    ur::dlss_preset(ur::MODEL_K, nullptr, gb7) == 11 &&
-                                                    ur::dlss_preset(ur::MODEL_K, nullptr, 0) == 11 && !ur::cnn_for_vram(ur::MODEL_K, 0));
-        CHECK("6 GB: M, L and NVIDIA's default as chosen", ur::dlss_preset(ur::MODEL_M, nullptr, gb6) == 13 &&
-                                                               ur::dlss_preset(ur::MODEL_L, nullptr, gb6) == 12 &&
-                                                               ur::dlss_preset(ur::MODEL_DEFAULT, nullptr, gb6) == 0 &&
-                                                               !ur::cnn_for_vram(ur::MODEL_M, gb6) && !ur::cnn_for_vram(ur::MODEL_DEFAULT, gb6));
-        CHECK("6 GB: RX_VK_DLSS_PRESET wins", ur::dlss_preset(ur::MODEL_K, "K", gb6) == 11 && ur::dlss_preset(ur::MODEL_K, "m", gb6) == 13 &&
-                                                  ur::dlss_preset(ur::MODEL_K, "0", gb6) == 0);
-        CHECK("6 GB: a switch that is no preset leaves E", ur::dlss_preset(ur::MODEL_K, "1", gb6) == 5 &&
-                                                               ur::dlss_preset(ur::MODEL_K, "", gb6) == 5 &&
-                                                               ur::dlss_preset(ur::MODEL_K, "05", gb6) == 5);
+        CHECK("PCI ids by generation", !ur::fp8_gpu(0x10de, 0x1e04) /*2080 Ti*/ && !ur::fp8_gpu(0x10de, 0x2204) /*3090*/ &&
+                                           !ur::fp8_gpu(0x10de, 0x2584) /*3050*/ && !ur::fp8_gpu(0x10de, 0x25ff) &&
+                                           ur::fp8_gpu(0x10de, 0x2684) /*4090*/ && ur::fp8_gpu(0x10de, 0x2803) /*4060 Ti*/ &&
+                                           ur::fp8_gpu(0x10de, 0x2b85) /*5090*/ && ur::fp8_gpu(0x10de, 0x2f04) /*5070*/);
+        CHECK("PCI ids: not NVIDIA is not FP8", !ur::fp8_gpu(0x1002, 0x744c) && !ur::fp8_gpu(0x8086, 0x56a0) && !ur::fp8_gpu(0, 0x2684));
+        CHECK("first-run model per generation", ur::default_model(0x10de, 0x1e04) == ur::MODEL_K && ur::default_model(0x10de, 0x2204) == ur::MODEL_K &&
+                                                    ur::default_model(0x10de, 0x2584) == ur::MODEL_K && ur::default_model(0x10de, 0x2684) == ur::MODEL_M &&
+                                                    ur::default_model(0x10de, 0x2b85) == ur::MODEL_M);
+        {
+            const uint64_t gb6 = 6ull << 30, gb7 = 7ull << 30, gb8 = 8ull << 30;
+            CHECK("first run under 7 GB: the CNN on any RTX", ur::default_model(0x10de, 0x2584, gb6) == ur::MODEL_CNN &&
+                                                                 ur::default_model(0x10de, 0x1e04, gb6) == ur::MODEL_CNN &&
+                                                                 ur::default_model(0x10de, 0x2684, gb6) == ur::MODEL_CNN &&
+                                                                 ur::default_model(0x10de, 0x2b85, gb7 - 1) == ur::MODEL_CNN);
+            CHECK("first run at 7 GB and more, or not known: by generation", ur::default_model(0x10de, 0x2584, gb7) == ur::MODEL_K &&
+                                                                              ur::default_model(0x10de, 0x2204, gb8) == ur::MODEL_K &&
+                                                                              ur::default_model(0x10de, 0x2684, gb8) == ur::MODEL_M &&
+                                                                              ur::default_model(0x10de, 0x2684, 0) == ur::MODEL_M &&
+                                                                              ur::default_model(0x10de, 0x2584, 0) == ur::MODEL_K);
+            CHECK("the CNN is the row's for every mode, RX_VK_DLSS_PRESET over it", ur::dlss_preset(ur::MODEL_CNN, nullptr) == 5 &&
+                                                                                    ur::dlss_preset(ur::MODEL_CNN, "K") == 11 &&
+                                                                                    ur::dlss_preset(ur::MODEL_K, nullptr) == 11);
+        }
+        // (a model in the ini is never changed by the GPU: model_preset has no GPU argument, and a 30 series card runs
+        // DLSS 4.5 L with DLAA as chosen)
+        CHECK("an RTX 30 can choose 4.5 L for DLAA", ur::dlss_preset(ur::MODEL_L, nullptr) == 12 && ur::dlss_preset(ur::MODEL_M, nullptr) == 13 &&
+                                                        !ur::model_fixed(ur::DLAA, false));
     }
     CHECK("preset letters", ur::preset_letter(11) == 'K' && ur::preset_letter(13) == 'M' && ur::preset_letter(0) == '0');
     CHECK("model row shown with DLSS built", ur::model_shown(true) && !ur::model_shown(false));

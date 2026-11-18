@@ -93,14 +93,24 @@ def main():
         raise SystemExit("vk_dlss.cpp: DLSS's feature is not made again for another DLSS model")
     if "upscaler_rows::dlss_preset(opts.dlss_model" not in function(dlss, "unsigned wanted_preset() {"):
         raise SystemExit("vk_dlss.cpp: the DLSS model row (and RX_VK_DLSS_PRESET over it) is not the preset asked for")
-    # (the K row's CNN preset E on a card under 7 GB: DLSS and the row's text by the one rule, upscaler_rows.h
-    # cnn_for_vram, checked by behaviour in test_upscaler_rows.cpp)
-    if "device_vram_bytes()" not in function(dlss, "unsigned wanted_preset() {"):
-        raise SystemExit("vk_dlss.cpp wanted_preset: the card's memory is not given to dlss_preset (no CNN preset E under 7 GB)")
-    for name in ("const char* tx_dlss_model(int v) {", "const char* hn_dlss_model(int v, int variant) {"):
-        if "ur::cnn_for_vram(" not in function(menu, name) or "device_vram_bytes()" not in function(menu, name):
-            raise SystemExit("vk_menu.cpp %s: a card under 7 GB is not shown the CNN preset E that DLSS draws with"
-                             % name.split("(")[0].split()[-1])
+    # (the chosen model is for every mode and GPU: wanted_preset asks nothing of the card; the first run's default is written to
+    # the ini at once, and only when the ini has no model)
+    if "device_" in function(dlss, "unsigned wanted_preset() {"):
+        raise SystemExit("vk_dlss.cpp wanted_preset: the card overrides the DLSS model row")
+    if "ur::step_model(" in menu or "MODEL_AUTO" in menu:
+        raise SystemExit("vk_menu.cpp: the DLSS model row has an Auto again")
+    if "int dlss_model = 0;" not in (ROOT / "gpu" / "vk" / "vk_menu.h").read_text(encoding="utf-8"):
+        raise SystemExit("vk_menu.h: the DLSS model row's default is not K (0)")
+    first = function(menu, "void menu_first_run_model(uint32_t vendor_id, uint32_t device_id) {")
+    if "dlss_model_saved" not in first or "ur::default_model(vendor_id, device_id, device_vram_bytes())" not in first or "save();" not in first:
+        raise SystemExit("menu_first_run_model: does not give an ini with no model the GPU's default and save it at once")
+    init = function(menu, "void menu_init() {")
+    if "dlss_model_saved = true" not in init:
+        raise SystemExit("menu_init: a model in the ini is not remembered as the player's")
+    if "menu_first_run_model(dev.props.vendorID, dev.props.deviceID)" not in (ROOT / "gpu" / "vk" / "vk_main.cpp").read_text(encoding="utf-8"):
+        raise SystemExit("vk_main.cpp: the first run's model is not set from the GPU once it is chosen")
+    if "if (keep) save();" not in function(menu, "void set_row(Row& r, int v, int dir, bool keep = true) {"):
+        raise SystemExit("set_row: a row's change is not saved to the ini at once")
     temporal = (ROOT / "gpu" / "vk" / "vk_temporal.cpp").read_text(encoding="utf-8")
     mode = function(temporal, "int temporal_mode() {")
     if "dlss_why() != DLSS_OK" not in mode or "fsr4_why() != FSR_OK" not in mode:

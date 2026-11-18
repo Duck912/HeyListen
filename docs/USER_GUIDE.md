@@ -61,6 +61,7 @@ not replace the builder: it runs it for you, with no window.
 3. Tick **NVIDIA DLSS** or **AMD FSR 4** if you want them (each asks you to accept its maker's license; the files are
    downloaded from NVIDIA or AMD to your PC, checked, put in place for you, and never shared; nothing to copy by hand). On an NVIDIA RTX card the launcher also fetches NVIDIA's own `nvngx_dlss.dll`
    (the optional **NVIDIA DLSS runtime** item of Easy Setup, which you can switch off) into the game's `ngx` folder.
+   In the game's menu (Graphics, **DLSS model**) you choose **DLSS 4** or **DLSS 4.5** (preset M or L) for every mode, DLAA included, on any RTX card. **DLSS 3** (the older CNN model) is lighter on video memory. The first time, the game picks DLSS 3 on a card with less than 7 GB of video memory, else DLSS 4 on RTX 20 and 30 (DLSS 4.5 costs them more GPU time, but you can use it) and DLSS 4.5 on RTX 40 and 50, and saves it; after that your choice is kept.
    Two more ticks are **off** unless you turn them on: **Send anonymous performance statistics** and **Send crash reports
    automatically**. They only write `send_performance_stats=1` and `send_crash_reports=1` into the game's
    `hookshot_options.ini`, the two rows of the in-game menu (Gameplay tab); what they send is in

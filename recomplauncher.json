@@ -536,23 +536,23 @@
     {
       "id": "dlss_model",
       "label": "DLSS model",
-      "help": "Which of NVIDIA's DLSS networks draws the picture. Used with DLSS and DLAA.",
+      "help": "Which of NVIDIA's DLSS networks draws the picture, in every mode. Used with DLSS and DLAA. DLSS 4.5 costs more GPU time on RTX 20 and 30 (no FP8), but you can use it. DLSS 3 (CNN) is older and lighter on video memory. The first time the game runs it picks one for your GPU (DLSS 3 under 7 GB of video memory, else DLSS 4 on RTX 20 and 30, DLSS 4.5 on RTX 40 and 50) and keeps your changes.",
       "group": "Upscaling",
       "choices": [
         {
-          "label": "Transformer (K)",
+          "label": "DLSS 4 (Transformer, preset K)",
           "set": {
             "dlss_model": "0"
           }
         },
         {
-          "label": "Transformer 2 (M)",
+          "label": "DLSS 4.5 (Transformer 2, preset M)",
           "set": {
             "dlss_model": "1"
           }
         },
         {
-          "label": "Transformer 2 (L)",
+          "label": "DLSS 4.5 (Transformer 2, preset L)",
           "set": {
             "dlss_model": "2"
           }
@@ -562,11 +562,14 @@
           "set": {
             "dlss_model": "3"
           }
+        },
+        {
+          "label": "DLSS 3 (CNN, preset E)",
+          "set": {
+            "dlss_model": "4"
+          }
         }
-      ],
-      "defaults": {
-        "dlss_model": "0"
-      }
+      ]
     },
     {
       "id": "filter",
