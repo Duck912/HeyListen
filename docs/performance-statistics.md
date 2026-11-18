@@ -44,7 +44,7 @@ refused one, 429 or 5xx when busy.
 
 | Field | Type | Required | Limits | What it is |
 |---|---|---|---|---|
-| `crash` | array of string | yes |  | The crash handler's lines; the first is `CRASH: exception <code> (<read\|write> ...) at <module+offset>`. The rows of the game's memory (registers and what they point to) are left out |
+| `crash` | array of string | yes |  | The crash handler's lines; the first is `CRASH: exception <code> (<read\|write> ...) at <module+offset>`. The rows of the game's memory (registers and what they point to) are left out. The host backtrace and, after it, `CRASH: stack rsp <hex>: ...` (the first 8 words at the host stack pointer) are kept: a word is `module+offset` (module without its folder), a small value or the hex of a readable address, or `-`; never what a pointer points to |
 | `version` | string | yes | ≤ 40 characters | The game's version |
 | `cpu` | string |  | ≤ 200 characters | The CPU, its threads and the RAM |
 | `gpu` | string |  | ≤ 200 characters | The GPU |

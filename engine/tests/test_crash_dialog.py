@@ -612,6 +612,8 @@ def logic_checks(exe, menu, tmp, form):
                         "1|CRASH: exception 0xc0000005 (read 0x8, guest 0x8) at libc.so.6+0xb5a22"),
                        ("[hos Main] CRASH: exception 0xc0000005 (read 0x8) at ?+0x10", "1|CRASH: exception 0xc0000005 (read 0x8) at unknown+0x10"),
                        ("CRASH: host backtrace: C:\\G\\hookshot.exe+0x1a ntdll.dll+0x33", "1|CRASH: host backtrace: C:\\G\\hookshot.exe+0x1a ntdll.dll+0x33"),
+                       ("[hos Main] CRASH: stack rsp 0x5ff8d0: SDL3.dll+0x11d2a0 0x1 0x1f4a8c0 -",
+                        "1|CRASH: stack rsp 0x5ff8d0: SDL3.dll+0x11d2a0 0x1 0x1f4a8c0 -"),
                        ("[x] CRASH:   x0 0000000000000001", "0|"), ("[x] CRASH: [x19+0x10] 00 11 22", "0|"), ("[x] vk: frame", "0|")):
         assert run(exe, "crashline", line).rstrip("\n") == want, (line, run(exe, "crashline", line))
     cleaned = run(exe, "clean", "  audio: output on Jane's AirPods (3 devices) /home/alice/x Alice's PC C:\\Users\\Bob\\y "
@@ -1115,9 +1117,11 @@ esac
     stamp = "version=vtest-1\ntelemetry=https://d.example\ncrash_issue=https://g.example/o/r/issues/81\n"
     log = ("[hos host] report: renderer Vulkan", "[hos host] vk: Test GPU 1, Vulkan 1.4, driver 0x1; mesh shaders yes, host memory import yes",
 "[hos host] report: os Arch Linux","[hos host] report: cpu Ryzen 7 7700 (16 threads), 32 GB",
+           "[hos host] sdl: SDL3 3.2.8, revision SDL-release-3.2.8-0-g1a2b3c4d5 (libsdl.org), from beside the game",
            "[hos Main] map: Kokiri Forest", "[hos Main] reading %s/secret.txt" % home,
            "[hos host] CRASH: exception 0xc0000005 (read 0x8, guest 0x8) at %s/Games/hookshot+0x1a2b" % home,
-           "[hos host] CRASH:   x0 0000000000000001", "[hos host] CRASH: host backtrace: hookshot+0x1a2b libc.so.6+0x10")
+           "[hos host] CRASH:   x0 0000000000000001", "[hos host] CRASH: host backtrace: hookshot+0x1a2b libc.so.6+0x10",
+           "[hos host] CRASH: stack rsp 0x7ffd10: hookshot+0x1a2b 0x1 0x2c1f0a0 -")
     for answer, buttons in (("sent", "0,1,0,0"), ("busy", "0,0,1"), ("refused", "0,0")):
         folder = home / ("send-" + answer)
         folder.mkdir()
@@ -1131,7 +1135,9 @@ esac
         assert sorted(report) == ["cpu", "crash", "gpu", "log_tail", "map", "options", "os", "release", "renderer", "version"]
         assert (report["version"], report["release"], report["os"], report["map"]) == ("vtest-1", False, "Arch Linux", "Kokiri Forest")
         assert report["crash"] == ["CRASH: exception 0xc0000005 (read 0x8, guest 0x8) at hookshot+0x1a2b",
-                                   "CRASH: host backtrace: hookshot+0x1a2b libc.so.6+0x10"], report["crash"]
+                                   "CRASH: host backtrace: hookshot+0x1a2b libc.so.6+0x10",
+                                   "CRASH: stack rsp 0x7ffd10: hookshot+0x1a2b 0x1 0x2c1f0a0 -"], report["crash"]
+        assert "[hos host] sdl: SDL3 3.2.8, revision SDL-release-3.2.8-0-g1a2b3c4d5 (libsdl.org), from beside the game" in report["log_tail"], report["log_tail"]
         assert "[hos Main] reading ~/secret.txt" in report["log_tail"] and "private-user" not in json.dumps(report), report
         assert report["options"] == "ultrawide=1", "the settings, a value only as the menu's rules allow: %r" % report["options"]
         assert got[0][1].split("\n")[-1].startswith("Report automatically|Report manually|Open the log folder|Close"), got[0]

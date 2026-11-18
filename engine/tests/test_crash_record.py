@@ -42,6 +42,28 @@ def source_contract():
                  'CRASH: guest backtrace: lr %#llx',
                  'CRASH: [x%d+%#05x] %016llx %016llx %016llx %016llx'):
         assert line in report, line
+    # The log's host backtrace walks as the crash record's does: a frame with no unwind entry is a leaf, its return address at
+    # rsp, so a jump into padding (SDL3.dll+0x11c011, 0x80000003) still shows its caller; then rsp and the first 8 stack words
+    walk = block(glue, "static void crash_backtrace(")
+    assert walk.index("RtlVirtualUnwind(") < walk.index("crash_readable(ctx.Rsp, 8)") < walk.index("ctx.Rip = *(const uint64_t *)ctx.Rsp;")
+    assert "if (!f) break;" not in walk and "ctx.Rsp += 8;" in walk and "i < 20" in walk
+    record = (ROOT / "host/hos_crash_record.c").read_text(encoding="utf-8")
+    assert "safe_read((uintptr_t)ctx.Rsp, &next, sizeof next)" in block(record, "static void host_stack(")
+    assert report.index("crash_backtrace(*info->ContextRecord, hb, sizeof hb);") < report.index("crash_stack(info->ContextRecord, sk, sizeof sk);")
+    assert report.index("crash_stack(info->ContextRecord, sk,") < report.index("hos_ctx()")
+    stack = block(glue, "static void crash_stack(")
+    assert '"CRASH: stack rsp %#llx:"' in stack and "i < 8" in stack and "crash_readable(" in stack
+    # what a stack line may hold: module+offset (no folder), a small value or the hex of a readable address, "-"; never memory
+    # behind a pointer, never a path
+    place = block(glue, "static int crash_module(")
+    assert "strrchr(path, '\\\\')" in place and "snprintf(name, cap, \"%s\", base ? base + 1 : path)" in place
+    assert not re.search(r"\bhos_log\(|\bputs\(|memcpy\(", stack)
+    assert re.findall(r'"( [^"]*)"', stack) == [" %.20s+%#llx", " %#llx", " -"], re.findall(r'"( [^"]*)"', stack)
+    sdl = (ROOT / "host/hos_sdl.c").read_text(encoding="utf-8")
+    load = block(sdl, "int hos_sdl_load(")
+    assert 'hos_log("sdl: SDL%d %s, from %s", version, what[0] ? what : "(version not known)", loaded_beside ? "beside the game" : "the system path");' in load
+    assert "SDL_GetVersion" in block(sdl, "static void describe(") and "SDL_GetRevision" in block(sdl, "static void describe(")
+    assert "loaded_beside = m != NULL && n != 0;" in block(sdl, "static HMODULE load_one(")
     fatal = block(threads, "void hos_fatal(")
     assert fatal.index("hos_crash_record_fatal(") < fatal.index("vsnprintf(")
     assert "hos_log_flush();" in report and "log_flush();" in fatal
@@ -119,6 +141,8 @@ def build(cc, temp, glue, threads, main):
         "HOS_FATAL": block(threads, "void hos_fatal("),
         "WINDOW_EXIT": block((ROOT / "host/hos_relaunch.c").read_text(encoding="utf-8"), "void hos_window_closed_exit("),
         "GAME_THREAD": block(main, "static DWORD WINAPI game_thread("),
+        "CRASH_WALK": "\n".join(block(glue, "static %s crash_%s(" % kind) for kind in
+                                (("int", "module"), ("int", "readable"), ("void", "backtrace"), ("void", "stack"))),
     }
     shim = (ROOT / "host/posix/win32_posix.c").read_text(encoding="utf-8")
     replacements["POSIX_ADAPTER"] = (shim[shim.index("/* ---- exceptions ---- */"):
@@ -233,6 +257,21 @@ def main():
             run(folder, "clean")
             assert not records(folder, "unclean") and records(folder) == paths
         print("PASS: allocation-poisoned writer, bounds, short writes/EINTR, privacy, fatal/device-lost and real fatal children")
+
+        if os.name == "nt":
+            folder = temp / "leaf-walk"; folder.mkdir()
+            result = run(folder, "leaf-walk")
+            backtrace, stack = result.stdout.splitlines()
+            frames = backtrace.split()[3:]
+            assert re.fullmatch(r"\?\+0x[0-9a-f]+", frames[0]), backtrace  # the int3 in memory no module owns
+            assert re.fullmatch(r"fixture\.exe\+0x[0-9a-f]+", frames[1]), backtrace  # its caller, from [rsp]: no unwind data to follow
+            words = stack.split()[4:]
+            assert re.fullmatch(r"CRASH: stack rsp 0x[0-9a-f]+:( \S+){1,8}", stack) and 1 <= len(words) <= 8, stack
+            assert re.fullmatch(r"fixture\.exe\+0x[0-9a-f]+", words[0]), stack  # the return address the call pushed
+            assert all(re.fullmatch(r"[\w.-]{1,20}\+0x[0-9a-f]+|0x[0-9a-f]+|0|-", w) for w in words), stack
+            assert len(stack) < 300 and not any(s in result.stdout for s in ("\\", "/", "private-user", str(temp))), result.stdout
+            assert not records(folder) and not records(folder, "unclean")
+            print("PASS: the log's host backtrace keeps the caller of a jump into code with no unwind data, and the stack line holds only module+offset, hex or '-'")
 
         folder = temp / "disk-full"; folder.mkdir()
         run(folder, "disk-full")

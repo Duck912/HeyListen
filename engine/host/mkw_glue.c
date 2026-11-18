@@ -428,6 +428,65 @@ void hos_crash_record_prepare(const char *log_path) {
     hos_crash_record_start(path, hos_version(), log_path);
 }
 
+#ifdef _WIN32
+/* The module (its name without the folder: no user name in it) and the offset in it of an address; 0 for none */
+static int crash_module(uint64_t pc, char *name, size_t cap, uint64_t *offset) {
+    HMODULE m = NULL;
+    char path[MAX_PATH];
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)pc, &m) ||
+        !GetModuleFileNameA(m, path, MAX_PATH))
+        return 0;
+    const char *base = strrchr(path, '\\');
+    snprintf(name, cap, "%s", base ? base + 1 : path);
+    *offset = pc - (uint64_t)m;
+    return 1;
+}
+static int crash_readable(uint64_t address, size_t size) {
+    MEMORY_BASIC_INFORMATION mbi;
+    if (address < 0x10000 || address > UINT64_MAX - size || !VirtualQuery((LPCVOID)address, &mbi, sizeof mbi) ||
+        mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+        return 0;
+    return address + size <= (uint64_t)(uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+}
+/* The host stack from the faulting frame, as module+offset (nx2/samap.py maps mkw.exe's): x64 unwind data, and a frame with
+   none (a jump into padding, or code with no table) is a leaf, its return address at rsp: the caller still shows */
+static void crash_backtrace(CONTEXT ctx, char *out, size_t cap) {
+    int n = snprintf(out, cap, "CRASH: host backtrace:");
+    for (int i = 0; i < 20 && ctx.Rip && n < (int)cap - 48; i++) {
+        char name[MAX_PATH] = "?";
+        uint64_t offset = ctx.Rip;
+        crash_module(ctx.Rip, name, sizeof name, &offset);
+        n += snprintf(out + n, cap - n, " %s+%#llx", name, (unsigned long long)offset);
+        DWORD64 image = 0;
+        PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(ctx.Rip, &image, NULL);
+        if (f) {
+            void *handler_data;
+            DWORD64 frame;
+            RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, ctx.Rip, f, &ctx, &handler_data, &frame, NULL);
+        } else {
+            if (!crash_readable(ctx.Rsp, 8)) break;
+            ctx.Rip = *(const uint64_t *)ctx.Rsp;
+            ctx.Rsp += 8;
+        }
+    }
+}
+/* rsp and the first 8 words at it, short: a word in a module is module+offset, a small value or a pointer into readable
+   memory is its hex (no more of the memory than that), anything else "-": a stack word can hold text, a name's bytes */
+static void crash_stack(const CONTEXT *ctx, char *out, size_t cap) {
+    int n = snprintf(out, cap, "CRASH: stack rsp %#llx:", (unsigned long long)ctx->Rsp);
+    for (int i = 0; i < 8 && n < (int)cap - 40; i++) {
+        uint64_t word, offset;
+        char name[MAX_PATH];
+        if (!crash_readable(ctx->Rsp + 8u * (unsigned)i, 8)) break;
+        word = ((const uint64_t *)ctx->Rsp)[i];
+        if (word >= 0x10000 && crash_module(word, name, sizeof name, &offset))
+            n += snprintf(out + n, cap - n, " %.20s+%#llx", name, (unsigned long long)offset);
+        else if (word < 0x10000 || crash_readable(word, 1)) n += snprintf(out + n, cap - n, " %#llx", (unsigned long long)word);
+        else n += snprintf(out + n, cap - n, " -");
+    }
+}
+#endif
+
 static LONG WINAPI report_crash(EXCEPTION_POINTERS *info) {
     record_exception(info);
     EXCEPTION_RECORD *rec = info->ExceptionRecord;
@@ -444,26 +503,12 @@ static LONG WINAPI report_crash(EXCEPTION_POINTERS *info) {
             (unsigned long long)addr, (unsigned long long)(addr - (uint64_t)A64_MEM), base ? base + 1 : name,
             (unsigned long long)(rip - (uint64_t)mod));
 #ifdef _WIN32
-    {   /* the host stack from the faulting frame (x64 unwind data), as module+offset (nx2/samap.py maps mkw.exe's) */
-        CONTEXT ctx = *info->ContextRecord;
-        char hb[1024];
-        int n = snprintf(hb, sizeof hb, "CRASH: host backtrace:");
-        for (int i = 0; i < 20 && ctx.Rip && n < (int)sizeof hb - 48; i++) {
-            HMODULE m = NULL;
-            char mn[MAX_PATH] = "?";
-            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                   (LPCSTR)ctx.Rip, &m))
-                GetModuleFileNameA(m, mn, MAX_PATH);
-            const char *mb = strrchr(mn, '\\');
-            n += snprintf(hb + n, sizeof hb - n, " %s+%#llx", mb ? mb + 1 : mn, (unsigned long long)(ctx.Rip - (uint64_t)m));
-            DWORD64 image = 0;
-            PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(ctx.Rip, &image, NULL);
-            if (!f) break;
-            void *handler_data;
-            DWORD64 frame;
-            RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, ctx.Rip, f, &ctx, &handler_data, &frame, NULL);
-        }
+    {
+        char hb[1024], sk[320];
+        crash_backtrace(*info->ContextRecord, hb, sizeof hb);
         hos_log("%s", hb);
+        crash_stack(info->ContextRecord, sk, sizeof sk);
+        hos_log("%s", sk);
     }
 #else
     {   /* (hookshot) Linux: the host stack as module+offset, from glibc (the frames above the signal's included): the
