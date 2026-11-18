@@ -713,6 +713,8 @@ std::vector<uint32_t> strip_float_controls(const std::vector<uint32_t>& spirv, u
     return out;
 }
 
+// (the preparation's profile, shader_profile: the driver's shader modules, the cache's fingerprint, packing, the wait for the file and its writes; inside the translation time)
+std::atomic<int64_t> st_module_ns, st_finger_ns, st_pack_ns, st_lockwait_ns, st_write_ns;
 VkShaderModule make_module(const std::vector<uint32_t>& spirv_in) {
     // (RX_VK_KEEP_DENORM=1: the modules as translated, to compare a picture or a number with and without the strip)
     static const bool keep = getenv("RX_VK_KEEP_DENORM") != nullptr;
@@ -726,8 +728,11 @@ VkShaderModule make_module(const std::vector<uint32_t>& spirv_in) {
     VkShaderModule m = VK_NULL_HANDLE;
     // (longshot #252: one thread at a time in Intel's compiler on Windows, and a fault in the driver leaves this program out: no
     // module, and the translation of the program fails as it does when the driver refuses one)
+    const auto t_module = std::chrono::steady_clock::now();
     IntelDriverGate gate;
-    if (extern_guarded_shader_module(&ci, &m) != VK_SUCCESS) return VK_NULL_HANDLE;
+    const bool made = extern_guarded_shader_module(&ci, &m) == VK_SUCCESS;
+    st_module_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t_module).count();
+    if (!made) return VK_NULL_HANDLE;
     return m;
 }
 
@@ -1829,7 +1834,9 @@ bool disk_read_record(FILE* in, std::mutex* mu, uint64_t key, const DiskRecord& 
 }
 
 void program_cache_save(Program& p, const std::vector<std::vector<uint32_t>>& spirv) {
+    const auto t_fp = std::chrono::steady_clock::now();
     if (shader_key_on()) p.fp = program_fingerprint(p, spirv), program_fingerprinted(p.fp);
+    st_finger_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t_fp).count();
     disk_init();
     if (!disk_on || spirv.size() != p.stages.size()) return;
     std::vector<uint8_t> o;
@@ -1845,7 +1852,9 @@ void program_cache_save(Program& p, const std::vector<std::vector<uint32_t>>& sp
         put_info(o, st.info);
     }
     std::vector<uint8_t> stored;   // (packed here, outside the lock)
+    const auto t_pack = std::chrono::steady_clock::now();
     record_pack(o.data(), o.size(), stored);
+    st_pack_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t_pack).count();
     uint32_t kind;
     std::memcpy(&kind, stored.data(), 4);
     if (kind & kKindZstd) {
@@ -1856,7 +1865,17 @@ void program_cache_save(Program& p, const std::vector<std::vector<uint32_t>>& sp
                  (long long)(st_pack_raw.load() >> 20), (long long)(st_pack_stored.load() >> 20));
     }
     const uint64_t head[2] = {p.key, stored.size()};
+    const auto t_lock = std::chrono::steady_clock::now();
     std::lock_guard lk(disk_mu);
+    const auto t_got = std::chrono::steady_clock::now();
+    struct Wrote {
+        std::chrono::steady_clock::time_point from, asked;
+        ~Wrote() {
+            const auto now = std::chrono::steady_clock::now();
+            st_lockwait_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(from - asked).count();
+            st_write_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(now - from).count();
+        }
+    } wrote{t_got, t_lock};
     _fseeki64(disk_out, 0, SEEK_END);
     const int64_t at = _ftelli64(disk_out);
     fwrite(head, 8, 2, disk_out);
@@ -3070,6 +3089,12 @@ bool seed_is_compute(size_t i) {
     return false;
 }
 
+uint64_t seed_compute_key(size_t i) {
+    for (const uint32_t k : seed.programs[i])
+        if ((seed.stages[k].stage & 7) == 5) return seed.stages[k].end ? seed.stages[k].key : 0;
+    return 0;
+}
+
 // (hookshot) The seed's compute programs, each with its texture variants. A program's texture questions are answered in play by the
 // textures bound (Program::answers), which nothing before the game knows; the questions themselves are few, so each is tried with every
 // answer it can get, and an answer that changes the SPIR-V makes a variant. Variants of two answers and more are taken fewest first, up
@@ -3302,6 +3327,11 @@ void shader_stats(int64_t* translated, int64_t* failed) {
 }
 double shader_translate_ms() {
     return st_translate_ns.load() / 1e6;
+}
+/// (the preparation's profile, in seconds of thread time: the translation as a whole, then what it holds of the driver's shader modules, the cache's fingerprints, packing, the wait for the program cache's file and the writes to it)
+void shader_profile(double out[6]) {
+    out[0] = st_translate_ns.load() / 1e9, out[1] = st_module_ns.load() / 1e9, out[2] = st_finger_ns.load() / 1e9;
+    out[3] = st_pack_ns.load() / 1e9, out[4] = st_lockwait_ns.load() / 1e9, out[5] = st_write_ns.load() / 1e9;
 }
 
 void program_released(const nvn_prog* p) {

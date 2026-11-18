@@ -1041,7 +1041,10 @@ bool started_up() {
             static size_t last = ~(size_t)0;
             if (!total) return;
             static const size_t from[3] = {0, 700, 900}, span[3] = {700, 200, 100};
-            const size_t at = from[part] + done * span[part] / total;
+            // (the programs by what they cost, not by count: see prepare_work.h. Not smaller than the count's, so it never goes back)
+            const double cost = part == 0 ? prepare_progress_by_cost() : -1.0;
+            const size_t at = from[part] + (cost >= 0 ? (size_t)(cost * span[part]) : done * span[part] / total);
+            if (last != ~(size_t)0 && at < last) return;
             if (at == last) return;
             last = at;
             printf("@@progress %.3f\n", at / 1000.0);

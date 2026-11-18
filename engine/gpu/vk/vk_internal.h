@@ -477,6 +477,8 @@ bool precompile_wanted();                     // vk_draw.cpp
 bool precompile_blocking();                   // vk_draw.cpp: RX_VK_PRECOMPILE_WAIT=1 (else the pipelines are built while the game runs)
 void precompile_run(void (*progress)(size_t done, size_t total), bool wait = true);
 bool prepare_run(void (*progress)(size_t done, size_t total), bool background);
+/// (hookshot) How far prepare_run is by what its work costs (prepare_work.h), 0..1; -1 when none runs. The builder's bar goes by it
+double prepare_progress_by_cost();
 bool prepare_is_update();
 bool prepare_is_lazy_update();                 // (the update prepare_is_update found is lazy: nothing is made before the game)
 void prepare_background();

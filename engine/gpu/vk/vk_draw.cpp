@@ -59,6 +59,7 @@
 #include "shaders/movie_upscale_comp_spv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "precompile_save.h"   // (the pipeline cache written before the title after a long precompile)
+#include "prepare_work.h"   // (what a program of the seed costs a preparation: its progress bar)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -8665,6 +8666,88 @@ unsigned long long commit_left_mb() {
     return GlobalMemoryStatusEx(&m) ? (unsigned long long)(m.ullAvailPageFile >> 20) : ~0ull;
 }
 }  // namespace
+std::atomic<double> prepare_cost_fraction{-1.0};   // (-1: no preparation runs here; see prepare_work.h)
+double prepare_progress_by_cost() { return prepare_cost_fraction.load(); }
+namespace {
+/// (hookshot) Where a preparation's time goes, by kind of work: how many, the thread time in them and the longest one. A graphics
+/// program, a native mesh program, a mesh fallback program (the three: the program's translation and what it keeps), a compute
+/// program (its texture variants' translations; the driver's builds of them are the next) and the driver's builds (a compute pipeline
+/// of each variant, a graphics program's stage libraries)
+struct PrepKind {
+    std::atomic<int64_t> n{0}, us{0}, max_us{0};
+    void add(std::chrono::steady_clock::time_point since) {
+        const int64_t d = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - since).count();
+        n++, us += d;
+        int64_t m = max_us.load();
+        while (d > m && !max_us.compare_exchange_weak(m, d)) {}
+    }
+    void log(const char* what) const {
+        if (n.load()) logf("vk: prepare profile: %-24s %7lld x, %8.1f s thread time, %6.0f ms each, longest %.1f s", what, (long long)n.load(),
+                           us.load() / 1e6, us.load() / 1e3 / (double)n.load(), max_us.load() / 1e6);
+    }
+};
+/// (hookshot) The preparation's workers. A worker is one thread working through the seed's programs; the driver's compiles are most of
+/// a worker's time (80% on an RTX 3050), and a thread inside one is the CPU's, not ours, so as many as the machine has threads is
+/// right: half of them, as it was, left the other half of the CPU idle for the whole of a first start's wait. What the driver's
+/// compiles hold in memory bounds it instead (prepare_commit_gate). RX_VK_PREPARE_WORKERS=<n>: that many (1 to 64); the old count
+/// (half the CPUs) is RX_VK_PREPARE_WORKERS=old
+unsigned prepare_worker_count(bool background, unsigned cpus) {
+    return prepare_work::workers(background, cpus, getenv("RX_VK_PREPARE_WORKERS"));
+}
+/// (hookshot) Which texture variants of a compute program the driver builds before the game. A compute program is translated for the
+/// texture types its questions can get (up to 64 variants, seed_compute), the plain answers (every texture a 2D colour image: what the
+/// game binds to nearly all of them) first. RX_VK_WARM_VARIANTS=all: every variant is built, as before (10330 compute pipelines for 6306
+/// programs: on an RTX 3050 the variants were half of the pipelines and 78% of the driver's time, 3054 s of 3893); base (the default): only the plain one is, here and in the precompile, and a variant the game does bind is built when its
+/// first dispatch asks (a worker, the dispatch left out meanwhile as for any compute pipeline) and kept for the next start
+bool warm_base_only() {
+    static const bool base = [] {
+        const char* e = getenv("RX_VK_WARM_VARIANTS");
+        return !(e && !strcmp(e, "all"));
+    }();
+    return base;
+}
+/// (hookshot) Which compute programs the driver builds before the game: with a list of the ones play dispatched (hookshot_computes.bin:
+/// a start that has played, or a list that came with the build) only those, the rest when first dispatched as on any later start
+/// (RX_VK_LAZY_COMPUTE); without one, every kept one, as there was nothing to go by. RX_VK_WARM_COMPUTES=all: every one whatever the
+/// list says; used: those of the list (a list of fewer than 32 keys is no list)
+bool warm_used_only(const std::unordered_set<uint64_t>& used) {
+    const char* e = getenv("RX_VK_WARM_COMPUTES");
+    if (e && !strcmp(e, "all")) return false;
+    return used.size() >= 32 || (e && !strcmp(e, "used") && !used.empty());
+}
+/// (hookshot) A GPU without mesh shaders: the precompile builds the compute pipelines of every program translated for the fallback
+/// (1286 here), not only those the notes name. On an RTX 3050 that is 3 minutes; AMD's compiler took 3 to 12 s on each. RX_VK_PRECOMPILE_FALLBACKS=noted:
+/// only those the notes (and the state list) name; the rest are built at their first draw, as the others are
+bool fallbacks_noted_only() {
+    const char* e = getenv("RX_VK_PRECOMPILE_FALLBACKS");
+    return e && !strcmp(e, "noted");
+}
+thread_local unsigned warm_seen = 0;   // (the variants of the program this worker is on that were asked for so far: the first is the plain one)
+/// (hookshot) A driver compile asks for memory (a program of a million SPIR-V words took gigabytes, and several of them at once
+/// are what the commit limit refuses): before one begins, while the system's commit left is under a reserve and another worker is
+/// in the driver, it waits, so that more workers than before cannot be what runs the PC out. Alone it goes on, as before
+struct CommitGate {
+    static std::atomic<int>& inside() {
+        static std::atomic<int> n{0};
+        return n;
+    }
+    static std::atomic<int64_t>& waited_ms() {
+        static std::atomic<int64_t> ms{0};
+        return ms;
+    }
+    CommitGate() {
+        static const unsigned long long reserve = getenv("RX_VK_PREPARE_COMMIT_MB") ? strtoull(getenv("RX_VK_PREPARE_COMMIT_MB"), nullptr, 10) : 3072;
+        const auto t0 = std::chrono::steady_clock::now();
+        while (reserve && inside().load() > 0 && commit_left_mb() < reserve && !prepare_stopped()) Sleep(100);
+        const int64_t ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+        if (ms > 50) waited_ms() += ms;
+        inside()++;
+    }
+    ~CommitGate() { inside()--; }
+    CommitGate(const CommitGate&) = delete;
+    CommitGate& operator=(const CommitGate&) = delete;
+};
+}  // namespace
 /// Every shader of the game, before its first start (vk_shader.cpp, the seed): once for this translator. True: prepared now.
 /// background: in play, behind the game: a few workers at idle priority, translation only (the driver's part is left to first use:
 /// its compiler crashing in here would take the game with it)
@@ -8744,6 +8827,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     // (hookshot) compute pipelines too, for the driver's own cache: built in play they stopped the game while the driver compiled
     // them, seconds each for the culling programs (53caac5f: 6.5 s, 41 s inlined), which looked like a hang
     std::atomic<int64_t> warm_us{0};   // (the driver's part, the workers' time added up)
+    PrepKind k_graphics, k_mesh, k_fallback, k_compute, k_warm_compute, k_warm_variant, k_warm_graphics;   // (the profile: where the time went)
     struct WarmClock {
         std::atomic<int64_t>& sum;
         std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
@@ -8757,8 +8841,17 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
         explicit DriverTurn(bool lift) : on(lift) { if (on) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL); }
         ~DriverTurn() { if (on) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE); }
     };
+    const std::unordered_set<uint64_t> used_computes = computes_read();
+    const bool used_only = warm_used_only(used_computes);
+    std::atomic<size_t> left_to_play{0};
     const auto warm_compute = [&](Program& p) {
         if (!warm_cs || taau_key(p.key)) return;
+        if (used_only && !used_computes.count(p.key)) {   // (not one play dispatched: its first dispatch builds it)
+            left_to_play++;
+            return;
+        }
+        const bool variant = warm_seen++ != 0;
+        if (variant && warm_base_only()) return;   // (a variant: left to its first dispatch)
         WarmClock wc{warm_us};
         const uint64_t id = shader_key_on() ? ledger_id_compute(p) : 0;
         if (id && ledger_has(id)) {   // (RX_VK_SHADER_KEY: the driver has this very compute shader and layout already)
@@ -8766,6 +8859,8 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
             return;
         }
         const DriverTurn turn{background};
+        const auto t_warm = std::chrono::steady_clock::now();
+        const CommitGate commit;
         ensure_layout(p);
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -8774,6 +8869,11 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
         ci.stage.pName = "main";
         pin_subgroup(ci.stage, p.workgroup[0]);
         ci.layout = p.layout;
+        struct Timed {
+            PrepKind& k;
+            std::chrono::steady_clock::time_point t;
+            ~Timed() { k.add(t); }
+        } timed{variant ? k_warm_variant : k_warm_compute, t_warm};
         if (getenv("RX_VK_NOOPT")) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
         precompile_compute_quick(ci);   // (Intel's one-at-a-time builds: without the optimizer, as a dispatch's first)
         VkPipeline pl = VK_NULL_HANDLE;
@@ -8788,6 +8888,17 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
         if (p.layout) vkDestroyPipelineLayout(dev.device, p.layout, nullptr), p.layout = VK_NULL_HANDLE;
         if (p.set_layout) vkDestroyDescriptorSetLayout(dev.device, p.set_layout, nullptr), p.set_layout = VK_NULL_HANDLE;
     };
+    // (the bar counts work by what it costs, not programs: 3000 programs of the seed are compute programs whose driver builds take
+    // 0.3 s to tens of seconds each, 30000 are graphics programs of a few ms. By programs the bar sat at 7% for the first 8 minutes
+    // of a 9 minute preparation on an RTX 3050, and the builder's time left, which goes by it, said hours; prepare_work.h)
+    std::vector<uint32_t> cost(programs);
+    uint64_t cost_total = 0;
+    for (size_t k = 0; k < programs; k++) {
+        cost[k] = prepare_work::cost(seed_is_compute(k), seed_is_compute(k) && used_only && !used_computes.count(seed_compute_key(k)));
+        cost_total += cost[k];
+    }
+    std::atomic<uint64_t> cost_done{0};
+    prepare_cost_fraction.store(0.0);
     const auto worker = [&] {
         ub_thread_off();   // (a background thread: see ub_thread_off)
         // (below normal, and half the CPUs, below: on all of them at High the driver's compiles froze the whole PC)
@@ -8799,14 +8910,19 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
             const size_t k = order[i / 3];
             if (seed_is_compute(k)) {   // (hookshot) a compute program with each of its texture variants, each warmed
                 if (i % 3 == 0) {
+                    const auto t_seed = std::chrono::steady_clock::now();
+                    warm_seen = 0;
                     const SeedVariants v = seed_compute(k, 64, warm_compute);
+                    k_compute.add(t_seed);
                     made += v.variants != 0, variants += v.variants, asking += v.variants > 1, capped += v.capped && v.variants;
+                    cost_done += cost[k];
                 }
                 done++;
                 continue;
             }
             const auto t_prog = std::chrono::steady_clock::now();
             std::unique_ptr<Program> seeded = seed_program(k, (int)(i % 3));
+            if (seeded) (seeded->fallback ? k_fallback : seeded->mesh ? k_mesh : k_graphics).add(t_prog);
             {   // (hookshot: a program that took over a second to prepare is named, a few dozen times: the no-mesh fallback's first
                 // start ran about 100 times slower than a mesh GPU's)
                 const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_prog).count();
@@ -8824,6 +8940,8 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
                 } else if (!p->failed && warm && !p->compute) {
                     WarmClock wc{warm_us};
                     const DriverTurn turn{background};
+                    const auto t_libs = std::chrono::steady_clock::now();
+                    const CommitGate commit;
                     ensure_layout(*p);
                     Targets at{};
                     int built = 0;
@@ -8833,19 +8951,20 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
                             libs++, built++;
                         }
                     if (lib_id && built == 2) ledger_add(lib_id);
+                    k_warm_graphics.add(t_libs);
                 }
                 for (Stage& st : p->stages)
                     if (st.module) vkDestroyShaderModule(dev.device, st.module, nullptr);
                 if (p->layout) vkDestroyPipelineLayout(dev.device, p->layout, nullptr);
                 if (p->set_layout) vkDestroyDescriptorSetLayout(dev.device, p->set_layout, nullptr);
             }
+            if (i % 3 == 0) cost_done += cost[k];
             done++;
         }
     };
     std::vector<std::thread> threads;
     const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
-    // (in play: a quarter of the CPUs, two to four, the game's own threads before them)
-    const unsigned workers = background ? std::clamp(cpus / 4, 2u, 4u) : std::clamp(cpus / 2, 1u, 32u);
+    const unsigned workers = prepare_worker_count(background, cpus);
     // (a lazy update: first the programs the pipeline state lists name, the ones the game draws with, and the pipelines the notes name
     // for them, the driver's only for those whose ledger id is missing, then the rest of the seed)
     if (lazy) state_list_prepare(nullptr, true);
@@ -8854,6 +8973,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     auto stat_at = std::chrono::steady_clock::now();
     while (done.load() < total && !prepare_stopped()) {
         if (progress) progress(done.load() / 3, programs);   // (in programs, as the log counts them, not programs times variants)
+        if (!background && cost_total) prepare_cost_fraction.store((double)std::min<uint64_t>(cost_done.load(), cost_total) / (double)cost_total);
         Sleep(100);
         if ((!background || lazy) && std::chrono::steady_clock::now() - stat_at > std::chrono::seconds(background ? 30 : 10)) {
             // (every 10 s: what a run cut short by its time limit still says, and what the driver built so far is listed already)
@@ -8886,6 +9006,21 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     logf("vk: shader key %s: %lld driver builds left out (the same SPIR-V and layout were built before), %lld built and listed; "
              "translation %.1f s and the driver's part %.1f s of work, on %u workers",
              shader_key_on() ? "on" : "off", (long long)ledger_reused.load(), (long long)ledger_built.load(), shader_translate_ms() / 1000.0, warm_us.load() / 1e6, workers);
+    {   // (where the time went; one line a kind, thread time)
+        double prof[6];
+        shader_profile(prof);
+        logf("vk: prepare profile: %u workers on %u CPUs, wall %.1f s; translation %.1f s of thread time, of which the driver's shader modules "
+             "%.1f s, the cache's fingerprints %.1f s, packing %.1f s, waiting for the cache file %.1f s and writing it %.1f s; the driver's "
+             "builds waited %.1f s for memory", workers, cpus, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
+             prof[0], prof[1], prof[2], prof[3], prof[4], prof[5], CommitGate::waited_ms().load() / 1e3);
+        k_graphics.log("graphics programs");
+        k_mesh.log("native mesh programs");
+        k_fallback.log("mesh fallback programs");
+        k_compute.log("compute (all variants)");
+        k_warm_compute.log("compute pipelines, plain (drv)");
+        k_warm_variant.log("compute pipelines, variants");
+        k_warm_graphics.log("stage libraries (driver)");
+    }
     if (driver_part) remove(warming.c_str());
     if (const size_t kept = program_cache_kept(); kept != SIZE_MAX) prepared_for.kept = kept;
     prepared_write(path, prepared_for);
@@ -9012,11 +9147,15 @@ void precompile_run(void (*progress)(size_t done, size_t total), bool wait) {
     const std::unordered_set<uint64_t> used = lazy_compute ? std::unordered_set<uint64_t>{} : computes_read();
     const bool all_computes = !lazy_compute && (which ? !strcmp(which, "all") : used.empty());
     if (!lazy_compute && !all_computes && !(which && !strcmp(which, "none"))) wanted.insert(used.begin(), used.end());
+    std::unordered_map<uint64_t, unsigned> variants_seen;   // (RX_VK_WARM_VARIANTS=base: the first variant a key has is the plain one)
+    size_t variants_left = 0;
     const size_t programs_n = program_cache_load_some(wanted, [&](Program& p) {
         ensure_layout(p);
-        if (p.compute) pre->computes.push_back(&p);
+        if (p.compute && warm_base_only() && variants_seen[p.key]++ && !p.fallback) variants_left++;   // (not built before the game)
+        else if (p.compute) pre->computes.push_back(&p);
         else if (p.fallback) pre->fallbacks.push_back(&p);   // (hookshot: the mesh fallback's compute pipelines too, before play)
-    }, all_computes, true);
+    }, all_computes, !fallbacks_noted_only());
+    if (variants_left) logf("vk: precompile: %zu texture variants of compute programs are left to their first dispatch (RX_VK_WARM_VARIANTS=all: built)", variants_left);
     if (lazy_compute) logf("vk: precompile: the compute programs stay on disk until dispatched (RX_VK_LAZY_COMPUTE)");
     else logf("vk: precompile: compute programs: %s (%zu keys listed as dispatched in play)",
               all_computes ? "every kept one" : (which && !strcmp(which, "none")) ? "none" : "those play dispatched", used.size());
