@@ -148,6 +148,10 @@ def movie_site(s, addr, off):
 #   two loads of the time object's step (+16) and seconds (+24) both through hos_oot_sound_step / hos_oot_sound_seconds (a
 #   whole step while the gate holds the job); after each of its four reads of the battle manager's change flags (x26 + 2200)
 #   that byte with the held ones, hos_oot_bgm_flags (the battle music stopped after a fight above 60 fps).
+# - HL_TURN_HOOK(8263e8e0, "<hash>"): (Longshot 3ab8cae6 / Hookshot 93a8bff3, PirateKingIsh; Gohma) the steering update's two
+#   clamps of the saved rate (+36), vreg 1 = turn x rate and vreg 0 = turn x step (vreg 8): above 60 fps, 0 < step < 1, each is
+#   the division instead (the turn was already scaled by the step, so the saved rate kept rate x step squared). Each multiply
+#   is jumped over by a line before it that does the division when the step is under 1, and a label after it.
 # - HL_HORSE_HOOK(82c59eb0, "<hash>"): (Longshot 8e8a06db, CraftyCorvid; Epona's fences) between the jump state machine's test of
 #   its step (vreg 10) against 1 and its branch past the slow-motion branch: a step that is the whole frame's (the time
 #   object's, hos_oot_horse_whole_step) takes that branch too.
@@ -182,6 +186,12 @@ SOUND_LOAD = ("    c->x[8]=" + SOUND_SLOT + ";\n"
 BGM_TIME = ("    { { uint64_t _v=recomp_load32(c,(c->x[8]+16ULL)); a64_vset64(c->vreg[8],_v); } }\n"
             "    { { uint64_t _v=recomp_load32(c,(c->x[8]+24ULL)); a64_vset64(c->vreg[9],_v); } }\n")
 BGM_FLAGS = "    c->x[8]=recomp_load8(c,c->x[26] + 2200);\n"   # (the update's four reads of the change flags)
+TURN_MULS = ("    {uint64_t _a=0,_b=0,_z,_v;memcpy(&_a,c->vreg[0],4);memcpy(&_b,c->vreg[1],4);_z=(_a^_b)&0x80000000ULL;\n"
+             "    _v=a64_fpx_mul32_fma32(c,_a,_b,_z);\n"
+             "    a64_vset64(c->vreg[1],_v);}\n")
+TURN_MULS2 = ("    {uint64_t _a=0,_b=0,_z,_v;memcpy(&_a,c->vreg[0],4);memcpy(&_b,c->vreg[8],4);_z=(_a^_b)&0x80000000ULL;\n"
+              "    _v=a64_fpx_mul32_fma32(c,_a,_b,_z);\n"
+              "    a64_vset64(c->vreg[0],_v);}\n")
 HORSE_TEST = "    a64_vset64(c->vreg[9],0x3f800000ULL);\n    { if (!a64_fcmp32(c,c->vreg[10],c->vreg[9])) "   # (its line goes on)
 HORSE_BRANCH = "if (!c->n) { goto L_82c5ae48; }\n"
 FLOOR_TEST = ("    { { uint64_t _v=recomp_load32(c,(c->x[8]+40ULL)); a64_vset64(c->vreg[0],_v); } }\n"
@@ -218,6 +228,14 @@ def lift_lines(kind, addr, args):
                  "a64_vset64(c->vreg[8], hos_oot_sound_step(_st)); }" + mark] +
                 ["    { extern uint64_t hos_oot_bgm_flags(uint64_t, uint64_t); "
                  "c->x[8] = hos_oot_bgm_flags(c->x[26] + 2200, c->x[8]); }" + mark] * 4)
+    if kind == "turn":
+        cond = "(uint32_t)c->vreg[8][0] > 0 && (uint32_t)c->vreg[8][0] < 0x3f800000u"   # (0 < step < 1, by its bits: no host compare)
+        out = []
+        for tag, src, dst in (("a", 1, 1), ("b", 8, 0)):
+            out += ["    if (" + cond + ") { {uint64_t _a=0,_b=0,_v;memcpy(&_a,c->vreg[0],4);memcpy(&_b,c->vreg[%d],4);"
+                    "_v=a64_fpx_div32_div32(c,_a,_b);a64_vset64(c->vreg[%d],_v);} goto L_hl_%s_%s; }" % (src, dst, step_id(addr), tag) + mark,
+                    "L_hl_%s_%s:;" % (step_id(addr), tag) + mark]
+        return out
     if kind == "horse":
         return ["    { extern int hos_oot_horse_whole_step(uint32_t, uint64_t); "
                 "if (hos_oot_horse_whole_step((uint32_t)c->vreg[10][0], " + SOUND_SLOT + " + 2192)) { goto L_82c5ae48; } }" + mark]
@@ -261,6 +279,12 @@ def lift_places(body, addr, kind, args):
             at = body.index(BGM_FLAGS, at) + len(BGM_FLAGS)
             places.append(at)
         return places if places == sorted(places) else None
+    if kind == "turn":
+        if body.count(TURN_MULS + TURN_MULS2) != 1:
+            return None
+        at = body.index(TURN_MULS + TURN_MULS2)
+        mid, end = at + len(TURN_MULS), at + len(TURN_MULS + TURN_MULS2)
+        return [at, mid, mid, end]
     if kind == "horse":
         if body.count(HORSE_TEST) != 1 or "L_82c5ae48:;" not in body:
             return None
@@ -332,7 +356,9 @@ def apply_lift(s, addr, kind, args):
     places = lift_places(body, addr, kind, args)
     if places is None:
         return None
-    for at, line in sorted(zip(places, lift_lines(kind, addr, args)), reverse=True):
+    # (the lines in reverse order of place, those of one place the last first, so that they end up in their order)
+    for _, at, line in sorted(((i, at, line) for i, (at, line) in enumerate(zip(places, lift_lines(kind, addr, args)))),
+                              key=lambda t: (t[1], t[0]), reverse=True):
         body = body[:at] + line + body[at:]
     return s[:span[0]] + body + s[span[1]:]
 

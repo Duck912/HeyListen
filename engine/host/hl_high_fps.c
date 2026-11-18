@@ -19,6 +19,7 @@
 
 HL_SOUND_HOOK(80435300, "795ee90e082f72a1");    /* the sound manager's job: its head, and its load of the game step */
 HL_BGM_HOOK(83373400, "197e674c33455df1");      /* the music manager's update (inside that job): its clock and its change flags */
+HL_TURN_HOOK(8263e8e0, "ee4f88d994c3249c");     /* the steering update's saved rate (Gohma: Longshot 3ab8cae6, Hookshot 93a8bff3) */
 HL_HORSE_HOOK(82c59eb0, "877587970044fa8a");    /* a horse's jump state machine (Epona's fences: Longshot 8e8a06db) */
 HL_FLOOR_HOOK(80159dc0, "5cc81137a91acbd0", "L_8015a39c");   /* a moving floor's carry in three character modules (the Shadow */
 HL_FLOOR_HOOK(8015d490, "923be46f8950ebcd", "L_8015dad4");    /* Temple's barge: Longshot 4f755527) */
