@@ -586,6 +586,22 @@ bool create_device() {
         dev.sg32_stages = pin ? sc.requiredSubgroupSizeStages : 0;
         logf("vk: subgroups: default %u lanes, %u-%u, pinned to 32 on stages %#x", sg.subgroupSize, sc.minSubgroupSize, sc.maxSubgroupSize,
              (unsigned)dev.sg32_stages);
+        {   // (issues 67 and 37) a stage the GPU does not hold to 32 lanes, with a default of more, runs the programs' lane masks and
+            // shuffles on the wrong lanes unless the translator emulates 32-lane warps (yuzu's way). Per stage: GCN / Polaris (64 only, no
+            // size control) takes every stage; RDNA 3.5 on AMD's Windows driver pins fragment, compute, task and mesh (0xf0) but not the
+            // vertex stage, which runs at 64. Stages that run at 32 (NVIDIA, Arc, Intel: default 32; every pinned stage) translate as
+            // before. RX_VK_WARP_WIDE=1 forces every stage, a test: on a 32-lane GPU the emulation must change nothing in the picture
+            const bool forced = getenv("RX_VK_WARP_WIDE") && atoi(getenv("RX_VK_WARP_WIDE")) != 0;
+            constexpr VkShaderStageFlags kStages = VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_COMPUTE_BIT |
+                                                   VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT;
+            if (forced) dev.warp_wide_stages = kStages;
+            else if (sg.subgroupSize > 32) dev.warp_wide_stages = kStages & ~dev.sg32_stages;
+            if (dev.warp_wide_stages) {
+                dev.warp_lanes = std::max<uint32_t>({sg.subgroupSize, sc.maxSubgroupSize, forced ? 64u : 33u});   // (forced: 64, so the wide code is made even on 32 lanes)
+                logf("vk: subgroups wider than the guest's 32 lanes on stages %#x: programs translated for %u lanes, 32-lane warps emulated%s",
+                     (unsigned)dev.warp_wide_stages, dev.warp_lanes, forced ? " (RX_VK_WARP_WIDE)" : "");
+            }
+        }
     }
     if (!f13.dynamicRendering || !f13.synchronization2 || !f12.timelineSemaphore) {
         logf("vk: the GPU lacks dynamic rendering, synchronization2 or timeline semaphores");

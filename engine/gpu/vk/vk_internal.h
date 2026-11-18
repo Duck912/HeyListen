@@ -77,6 +77,11 @@ struct Device {
     VkPhysicalDeviceVulkan12Features vk12{};
     VkPhysicalDeviceVulkan13Features vk13{};
     VkShaderStageFlags sg32_stages = 0;   // (stages that run at 32 lanes when asked: the size the translated programs assume)
+    // (wave64, issue 67: stages whose programs are translated for subgroups wider than the guest's 32 lanes (the translator then limits
+    // ballots, votes, shuffles and the lane id to the 32-lane partition), and the subgroup size they run at. 0 / 32 where the GPU runs
+    // them at 32 lanes, so those GPUs translate exactly as they did: vk_main.cpp, vk_shader.cpp make_profile)
+    VkShaderStageFlags warp_wide_stages = 0;
+    uint32_t warp_lanes = 32;
     uint32_t max_push_descriptors = 0;
     // no window (HOS_HEADLESS): presents go to an image of their own, which RX_VK_SHOTS can write out
     bool offscreen = false;
