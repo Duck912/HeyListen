@@ -122,6 +122,11 @@ inline uint64_t storage_binding_align() {
     return device_own || a > 16 ? a : 16;
 }
 
+/// Whether translated shaders keep 16-bit floats (vk_shader.cpp): the device's shaderFloat16, or RX_VK_NO_F16 / RX_VK_F16. Without
+/// them the translator lowers the game's f16 math to 32 bits and the cooperative-matrix networks are left out (vk_draw.cpp's
+/// stand-ins draw their upscale)
+bool float16_shaders();
+
 /// (longshot #252) Windows Intel's compiler (igvk64, UHD and Arc) faults when two threads hand it shaders at once: an Arc A750
 /// froze the PC on four compute pipelines, and an Intel UHD read address 0x170 inside igvk64 during the first scene's compiles.
 /// One thread at a time enters vkCreateShaderModule and vkCreate*Pipelines (a pipeline or module the renderer makes for itself, a
