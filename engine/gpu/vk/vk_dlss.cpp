@@ -31,6 +31,7 @@
 #ifndef _WIN32
 #include <fcntl.h>   // (wide: a folder's descriptor for NGX)
 #endif
+// (Windows: vk_paths.h has already included windows.h, with NOMINMAX; fg_file_version below uses its version.dll API)
 
 #include "dlss_checks.h"
 #include "dlss_math.h"
@@ -546,6 +547,41 @@ void fg_barrier(VkCommandBuffer cmd) {
     vkCmdPipelineBarrier2(cmd, &di);
 }
 
+/// A runtime file's own version, as its resource says it ("" when there is none to read: the file's name alone then). The
+/// driver's own nvngx_dlssg has been older than the SDK's (310.2.1 against 310.9.16 on an RTX 5080, issue #2598: one made
+/// frame at most and every set refused), and the start line saying the version tells the two apart at a glance.
+std::string fg_file_version(const fs::path& file) {
+#ifdef _WIN32
+    // (version.dll's API at run time: nothing new is linked. Linux has no version resource; the SDK's .so carries it in
+    // its name, the driver's soname does not)
+    using size_fn = DWORD(WINAPI*)(LPCWSTR, LPDWORD);
+    using info_fn = BOOL(WINAPI*)(LPCWSTR, DWORD, DWORD, LPVOID);
+    using query_fn = BOOL(WINAPI*)(LPCVOID, LPCWSTR, LPVOID*, UINT*);
+    static const struct Api {
+        HMODULE dll = LoadLibraryW(L"version.dll");
+        size_fn size = dll ? (size_fn)(void*)GetProcAddress(dll, "GetFileVersionInfoSizeW") : nullptr;
+        info_fn info = dll ? (info_fn)(void*)GetProcAddress(dll, "GetFileVersionInfoW") : nullptr;
+        query_fn query = dll ? (query_fn)(void*)GetProcAddress(dll, "VerQueryValueW") : nullptr;
+    } api;
+    if (!api.size || !api.info || !api.query) return "";
+    DWORD handled = 0;
+    const DWORD bytes = api.size(file.c_str(), &handled);
+    if (!bytes) return "";
+    std::vector<char> data(bytes);
+    if (!api.info(file.c_str(), 0, bytes, data.data())) return "";
+    VS_FIXEDFILEINFO* fixed = nullptr;
+    UINT got = 0;
+    if (!api.query(data.data(), L"\\", (LPVOID*)&fixed, &got) || !fixed) return "";
+    char v[32];
+    snprintf(v, sizeof v, "%u.%u.%u.%u", HIWORD(fixed->dwFileVersionMS), LOWORD(fixed->dwFileVersionMS),
+             HIWORD(fixed->dwFileVersionLS), LOWORD(fixed->dwFileVersionLS));
+    return v;
+#else
+    (void)file;
+    return "";
+#endif
+}
+
 /// NGX's answer for frame generation, once (under g.mu): its runtime found, this GPU and driver able, how many frames it
 /// makes at the most. The reason is logged when not
 bool fg_start(Fg& g) {
@@ -592,7 +628,7 @@ bool fg_start(Fg& g) {
     // (its runtime: NGX takes the newest nvngx_dlssg in the runtime folders, else the driver's own copy, which may be older
     // and make 1 frame at most, or refuse every set. scripts/ngx_sdk.py puts the SDK's beside DLSS's runtime)
     // (Linux: NGX loads it by its real path, ASCII only, as DLSS's runtime: one only in folders named otherwise is not used)
-    std::string where;
+    std::string where, versions;   // (the versions of the runtime files found, each once)
     bool here = false, loadable = false;
     std::error_code ec;
     for (const auto& d : runtime_dirs(game_dir())) {
@@ -602,6 +638,9 @@ bool fg_start(Fg& g) {
                 here = true;
 #ifdef _WIN32
                 loadable = true;
+                const std::string v = fg_file_version(f.path());
+                if (!v.empty() && versions.find(v) == std::string::npos)
+                    versions += (versions.empty() ? "" : ", ") + v;
 #else
                 std::error_code real;
                 loadable |= dlss_checks::ascii(fs::canonical(f.path(), real).native()) && !real;
@@ -609,7 +648,8 @@ bool fg_start(Fg& g) {
             }
     }
     const std::string runtime =
-        loadable ? "its runtime: the newest " + std::string(kFgRuntime) + " in " + where
+        loadable ? "its runtime: the newest " + std::string(kFgRuntime) + (versions.empty() ? "" : " " + versions) +
+                      " in " + where
         : here   ? std::string(kFgRuntime) + " only in folders whose path is not all ASCII (" + where +
                      "), which NGX on Linux does not load from: the driver's own, which may be older"
                  : "no " + std::string(kFgRuntime) + " in " + where +

@@ -8,7 +8,8 @@ Checked here:
 - scripts/ngx_sdk.py fetches and installs frame generation's runtime beside DLSS's, under the name vk_dlss.cpp looks for;
 - dlss_fg_frames gives frame generation up after kFgRefusalsOff refused sets in a row (as after three failed creations), a
   set made counting them again from 0, and says once when it is asked for more frames than its runtime makes;
-- fg_start says whether the runtime folders hold frame generation's runtime or NGX takes the driver's own.
+- fg_start says whether the runtime folders hold frame generation's runtime or NGX takes the driver's own, and (Windows)
+  the found file's own version, which told the driver's 310.2.1 from the SDK's 310.9.16 on an RTX 50.
 
     python -I -B tests/test_dlssg_runtime.py
 """
@@ -84,8 +85,15 @@ def main():
         fail("fg_start: does not say whether frame generation's runtime is in the runtime folders or the driver's own is used")
     if "dlss_checks::ascii(fs::canonical(" not in start or "not all ASCII" not in start:
         fail("fg_start: on Linux a runtime only in a folder whose path is not ASCII is said to be used (NGX does not load it)")
-    print("DLSS Frame Generation: its runtime installed and looked for by one name; given up after %s refused sets in a row"
-          % off.group(1))
+    # (the found runtime's own version in the start line: the driver's 310.2.1 has been older than the SDK's 310.9.16 and
+    # made 1 frame at most, and the line saying which one was loaded tells the two apart without another tool)
+    version = function(src, "std::string fg_file_version(const fs::path& file) {")
+    if "GetFileVersionInfoW" not in version or "VerQueryValueW" not in version:
+        fail("fg_file_version: does not read the runtime file's version resource")
+    if "versions" not in start or "fg_file_version" not in start:
+        fail("fg_start: does not say the found runtime's version (a stale nvngx_dlssg answers 1 frame at most)")
+    print("DLSS Frame Generation: its runtime installed and looked for by one name, its version said at the start; given up "
+          "after %s refused sets in a row" % off.group(1))
 
 
 if __name__ == "__main__":

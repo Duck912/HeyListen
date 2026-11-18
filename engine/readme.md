@@ -567,18 +567,24 @@ license. Never share a game folder built with them, and do not post builds made 
 
 - **Windows, the Hookshot Builder:** tick **NVIDIA DLSS (downloads NVIDIA's SDK under NVIDIA's license)** before you
   build. It is off by default and shows NVIDIA's license when you tick it. The build downloads the SDK into
-  `%LOCALAPPDATA%\HookshotBuilder\ngx-sdk` and puts DLSS's runtime, `nvngx_dlss.dll`, in the game folder's `ngx` folder.
+  `%LOCALAPPDATA%\HookshotBuilder\ngx-sdk` and puts DLSS's runtime, `nvngx_dlss.dll`, and DLSS Frame Generation's,
+  `nvngx_dlssg.dll`, in the game folder's `ngx` folder.
 - **Windows, the command line:** `python -I scripts/ngx_sdk.py --platform windows <sdk folder>` asks you to accept
-  NVIDIA's license (or pass `--accept-nvidia-license`) and fetches the headers, `nvsdk_ngx_s.lib` and `nvngx_dlss.dll`,
-  each checked against its SHA-256. Then build with `HOOKSHOT_NGX_SDK=<sdk folder>`: `make_game.py` copies
-  `nvngx_dlss.dll` into `<game folder>\ngx`. NGX is also pointed at `%LOCALAPPDATA%\Hookshot\ngx`, and at
-  `RX_VK_DLSS_DIR` when it is set, and uses the newest `nvngx_dlss.dll` it finds across them (to try a given one, make
-  sure no other folder has a newer one). Never copy NGX's core, `_nvngx.dll`, beside the game: it comes with NVIDIA's
+  NVIDIA's license (or pass `--accept-nvidia-license`) and fetches the headers, `nvsdk_ngx_s.lib`, `nvngx_dlss.dll` and
+  `nvngx_dlssg.dll`, each checked against its SHA-256. Then build with `HOOKSHOT_NGX_SDK=<sdk folder>`: `make_game.py`
+  copies both runtimes into `<game folder>\ngx`. NGX is also pointed at `%LOCALAPPDATA%\Hookshot\ngx`, and at
+  `RX_VK_DLSS_DIR` when it is set, and uses the newest of each it finds across them (to try a given one, make sure no
+  other folder has a newer one). Without `nvngx_dlssg.dll` there, frame generation takes the driver's own copy, which
+  may be older: one that answers one made frame at most (no multi frame generation on an RTX 50) and refuses every set
+  (0xbad00005), so neither vendor choice makes a frame and the renderer's own does; the log's start line says the version
+  of the file it found. An SDK folder fetched before `nvngx_dlssg.dll` was in the table has only DLSS's: run the script
+  again and it fetches what is missing. Never copy NGX's core, `_nvngx.dll`, beside the game: it comes with NVIDIA's
   driver.
 - **Linux:** the same with `--platform linux` (or `scripts/linux/ngx-sdk.sh`): `libnvsdk_ngx.a` for the build and
-  `libnvidia-ngx-dlss.so` for the game folder's `ngx` folder (also looked for in `$XDG_DATA_HOME/hookshot/ngx`). NGX's
-  core comes with NVIDIA's Linux driver. NVIDIA's NGX on Linux loads the runtime only from a folder whose path is all
-  ASCII: with the game in a folder named otherwise (`~/Games/Zelda-Café`), put `libnvidia-ngx-dlss.so.*` in
+  `libnvidia-ngx-dlss.so` and `libnvidia-ngx-dlssg.so` for the game folder's `ngx` folder (also looked for in
+  `$XDG_DATA_HOME/hookshot/ngx`). NGX's core comes with NVIDIA's Linux driver. NVIDIA's NGX on Linux loads the
+  runtimes only from a folder whose path is all ASCII: with the game in a folder named otherwise (`~/Games/Zelda-Café`),
+  put `libnvidia-ngx-dlss.so.*` and `libnvidia-ngx-dlssg.so.*` in
   `$XDG_DATA_HOME/hookshot/ngx` (`~/.local/share/hookshot/ngx`) or another ASCII folder named by `RX_VK_DLSS_DIR`.
 
 The **DLSS model** row chooses DLSS's network, by NVIDIA's preset letter, for every mode and Render resolution (DLAA,
