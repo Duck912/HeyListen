@@ -42,6 +42,7 @@
 namespace mkwvk {
 int display_refresh_mhz();   // (vk_main.cpp: the window's display, mHz; outside the unnamed namespace, where it is defined)
 extern std::atomic<uint32_t> present_kind;   // (vk_replay.cpp: the frame log's)
+extern std::atomic<bool> present_native_pq;   // (vk_replay.cpp: the game's picture is its own HDR10 one)
 namespace {
 
 constexpr int kMaxMult = 8;   // (up to 8x: players asked; the made frames are allocated for the multiplier chosen only)
@@ -60,6 +61,7 @@ struct OutSet {
     int shown = -1;
     int64_t due[kMaxMult] = {};
     bool game[kMaxMult] = {};
+    bool pq = false;   // (the game's picture was its own HDR10 one (present_native_pq) when this set was recorded: its frames are PQ codes)
 };
 struct Job {
     OutSet* set;
@@ -447,7 +449,7 @@ void display_main() {
             while (now_ns() < due) SwitchToThread();
             const int64_t t = now_ns();
             present_kind.store(timed ? (j.set->game[k] ? 0 : 1) : k < j.set->made ? 1 : 0);
-            present_image(j.set->frame[k].image, fg.w, fg.h, nullptr, j.set->frame[k].view);
+            present_image(j.set->frame[k].image, fg.w, fg.h, nullptr, j.set->frame[k].view, j.set->pq);
             menu_note_frame(!timed && k == j.set->made);
             if (shown_at) {
                 const int64_t d = t - shown_at;
@@ -658,6 +660,7 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
         set->busy = true;
         fg.next_set = (fg.next_set + 1) % 3;
     }
+    set->pq = present_native_pq.load(std::memory_order_relaxed);   // (this frame's: the replay thread stored it just before recording)
     // (the multiplier the sets were made for, ensure_size above: the row read again here could be one step up by now, the
     // menu runs on the display thread, and the set's last image would be one that was never made)
     const int cur = fg.cur, prev = cur ^ 1, m = fg.mult;
