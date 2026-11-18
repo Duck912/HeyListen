@@ -689,6 +689,10 @@ Row rows[] = {
     {TAB_GAMEPLAY, "Discord status", &opts.discord, 0, 1, 1, tx_onoff,
      "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},
+    {TAB_GAMEPLAY, "Check for updates", &opts.update_check, 0, 1, 1, tx_onoff,   // (host/hos_update.c reads update_check= from the options file at the start)
+     "On (the default): at the start of a game you started yourself, a short look for a newer HeyListen release, and a window "
+     "that offers to update, keep your version or skip that version. Nothing is asked when you are offline, and when the launcher "
+     "starts the game it looks for updates itself. Applies after a restart.", nullptr, true, true},
 
     // Controls (11 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
@@ -1003,6 +1007,7 @@ const char* ini_key(const Row& r) {
     if (r.value == &opts.dlss) return "dlss";   // (as opts.dlss and RX_VK_DLSS)
     if (r.value == &opts.send_perf) return "send_performance_stats";   // (host/hos_telemetry.h reads both of these)
     if (r.value == &opts.send_crash) return "send_crash_reports";
+    if (r.value == &opts.update_check) return "update_check";   // (host/hos_update.c reads it, and writes it for "Never ask again")
     static char k[32];
     size_t n = 0;
     for (const char* p = r.name; *p && n + 1 < sizeof k; p++) k[n++] = *p == ' ' ? '_' : (char)tolower(*p);

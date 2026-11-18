@@ -2,7 +2,10 @@
    when it is not the release this game folder was built with, the player is asked whether to update. Yes starts the Hookshot Builder
    that made the folder (hookshot_version.txt, written by nx2/make_game.py) with --update: it downloads the new release and builds the
    folder again from the game files the folder keeps, and the game closes. A folder with no hookshot_version.txt (built from the
-   repository, or before updates came in) is never asked about. HOOKSHOT_NO_UPDATE_CHECK=1 (hookshot_env.txt) turns it off; in this fork it is off unless HOOKSHOT_UPDATE_CHECK=1 */
+   repository, or before updates came in) is never asked about. The offer is on for a game the player started themselves. It is off when the
+   launcher or the builder started the game (HOOKSHOT_NO_UPDATE_CHECK=1: they look for updates themselves), and when the player chose
+   "Don't ask again" in the offer or turned off the menu's Settings row "Check for updates" (update_check=0 in hookshot_options.ini).
+   The look never holds the start for more than a few seconds, and says nothing when offline. */
 #if defined(_WIN32) || defined(__linux__)
 #include <ctype.h>
 #include <string.h>
@@ -84,6 +87,40 @@ static int ver_newer(const char *tag, const char *have) {
     if (a.release != b.release) return a.release;
     return a.after > b.after;
 }
+/* hookshot_options.ini's update_check line, the one the menu's "Check for updates" row keeps (1 the default, 0 off; the last line
+   counts). "Don't ask again" in the offer writes the same line, so the row and the offer agree. 1 when the offer is turned off */
+static int ini_update_off(const char *ini) {
+    int off = 0;
+    for (const char *p = ini; p && *p; p = strchr(p, '\n'), p = p ? p + 1 : NULL) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (strncmp(p, "update_check=", 13)) continue;
+        const char *q = p + 13;
+        while (*q == ' ' || *q == '\t') q++;
+        off = *q == '0' && (q[1] == 0 || q[1] == '\n' || q[1] == '\r' || q[1] == ' ' || q[1] == '\t');
+    }
+    return off;
+}
+
+/* the options file with its update_check lines replaced by update_check=<0 or 1> at the end, every other line as it was. 0 when
+   it does not fit in cap */
+static int ini_with_update_check(const char *ini, int on, char *out, size_t cap) {
+    size_t n = 0;
+    for (const char *p = ini; p && *p;) {
+        const char *e = strchr(p, '\n');
+        const size_t len = e ? (size_t)(e - p) + 1 : strlen(p);
+        const char *q = p;
+        while (*q == ' ' || *q == '\t') q++;
+        if (strncmp(q, "update_check=", 13)) {
+            if (n + len + 2 >= cap) return 0;
+            memcpy(out + n, p, len), n += len;
+            if (!e) out[n++] = '\n';
+        }
+        p += len;
+    }
+    if (n + 16 > cap) return 0;
+    memcpy(out + n, on ? "update_check=1\n" : "update_check=0\n", 16);   /* (15 characters and the end) */
+    return 1;
+}
 #endif
 
 #ifdef _WIN32
@@ -161,11 +198,49 @@ static int latest_tag(char *tag, size_t cap) {
     return ok;
 }
 
+/* (the look runs on its own thread, and the start waits for it a few seconds at most: a network that answers slowly, or a name lookup that
+   hangs, never holds the game back) */
+typedef struct { char tag[128]; int ok; } tag_job;
+static DWORD WINAPI tag_thread(LPVOID p) {
+    tag_job *job = (tag_job *)p;
+    job->ok = latest_tag(job->tag, sizeof job->tag);
+    return 0;
+}
+#define UPDATE_WAIT_MS 4500
+
+/* (the options file of the game folder, in UTF-8: the menu's "Check for updates" row and "Don't ask again" keep update_check= there) */
+static int options_say_off(const wchar_t *dir) {
+    wchar_t file[MAX_PATH + 64];
+    _snwprintf(file, MAX_PATH + 64, L"%ls\\hookshot_options.ini", dir);
+    FILE *f = _wfopen(file, L"rb");
+    if (!f) return 0;
+    static char ini[1 << 16];
+    const size_t got = fread(ini, 1, sizeof ini - 1, f);
+    fclose(f);
+    ini[got] = 0;
+    return ini_update_off(ini);
+}
+
+static void options_set_off(const wchar_t *dir) {
+    wchar_t file[MAX_PATH + 64], tmp[MAX_PATH + 72];
+    static char ini[1 << 16], out[(1 << 16) + 32];
+    size_t got = 0;
+    _snwprintf(file, MAX_PATH + 64, L"%ls\\hookshot_options.ini", dir);
+    FILE *f = _wfopen(file, L"rb");
+    if (f) got = fread(ini, 1, sizeof ini - 1, f), fclose(f);
+    ini[got] = 0;
+    if (!ini_with_update_check(ini, 0, out, sizeof out)) return;
+    _snwprintf(tmp, MAX_PATH + 72, L"%ls.tmp", file);
+    f = _wfopen(tmp, L"wb");
+    if (!f) return;
+    const size_t len = strlen(out);
+    const int wrote = fwrite(out, 1, len, f) == len;
+    if (fclose(f) != 0 || !wrote || !MoveFileExW(tmp, file, MOVEFILE_REPLACE_EXISTING)) DeleteFileW(tmp);
+}
+
 void hos_update_check(void) {
+    /* (the launcher and the builder look for updates themselves and start the game with HOOKSHOT_NO_UPDATE_CHECK=1) */
     if (getenv("HOOKSHOT_NO_UPDATE_CHECK") && strcmp(getenv("HOOKSHOT_NO_UPDATE_CHECK"), "0")) return;
-    /* (this fork builds its own game from its own sources: NotRexed's releases are not its updates, so the offer is opt-in here,
-       HOOKSHOT_UPDATE_CHECK=1) */
-    if (!getenv("HOOKSHOT_UPDATE_CHECK") || !strcmp(getenv("HOOKSHOT_UPDATE_CHECK"), "0")) return;
     wchar_t dir[MAX_PATH], file[MAX_PATH + 64];
     DWORD n = hos_game_path_w(dir, MAX_PATH);
     if (!n || n >= MAX_PATH) return;
@@ -175,11 +250,22 @@ void hos_update_check(void) {
     char have[128], builder[MAX_PATH * 3], skipped[128] = "", tag[128];
     _snwprintf(file, MAX_PATH + 64, L"%ls\\hookshot_version.txt", dir);
     if (!read_value(file, "version", have, sizeof have) || !safe_tag(have)) return;
+    if (options_say_off(dir)) return;   /* (the player turned the offer off: Settings, Check for updates) */
     _snwprintf(file, MAX_PATH + 64, L"%ls\\user\\hookshot_update_skip.txt", dir);
     read_value(file, "skip", skipped, sizeof skipped);
-    if (!latest_tag(tag, sizeof tag)) {
-        fprintf(stderr, "update: the latest release could not be asked for (offline?)\n");
-        return;
+    {
+        static tag_job job;
+        HANDLE t = CreateThread(NULL, 0, tag_thread, &job, 0, NULL);
+        int ok = 0;
+        if (t) {
+            ok = WaitForSingleObject(t, UPDATE_WAIT_MS) == WAIT_OBJECT_0 && job.ok;
+            CloseHandle(t);   /* (a look still running is left to end by itself; its answer is not read) */
+        }
+        if (!ok) {
+            fprintf(stderr, "update: the latest release could not be asked for (offline?)\n");
+            return;
+        }
+        memcpy(tag, job.tag, sizeof tag);
     }
     fprintf(stderr, "update: this folder is %s, the latest release is %s\n", have, tag);
     if (!ver_newer(tag, have) || !strcmp(tag, skipped)) return;   /* (only a newer release: not one a development build is past) */
@@ -196,22 +282,33 @@ void hos_update_check(void) {
                    L"A new version of HeyListen is out: %ls (this game is %ls).\n\n"
                    L"Update now? The game closes, and HeyListen Builder downloads the new version and builds this game folder again from the "
                    L"game files it keeps. That takes about as long as your first build. Your saves and settings stay.\n\n"
-                   L"Yes: update now\nNo: not now (asked again next time)\nCancel: skip this version",
+                   L"Yes: update now\nNo: keep my version this time (asked again next time)\nCancel: keep my version, and stop asking...",
                    wtag, whave);
     else
         _snwprintf(text, 2048,
                    L"A new version of HeyListen is out: %ls (this game is %ls).\n\n"
                    L"The HeyListen Builder that made this folder was not found, so it can't update by itself. Open the download page?\n\n"
-                   L"Yes: open the page\nNo: not now (asked again next time)\nCancel: skip this version",
+                   L"Yes: open the page\nNo: keep my version this time (asked again next time)\nCancel: keep my version, and stop asking...",
                    wtag, whave);
     const int answer = MessageBoxW(NULL, text, L"HeyListen update", MB_YESNOCANCEL | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND);
-    if (answer == IDCANCEL) {
-        wchar_t user[MAX_PATH + 16];
-        _snwprintf(user, MAX_PATH + 16, L"%ls\\user", dir);
-        CreateDirectoryW(user, NULL);
-        _snwprintf(file, MAX_PATH + 64, L"%ls\\user\\hookshot_update_skip.txt", dir);
-        FILE *f = _wfopen(file, L"wb");
-        if (f) fprintf(f, "skip=%s\n", tag), fclose(f);
+    if (answer == IDCANCEL) {   /* (your version stays: for this release only, or for good) */
+        _snwprintf(text, 2048,
+                   L"Keep your version, and stop asking.\n\n"
+                   L"Yes: skip only %ls (you are asked again when the next version is out)\n"
+                   L"No: never ask again (turn it back on in the game menu: Settings, Check for updates)\n"
+                   L"Cancel: ask again next time",
+                   wtag);
+        const int more = MessageBoxW(NULL, text, L"HeyListen update", MB_YESNOCANCEL | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND);
+        if (more == IDYES) {
+            wchar_t user[MAX_PATH + 16];
+            _snwprintf(user, MAX_PATH + 16, L"%ls\\user", dir);
+            CreateDirectoryW(user, NULL);
+            _snwprintf(file, MAX_PATH + 64, L"%ls\\user\\hookshot_update_skip.txt", dir);
+            FILE *f = _wfopen(file, L"wb");
+            if (f) fprintf(f, "skip=%s\n", tag), fclose(f);
+        } else if (more == IDNO) {
+            options_set_off(dir);
+        }
         return;
     }
     if (answer != IDYES) return;
@@ -301,11 +398,11 @@ static int pipe_tag(const char *cmd, char *tag, size_t cap) {
 }
 
 static int latest_tag(char *tag, size_t cap) {
-    if (pipe_tag("curl -fsSL --max-time 4 --retry 2 -A HeyListen-update-check "
+    if (pipe_tag("curl -fsSL --connect-timeout 2 --max-time 3 -A HeyListen-update-check "
                  "-H \"Accept: application/vnd.github+json\" "
                  "https://api.github.com/repos/Sacrappy/HeyListen/releases/latest 2>/dev/null", tag, cap))
         return 1;
-    return pipe_tag("curl -fsSL --max-time 8 --retry 2 -A HeyListen-update-check "
+    return pipe_tag("curl -fsSL --connect-timeout 2 --max-time 3 -A HeyListen-update-check "
                     "https://github.com/Sacrappy/HeyListen/releases/latest/download/heylisten-linux.txt 2>/dev/null", tag, cap);
 }
 
@@ -330,7 +427,34 @@ static int installed_builder(char *out, size_t cap) {
     return access(out, X_OK) == 0;
 }
 
+/* (the options file of the game folder: the menu's "Check for updates" row and "Never ask again" keep update_check= there) */
+static size_t read_options(const char *dir, char *ini, size_t cap) {
+    char path[MAX_PATH + 64];
+    snprintf(path, sizeof path, "%shookshot_options.ini", dir);
+    FILE *f = fopen(path, "rb");
+    if (!f) return ini[0] = 0, 0;
+    const size_t got = fread(ini, 1, cap - 1, f);
+    fclose(f);
+    ini[got] = 0;
+    return got;
+}
+
+static void options_set_off(const char *dir) {
+    static char ini[1 << 16], out[(1 << 16) + 32];
+    char path[MAX_PATH + 64], tmp[MAX_PATH + 72];
+    read_options(dir, ini, sizeof ini);
+    if (!ini_with_update_check(ini, 0, out, sizeof out)) return;
+    snprintf(path, sizeof path, "%shookshot_options.ini", dir);
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return;
+    const size_t len = strlen(out);
+    const int wrote = fwrite(out, 1, len, f) == len;
+    if (fclose(f) != 0 || !wrote || rename(tmp, path) != 0) remove(tmp);
+}
+
 void hos_update_check(void) {
+    /* (the launcher and the builder look for updates themselves and start the game with HOOKSHOT_NO_UPDATE_CHECK=1) */
     const char *off = getenv("HOOKSHOT_NO_UPDATE_CHECK");
     if (off && strcmp(off, "0")) return;
     char path[MAX_PATH + 64], have[128], builder[MAX_PATH * 2], skipped[128] = "", tag[128];
@@ -344,6 +468,11 @@ void hos_update_check(void) {
     dir[n] = 0;
     snprintf(path, sizeof path, "%shookshot_version.txt", dir);
     if (!read_value(path, "version", have, sizeof have) || !safe_tag(have)) return;
+    {
+        static char ini[1 << 16];
+        read_options(dir, ini, sizeof ini);
+        if (ini_update_off(ini)) return;   /* (the player turned the offer off: Settings, Check for updates) */
+    }
     snprintf(path, sizeof path, "%suser/hookshot_update_skip.txt", dir);
     read_value(path, "skip", skipped, sizeof skipped);
     if (!latest_tag(tag, sizeof tag)) {
@@ -361,7 +490,7 @@ void hos_update_check(void) {
                  ? "A new version of HeyListen is out: %s (this game is %s). Update now? The game closes, and HeyListen Builder downloads only what changed and builds this folder again. Your saves and settings stay."
                  : "A new version of HeyListen is out: %s (this game is %s). The builder that made this folder was not found. Open the download page?",
              tag, have);
-    snprintf(cmd, sizeof cmd, "zenity --list --title=HeyListen --hide-header --column= --text='%s' 'Update now' 'Not now' 'Skip this version'", text);
+    snprintf(cmd, sizeof cmd, "zenity --list --title=HeyListen --hide-header --column= --text='%s' 'Update now' 'Keep my version this time' 'Skip this version' 'Never ask again (turn it back on in Settings, Check for updates)'", text);
     FILE *pick = popen(cmd, "r");
     if (!pick) return;
     char answer[64] = "";
@@ -373,6 +502,10 @@ void hos_update_check(void) {
         snprintf(path, sizeof path, "%suser/hookshot_update_skip.txt", dir);
         FILE *f = fopen(path, "wb");
         if (f) fprintf(f, "skip=%s\n", tag), fclose(f);
+        return;
+    }
+    if (!strncmp(answer, "Never", 5)) {
+        options_set_off(dir);
         return;
     }
     if (strncmp(answer, "Update", 6)) return;

@@ -19,6 +19,8 @@ MAIN = r"""
 #include <stdio.h>
 int main(int argc, char **argv) {
     (void)safe_tag;
+    (void)ini_update_off;
+    (void)ini_with_update_check;
     for (int i = 1; i + 1 < argc; i += 2) printf("%d\n", ver_newer(argv[i], argv[i + 1]));
     return 0;
 }
