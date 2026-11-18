@@ -12,6 +12,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "host" / "hos_update.c"
+HEADER = ROOT / "host" / "hos_update_ver.h"
 MENU = ROOT / "gpu" / "vk" / "vk_menu.cpp"
 MENU_H = ROOT / "gpu" / "vk" / "vk_menu.h"
 
@@ -54,10 +55,9 @@ def main():
     parser.add_argument("--cc", default="gcc")
     args = parser.parse_args()
     text = SOURCE.read_text(encoding="utf-8")
-    start = text.index("#if defined(_WIN32) || defined(__linux__)")
-    shared = text[text.index(NL, start) + 1:text.index(NL + "#endif", start)]
+    shared = HEADER.read_text(encoding="utf-8")   # (host/hos_update_ver.h: what the offer and the setup share)
     for name in ("ini_update_off(", "ini_with_update_check("):
-        assert name in shared, "%s is not in the part both platforms share" % name
+        assert name in shared, "%s is not in host/hos_update_ver.h" % name
     with tempfile.TemporaryDirectory(prefix="hookshot-update-offer-") as temp:
         source, executable = Path(temp) / "fixture.c", Path(temp) / "fixture.exe"
         source.write_text(shared + MAIN, encoding="utf-8")
@@ -81,7 +81,7 @@ def main():
     code = NL.join(l for l in text.splitlines() if not l.lstrip().startswith(("/*", "*", "//")))
     assert 'getenv("HOOKSHOT_UPDATE_CHECK")' not in code, "the offer must not need an opt-in any more"
     assert code.count('getenv("HOOKSHOT_NO_UPDATE_CHECK")') >= 2, "both platforms keep the launcher's way to turn it off"
-    assert code.count("ini_update_off(") >= 3 and code.count("options_set_off(") >= 4, "both platforms read and write update_check="
+    assert code.count("ini_update_off(") >= 2 and code.count("options_set_off(") >= 4, "both platforms read and write update_check="
     assert "WaitForSingleObject(t, UPDATE_WAIT_MS)" in code, "Windows never waits for the network without a limit"
     assert "--max-time 3" in code and "--retry" not in code, "Linux never waits long for curl"
     assert "Never ask again" in code and "never ask again" in code, "both offers have the choice"

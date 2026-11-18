@@ -12,6 +12,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "host" / "hos_update.c"
+HEADER = ROOT / "host" / "hos_update_ver.h"
 sys.path.insert(0, str(ROOT / "builder" / "linux"))
 import linux_update  # noqa: E402
 
@@ -77,10 +78,10 @@ def main():
     parser.add_argument("--cc", default="gcc")
     args = parser.parse_args()
     text = SOURCE.read_text(encoding="utf-8")
-    start = text.index("#if defined(_WIN32) || defined(__linux__)")
-    shared = text[text.index("\n", start) + 1:text.index("\n#endif", start)]
+    shared = HEADER.read_text(encoding="utf-8")   # (host/hos_update_ver.h: what the offer and the setup share)
+    assert '#include "hos_update_ver.h"' in text
     for tag in ("ver_newer(", "ver_parse(", "ver_tail("):
-        assert tag in shared, "%s is not in the part both platforms share" % tag
+        assert tag in shared, "%s is not in host/hos_update_ver.h" % tag
     # both halves ask ver_newer, not whether the two strings differ
     assert text.count("if (!ver_newer(tag, have) || !strcmp(tag, skipped)) return;") == 2
     assert "!strcmp(tag, have)" not in text
