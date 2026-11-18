@@ -477,6 +477,14 @@ bool framegen_on() {
     return framegen_wanted(opts.framegen, allow) && !dev.offscreen && !fg.failed;
 }
 
+int framegen_engine(int* mult, bool* automatic) {
+    *mult = 1, *automatic = false;
+    if (!framegen_on()) return 0;
+    *automatic = opts.framegen == 1;
+    *mult = multiplier();
+    return !*automatic && *mult == 2 && fsr3fi::frames_wanted() ? 2 : 1;
+}
+
 VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint32_t sw, uint32_t sh, const int crop[4], uint32_t dw, uint32_t dh) {
     if (!src || !image || !sw || !sh || !dw || !dh) return VK_NULL_HANDLE;
     if (crop && crop[2] > 0 && crop[3] > 0 &&

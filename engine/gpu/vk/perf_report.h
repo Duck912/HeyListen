@@ -68,6 +68,22 @@ inline const char* event_name(int e) {
     return e >= 0 && e < kEvents ? t[e] : "";
 }
 
+/// Who makes the frames the Frame generation row asks for (vk_framegen.h framegen_engine's values): not running, the renderer's
+/// own interpolation, AMD FSR 3.1's frame interpolation (at 2x, where it runs)
+enum FrameGen { kFramegenOff, kFramegenBuiltin, kFramegenFsr3, kFramegens };
+inline const char* framegen_name(int e) {
+    static const char* const t[] = {"off", "builtin", "fsr3"};
+    return e >= 0 && e < kFramegens ? t[e] : "other";
+}
+
+/// A DLSS preset (NVSDK_NGX_DLSS_Hint_Render_Preset_*: 1 A ... 26 Z, 0 NVIDIA's own pick) by its letter; "none" for no DLSS network
+/// (the game's own or FSR upscales: the model row does nothing then)
+inline std::string dlss_model_name(int preset, bool dlss_runs) {
+    if (!dlss_runs) return "none";
+    if (preset == 0) return "default";
+    return preset >= 1 && preset <= 26 ? std::string(1, (char)('A' + preset - 1)) : "other";
+}
+
 /// A frame's times beyond the FPS counter's parts, ms: from the renderer's counters, since the frame before
 struct Waits {
     double pipeline = 0;    // (building pipelines and picking programs on the drawing threads)
@@ -151,6 +167,10 @@ struct Machine {
     bool release = false;
     double vram_gb = 0, ram_gb = 0;
     int fps_cap = 0;   // (0: uncapped)
+    std::string framegen = "off", dlss_model = "none";   // (framegen_name; dlss_model_name)
+    int framegen_x = 1;      // (the frames shown for each of the game's: 1 with frame generation off; Auto: the most it makes)
+    bool framegen_auto = false;   // (the Auto row: framegen_x is then its limit, not a fixed multiplier)
+    int render_scale = 0;    // (the 3D's share of the output in percent, 0: Auto, the game's dynamic resolution)
 };
 
 struct Memory {
@@ -198,7 +218,10 @@ inline std::string summary_json(const Machine& m, bool first, double session_s, 
                     ",\"driver\":" + json_text(m.driver, 60) + ",\"vram_gb\":" + json_num(m.vram_gb) +
                     ",\"cpu\":" + json_text(m.cpu) + ",\"ram_gb\":" + json_num(m.ram_gb) +
                     ",\"upscaler\":" + json_text(m.upscaler, 40) + ",\"preset\":" + json_text(m.preset, 40) +
-                    ",\"fps_cap\":" + std::to_string(m.fps_cap) + ",\"map\":" + json_text(map);
+                    ",\"fps_cap\":" + std::to_string(m.fps_cap) + ",\"framegen\":" + json_text(m.framegen, 40) +
+                    ",\"framegen_x\":" + std::to_string(m.framegen_x) + ",\"framegen_auto\":" + (m.framegen_auto ? "true" : "false") +
+                    ",\"dlss_model\":" + json_text(m.dlss_model, 40) + ",\"render_scale\":" + std::to_string(m.render_scale) +
+                    ",\"map\":" + json_text(map);
     if (mem)
         o += ",\"memory\":{\"vram_used_gb\":" + json_num(mem->vram_used_gb) + ",\"vram_allowed_gb\":" +
              json_num(mem->vram_allowed_gb) + ",\"ram_used_gb\":" + json_num(mem->ram_used_gb) + "}";

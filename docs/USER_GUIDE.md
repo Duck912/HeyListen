@@ -241,7 +241,8 @@ in-game menu (Insert) control it:
 
 - **Send performance statistics**: off by default. On, the game counts how its frames went (frame times, stutters and what
   they waited on, per map) and sends a summary of the counts at the next start. A summary holds the PC's GPU, driver, CPU,
-  RAM, operating system, the upscaler, preset and frame rate cap, the game's version and the map names. It has no name, no
+  RAM, operating system, the upscaler (with its DLSS model and the render resolution), frame generation and its multiplier,
+  the preset and frame rate cap, the game's version and the map names. It has no name, no
   ID and no path, and what the team keeps is totals for all players, nothing per player. `perf_sent` in the game folder keeps
   a copy of everything that was sent, to read.
 - **Send crash reports automatically**: off by default. After a crash a window says what happened and asks. **Report

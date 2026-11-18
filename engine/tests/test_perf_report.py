@@ -52,6 +52,72 @@ def wiring():
     check("perf_report_final(-1);" in (ROOT / "gpu/vk/vk_main.cpp").read_text(encoding="utf-8"),
           "the window's close writes the last summary")
     check("parts_ms" in (ROOT / "gpu/vk/perf_report.h").read_text(encoding="utf-8"), "the payload keeps Longshot's parts_ms")
+    # frame generation, the DLSS model and the render scale ride with the upscaler: read with the other settings, from what runs
+    read_settings = cpp[cpp.index("void read_settings() {"):]
+    read_settings = read_settings[:read_settings.index("\n}\n")]
+    check("machine.upscaler = upscaler_name(opts.dlss);" in read_settings and "read_effective_settings();" in read_settings,
+          "the settings are read together, the upscaler as before")
+    effective = cpp[cpp.index("void read_effective_settings() {"):]
+    effective = effective[:effective.index("\n}\n")]
+    for what in ("framegen_engine(&mult, &automatic)", "pr::framegen_name(", "machine.framegen_x = mult", "machine.framegen_auto = automatic",
+                 "fsr3_wanted() ? (int)upscaler_rows::FSR3 : temporal_mode()", 'getenv("RX_VK_DLSS_PRESET")',
+                 "upscaler_rows::dlss_preset(opts.dlss_model,", "device_vram_bytes()", "upscaler_rows::is_dlss(up)", "machine.render_scale = ",
+                 "upscaler_rows::full_scale(up) ? 100 : upscaler_rows::percent(upscaler_rows::snap(up, opts.resolution))"):
+        check(what in effective, "the effective settings: " + what)
+    vk_dlss = (ROOT / "gpu/vk/vk_dlss.cpp").read_text(encoding="utf-8")
+    check('getenv("RX_VK_DLSS_PRESET")' in vk_dlss and "upscaler_rows::dlss_preset(opts.dlss_model, env && *env ? env : nullptr, device_vram_bytes())" in vk_dlss,
+          "the DLSS model is the preset DLSS is asked for (vk_dlss.cpp wanted_preset's rule)")
+    rows = (ROOT / "gpu/vk/upscaler_rows.h").read_text(encoding="utf-8")
+    names = re.search(r'static const char\* const t\[\] = \{("Game network".*?)\};', cpp[cpp.index("const char* upscaler_name"):], re.S)
+    count = int(re.search(r"kUpscalers = (\d+)", rows).group(1))
+    check(names and len(re.findall(r'"[^"]*"', names.group(1))) == count, "upscaler_name has a name for each of upscaler_rows.h's %d upscalers" % count)
+    docs = (ROOT / "../docs/performance-statistics.md").read_text(encoding="utf-8")
+    check(all("| `%s` |" % key in docs for key in ("framegen", "framegen_x", "framegen_auto", "dlss_model", "render_scale")),
+          "docs/performance-statistics.md lists the new fields")
+
+
+FRAMEGEN_STUBS = r"""
+#include <cstdio>
+#include <cstring>
+struct Options { int framegen = 0; } opts;
+static bool g_on = true, g_fsr = false;
+static bool framegen_on() { return g_on; }
+static int multiplier() { return opts.framegen == 1 ? 3 : opts.framegen; }   // (Auto: the display's cap, here 3)
+namespace fsr3fi { static unsigned frames_wanted() { return g_fsr ? 1u : 0u; } }
+%s
+#define CHECK(name, cond) do { if (!(cond)) { std::fprintf(stderr, "FAIL %%s\n", name); return 1; } } while (0)
+int main() {
+    int m = 0; bool a = true;
+    opts.framegen = 0; g_on = false;
+    CHECK("off: none, 1x", framegen_engine(&m, &a) == 0 && m == 1 && !a);
+    opts.framegen = 4; g_on = false;
+    CHECK("row on, interpolation not running (RX_VK_FRAMEGEN=0, offscreen, images not made): none, 1x", framegen_engine(&m, &a) == 0 && m == 1 && !a);
+    g_on = true;
+    CHECK("4x: the renderer's own", framegen_engine(&m, &a) == 1 && m == 4 && !a);
+    opts.framegen = 2; g_fsr = false;
+    CHECK("2x without FSR 3.1: the renderer's own", framegen_engine(&m, &a) == 1 && m == 2 && !a);
+    g_fsr = true;
+    CHECK("2x where FSR 3.1 runs: FSR 3.1", framegen_engine(&m, &a) == 2 && m == 2 && !a);
+    opts.framegen = 3;
+    CHECK("3x: FSR 3.1 makes the midpoint only, the renderer's own", framegen_engine(&m, &a) == 1 && m == 3 && !a);
+    opts.framegen = 1;
+    CHECK("Auto: the renderer's own, its limit, marked", framegen_engine(&m, &a) == 1 && m == 3 && a);
+    std::puts("ok");
+    return 0;
+}
+"""
+
+
+def framegen_engine(cxx):
+    source = (ROOT / "gpu/vk/vk_framegen.cpp").read_text(encoding="utf-8")
+    start = source.index("int framegen_engine(int* mult, bool* automatic) {")
+    body = source[start:source.index("\n}\n", start) + 3]
+    with tempfile.TemporaryDirectory(prefix="perf-framegen-") as t:
+        src, exe = Path(t) / "fg.cpp", Path(t) / "fg.exe"
+        src.write_text(FRAMEGEN_STUBS % body, encoding="utf-8")
+        subprocess.run([cxx, "-std=c++20", "-O1", str(src), "-o", str(exe)], check=True, timeout=300)
+        out = subprocess.run([str(exe)], capture_output=True, text=True)
+        check(out.returncode == 0, "framegen_engine: off, refused, builtin, FSR 3.1 at 2x only, Auto's limit" + (": " + out.stderr.strip() if out.returncode else ""))
 
 
 def unit(cxx):
@@ -69,6 +135,7 @@ def main():
     parser.add_argument("--cxx", default="g++")
     args = parser.parse_args()
     wiring()
+    framegen_engine(args.cxx)
     unit(args.cxx)
 
 
