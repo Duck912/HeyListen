@@ -6,7 +6,7 @@ send to (`nx2/addresses.ini`, `telemetry=`, which is empty as shipped).
 
 | Row | What it does | Default |
 |---|---|---|
-| **Send performance statistics** | The game counts how its frames went and sends the counts, at the next start | Off |
+| **Send performance statistics** | The game counts how its frames went and sends the counts, at the next start. The same row sends the new pipeline states the game made (hashes and render state, see *Pipeline states* below), unless `HL_TELEMETRY_PIPELINES=0` | Off |
 | **Send crash reports automatically** | After a crash, the crash report is sent at once, without the crash window asking | Off (the window asks) |
 
 Ported from Longshot's pull request #983 (Gabriel Moisan Matte), which builds on its crash window (#593, HumanBean) and its
@@ -19,7 +19,8 @@ tables.
   `send_performance_stats=` and `send_crash_reports=` (0 or 1; anything but 1 is off).
 - `perf_pending/` in the game folder: the summaries waiting to be sent. `perf_sent/`: each summary the server took,
   exactly as it was sent (the 48 sent last), for a player to open and read. Turning **Send performance statistics** off
-  deletes both folders' summaries at once.
+  deletes both folders' summaries at once. `pipelines_pending/` and `pipelines_sent/` are the same for the pipeline state
+  records (see below), deleted together with them.
 - After a crash, the crash window (the game's own, drawn like the Insert menu) says what happened, and offers **Report
   automatically** (shows the report that would be sent, every line of it, and sends it only when Send is pressed),
   **Report manually** (copies a redacted report to the clipboard and opens a new issue on GitHub with a title and a short
@@ -36,8 +37,9 @@ no redirect followed, and nothing is kept per player.
 |---|---|---|---|
 | `POST /telemetry/crash` | The player presses Send in the crash window, or after a crash with **Send crash reports automatically** on | The player's click or the row | A report per crash |
 | `POST /telemetry/perf` | Every 5 minutes of play and at exit, sent at the next start | **Send performance statistics** on | Totals for all players; nothing kept per player |
+| `POST /telemetry/pipelines` | At exit the game queues the pipeline states it made that the shipped list lacks; sent at the next start | **Send performance statistics** on, and `HL_TELEMETRY_PIPELINES` not `0` | The records the next shipped pipeline state list is made from; nothing kept per player |
 
-Both bodies are `Content-Type: application/json`. The server answers 2xx for a taken report, 4xx with `{"error": ...}` for a
+All bodies are `Content-Type: application/json`. The server answers 2xx for a taken report, 4xx with `{"error": ...}` for a
 refused one, 429 or 5xx when busy.
 
 ### Crash report (`/telemetry/crash`, at most 128 KiB)
@@ -133,6 +135,40 @@ Example:
 Never sent: paths, the user name, settings beyond the three above (the upscaler, the preset and the frame rate cap), the log,
 saves, anything from the game files. A summary carries no ID, so two summaries can't be tied to one player.
 
+### Pipeline states (`/telemetry/pipelines`, at most 1.5 MiB)
+
+The game keeps a list of the graphics pipelines it has asked for (`hookshot_pipeline_states.bin`, the same format as the shipped
+list `profile/pipeline_states.bin`, installed as `hookshot_pipeline_states_shipped.bin`). A record is 528 bytes of hashes of the
+game's shader stages, texture and vertex formats and draw-state numbers: **no shader code, no game data, no title id, no path**
+(`tools/release/check_states.py` is the rule for a record and the game applies it to each one before it is queued). At exit
+(and when the window closes) the game takes the records that are **not in the shipped list**, once each, and leaves out the ones
+it queued before (`hookshot_pipeline_states_sent.bin` keeps their hashes). At most 1,800 a session (under 1 MB); the rest
+wait for the next session. With nothing new, or no shipped list to compare with, nothing is queued.
+
+| Field | Type | Limits | What it is |
+|---|---|---|---|
+| `v` | integer | | The format's version: 1 |
+| `version` | string | ≤ 40 characters | The game's version, as the performance summary says it |
+| `release` | boolean | | A release's version built from the release's own sources |
+| `state_stamp` | string | 16 hex digits | `HOOKSHOT_STATE_STAMP`: the hash of the renderer's state headers (what the records are laid out for) |
+| `shader_stamp` | string | 16 hex digits | The shader translation's stamp (`program_cache_stamp`: the translator, the depth mode, the GPU's mesh-shader mode, the C++ library) |
+| `vendor_id` | integer | | The GPU's PCI vendor id (4318 NVIDIA, 4098 AMD, 32902 Intel) |
+| `driver` | string | ≤ 60 characters | The GPU driver as the performance summary's `driver` says it; the server derives the class |
+| `record_size` | integer | | 528 |
+| `count` | integer | 1 to 1800 | The records in `states` |
+| `states` | string | base64 | A state list file, as `nx2/pipeline_states.py` and `tools/release/check_states.py` read it: `HKSTATE1`, a little-endian u32 528, then `count` records. Decoded it can be written to disk and merged as it is |
+
+Example (the records cut short):
+
+```json
+{"v": 1, "version": "v0.4.0", "release": true, "state_stamp": "0123456789abcdef", "shader_stamp": "fedcba9876543210",
+ "vendor_id": 4318, "driver": "NVIDIA 566.36", "record_size": 528, "count": 2, "states": "SEtTVEFURTEQAgAA..."}
+```
+
+Never sent: the GPU's name or device id, the CPU, the OS, the PC's name or folders, the user name, any ID. The file in
+`pipelines_sent/` is the exact body of each batch sent (the last 3). `tests/test_state_report.py` checks the payload against
+this PC's own names and folders.
+
 ## How the parts fit
 
 - **The game** (`gpu/vk/perf_report.cpp`, `perf_report.h`): while the row is on and the build has an address, each frame
@@ -148,6 +184,14 @@ saves, anything from the game files. A summary carries no ID, so two summaries c
   12 a start. A summary the server took or refused is deleted (one it took is kept in `perf_sent/`); one it could not reach, or
   answered busy (429 or 5xx), stays. A busy server is not asked again before its `Retry-After` (at most a day), else an hour,
   doubled each time it is busy again up to a day: the time is kept in `perf_pending/.next`.
+- **The pipeline states** (`gpu/vk/state_report.h` the rules, `perf_report.cpp` `states_queue` the queuing): at the window's close
+  and at exit, with the row on, an address and `HL_TELEMETRY_PIPELINES` not `0`, the batch is written whole to
+  `pipelines_pending/<unix time>-0.json` (at most 4 wait; past that nothing is queued) and its records' hashes are added to
+  `hookshot_pipeline_states_sent.bin`. The sender (`hos_pipes_send_run`, the same code as the summaries' with its own folders)
+  posts at most 2 a start, with a 1.5 MiB limit, keeps the last 3 sent in `pipelines_sent/` and has its own `.next` backoff. The
+  log says `vk: pipeline states: N new records queued ...` or `... nothing queued to send: <why>`, and at the next start
+  `perf: N pipeline state batches sent or refused`. Turning the row off deletes `pipelines_pending/`, `pipelines_sent/` and the
+  sent hashes.
 - **The address** (`host/hos_telemetry.h`): `nx2/addresses.ini`'s `telemetry=`, stamped by `nx2/make_game.py` into the game
   folder's `hookshot_version.txt`. Empty (the default): nothing is stamped, nothing can be sent, and both rows say **Not
   available in this build**.
@@ -158,6 +202,7 @@ saves, anything from the game files. A summary carries no ID, so two summaries c
 |---|---|---|
 | `HL_TELEMETRY_URL` | the build's address | Where reports go, for a test against a local server. From the real environment only (`hookshot_env.txt` is refused it). https only |
 | `HL_TELEMETRY_TEST_HTTP=1` | off | With `HL_TELEMETRY_URL`, also takes a plain `http://` address on this PC itself (`127.0.0.1`, `localhost`, `[::1]`). For tests only |
+| `HL_TELEMETRY_PIPELINES=0` | on (with the row) | Turns off only the pipeline state records: none is queued or sent, the performance summaries go as the row says |
 | `RX_VK_PERF_INTERVAL` | `300` s | Seconds of play between two summaries (60 to 840) |
 | `HL_PERF_MAX_SENDS` | `12` | Summaries sent at one start (1 to 48) |
 | `HL_PERF_TIMEOUT` | `10` s | A request's time limit (2 to 60) |
