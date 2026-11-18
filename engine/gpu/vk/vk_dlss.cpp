@@ -659,8 +659,10 @@ void dlss_fg_probe() {
     if (!g.closed) fg_start(g);
 }
 
+// (DLSS-G makes its frames from a temporal Upscaler's depth and motion: without one on the Upscaler row (temporal_wanted) the
+// renderer's own or FSR 3.1 makes every set, at the row's multiplier, so there is no top)
 int dlss_fg_most() {
-    if (!dlss_fg_wanted()) return 0;
+    if (!dlss_fg_wanted() || !temporal_wanted()) return 0;
     return (int)fgs().most_known.load(std::memory_order_relaxed);   // (0 until NGX has answered)
 }
 
@@ -742,6 +744,9 @@ int dlss_fg_frames(VkCommandBuffer cmd, VkImage color, VkImageView color_view, u
         return g.refused++, 0;
     }
     if ((unsigned)count > g.most) {
+        // (no temporal Upscaler: nothing to make them from, which is the reason here (the multiplier is the row's then,
+        // dlss_fg_most), not the runtime's most)
+        if (!temporal_wanted()) return 0;
         static bool told = false;   // (once a run: the 600-set lines count them)
         if (!told) {
             told = true;

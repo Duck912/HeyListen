@@ -126,8 +126,9 @@ int auto_cap() {
     const int hz = (display_refresh_mhz() + 500) / 1000;
     return std::clamp(hz > 0 ? (hz + 29) / 30 : 2, 2, 4);
 }
-int multiplier() {   // (the Insert menu; 1 Auto (its most); the game's frames alone at 0)
-    return opts.framegen == 1 ? auto_cap() : std::clamp(opts.framegen, 1, kMaxMult);
+int multiplier() {   // (the Insert menu's, as it runs: framegen_now; 1 Auto (its most); the game's frames alone at 0)
+    const int framegen = framegen_now();
+    return framegen == 1 ? auto_cap() : std::clamp(framegen, 1, kMaxMult);
 }
 /// Auto: the display's refreshes in the game frame's interval (last, now], next the first not given a frame yet (moved
 /// past them). Each one's place between the two game frames in t (1: this one) and its time in at; most of them at the
@@ -465,6 +466,11 @@ void display_main() {
 }
 
 } // namespace
+
+int framegen_capped(int framegen, int dlss_most) {
+    return framegen >= 2 && dlss_most > 0 ? std::min(framegen, dlss_most + 1) : framegen;
+}
+int framegen_now() { return framegen_capped(opts.framegen, dlss_fg_most()); }
 
 // The Insert menu's Frame generation is off at 0. While it was ignored, every present still copied the frame and
 // reduced it to luma (framegen_record), then a second thread showed it. Open areas paid for that on a full GPU and
