@@ -99,7 +99,14 @@ void hos_oot_bgm_begin(void) {
     AcquireSRWLockExclusive(&sound_lock);
     bgm_run = bgm_held;
     bgm_held = 0;
+    const uint8_t kept = bgm_run;
     ReleaseSRWLockExclusive(&sound_lock);
+    if (kept && fps_log()) {   /* (HOS_FPS_LOG: each time the update gets flags its job's held frames saw: the game's own run would have lost them) */
+        static volatile LONG64 n;
+        const LONG64 k = InterlockedIncrement64(&n);
+        if (k <= 200) hos_log("oot: music manager: change flags %#x kept from frames the sound job did not run (bit 5 the battle "
+                              "music's name, bit 1 its volume), %lld so far", (unsigned)kept, (long long)k);
+    }
 }
 
 /* f_83373400's reads of the change flags (at, their guest address; flags, the byte it read): with the ones held back */
