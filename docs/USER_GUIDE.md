@@ -68,7 +68,8 @@ not replace the builder: it runs it for you, with no window.
    in-game menu (Insert or F1) saves. Your saves are in the game folder's `user\save` (Windows) or
    `~/.local/share/heylisten/save` (Linux), and the launcher backs them up.
 
-The game is made in the `HeyListen` folder inside the folder RecompLauncher installed HeyListen in. To build it again (after
+The game is made in the `HeyListen` folder inside the folder RecompLauncher installed HeyListen in (the install folder is
+RecompLauncher's own setting: HeyListen's profile cannot choose it; ask for it in the launcher). To build it again (after
 an update that says so, or with the other options ticked), change your copy on the setup screen or reinstall; the builder's
 own window works on the same folder if you start it yourself. The first start prepares the game's shaders, as it does after a
 build made with the builder.
@@ -199,7 +200,21 @@ What to expect:
 When a new HeyListen release is out, the builder says so when it opens (it asks GitHub for
 `Sacrappy/HeyListen`'s latest release; nothing is sent about you). **Update** downloads only the parts that changed and builds
 your game folder again from the game files the folder keeps: you do not need the `.nup` again, and your saves stay.
-The in-game update offer is off unless you turn it on (`HOOKSHOT_UPDATE_CHECK=1` in the game folder's `hookshot_env.txt`).
+
+**When you start the game yourself** (`bin\HeyListen.exe` on Windows, `bin/hookshot` on Linux), it looks for a newer release
+for a few seconds before it opens. Nothing is asked when you are offline, and the start is never held back. When a newer release
+is out, a window offers:
+
+- **update now**: HeyListen Builder updates the game folder as above (the game closes);
+- **keep my version this time**: the game starts, and you are asked again next time;
+- **skip this version**: the game starts, and you are asked again only when a later release is out;
+- **never ask again**: the game starts and stops looking. Turn it back on in the game menu: **Settings**, **Gameplay**,
+  **Check for updates**. The choice is `update_check=0` in the game folder's `hookshot_options.ini`.
+
+When RecompLauncher starts the game on Windows, its Play runs `HeyListenBuilder-Setup.exe --play`, which looks for a newer
+release first (the game itself is then told not to ask again) and, when there is one, asks in the same way: play my version, open
+the download page, or stop asking (this release only, or for good). It installs nothing: RecompLauncher is what installs a newer
+release. On Linux the AppImage's `--play` starts the game, and the game asks as above.
 
 ## Known issues
 
