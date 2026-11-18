@@ -8676,12 +8676,12 @@ unsigned prepare_worker_count(bool background, unsigned cpus) {
 /// (hookshot) Which texture variants of a compute program the driver builds before the game. A compute program is translated for the
 /// texture types its questions can get (up to 64 variants, seed_compute), the plain answers (every texture a 2D colour image: what the
 /// game binds to nearly all of them) first. RX_VK_WARM_VARIANTS=all: every variant is built, as before (10330 compute pipelines for 6306
-/// programs); base (the default): only the plain one is, here and in the precompile, and a variant the game does bind is built when its
+/// programs: on an RTX 3050 the variants were half of the pipelines and 78% of the driver's time, 3054 s of 3893); base (the default): only the plain one is, here and in the precompile, and a variant the game does bind is built when its
 /// first dispatch asks (a worker, the dispatch left out meanwhile as for any compute pipeline) and kept for the next start
 bool warm_base_only() {
     static const bool base = [] {
         const char* e = getenv("RX_VK_WARM_VARIANTS");
-        return e && !strcmp(e, "base");
+        return !(e && !strcmp(e, "all"));
     }();
     return base;
 }
