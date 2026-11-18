@@ -258,6 +258,7 @@ bool pick_device() {
     dev.physical = all[best];
     vkGetPhysicalDeviceProperties(dev.physical, &dev.props);
     vkGetPhysicalDeviceMemoryProperties(dev.physical, &dev.memory);
+    menu_first_run_model(dev.props.vendorID, dev.props.deviceID);   // (the DLSS model row's first-run default, by the GPU)
     return true;
 }
 

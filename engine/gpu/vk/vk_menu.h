@@ -21,8 +21,8 @@ struct Options {
     int dlss = 0;         // the Upscaler (its name from before FSR: options files and the tests' stand-ins keep it): 0 the game's
                           // own network, 1 NVIDIA DLSS, 2 NVIDIA DLAA (a build with NVIDIA's SDK only), 3 AMD FSR 3.1 (vk_fsr3.cpp),
                           // 4 AMD FSR 4, 5 its native AA (a build with FSR 4 only). upscaler_rows.h; vk_temporal.cpp. Saved as dlss
-    int dlss_model = 0;   // DLSS's network, by its preset: 0 K (transformer; E, the CNN, under 7 GB of video memory), 1 M, 2 L (second-generation transformer), 3 NVIDIA's
-                          // default (upscaler_rows.h model_preset; vk_dlss.cpp). RX_VK_DLSS_PRESET over it
+    int dlss_model = 0;   // DLSS's network for every mode, by its preset: 0 DLSS 4 (K), 1 DLSS 4.5 (M), 2 DLSS 4.5 (L), 3 NVIDIA's default (upscaler_rows.h
+                          // model_preset; vk_dlss.cpp). First run on an NVIDIA GPU: menu_first_run_model. RX_VK_DLSS_PRESET over it
     int sharpness = 0;    // 0 to 100
     int fps_limit = 0;    // the game's frame rate above 60 (Real time only): 0 60, 1 90, 2 120, 3 144, 4 165, 5 240 (host/nn_vi.c; HOS_FPS_LIMIT)
     int realtime = 1;     // game time follows the clock (host/nn_vi.c); 0: per frame (slower frames, slower game)
@@ -73,6 +73,9 @@ extern Options opts;
 bool preset_caps_memory();
 /// The card's video memory: its largest device-local heap (vk_memory.cpp), 0 when not known
 uint64_t device_vram_bytes();
+/// A first run (no dlss_model in hookshot_options.ini): the DLSS model row starts at the GPU's default (upscaler_rows.h
+/// default_model) and is written to the ini at once. NVIDIA GPUs only; a saved value is never changed
+void menu_first_run_model(uint32_t vendor_id, uint32_t device_id);
 /// (a test: RX_VK_TEST_VRAM_MB=<n> takes the card's VRAM as at most n MB wherever the renderer sizes something by it: the
 /// mirrors' budget, the DLSS model row's small-card preset. With RX_VK_TEST_ALLOWED_MB a large card plays a small one's whole
 /// policy. Unset: the card's own)
