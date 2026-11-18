@@ -9135,38 +9135,145 @@ void precompile_run(void (*progress)(size_t done, size_t total), bool wait) {
 /// noted (a lazy update, in play): the pipelines the notes name themselves, not those they predict, built into our pipeline cache too:
 /// what precompile_run would have built before the game, for the programs the state list has made by now, so that the draws that
 /// meet a changed shader find the driver's compile done
+/// (hookshot) The programs whose prediction was given up (a driver compile that outlasted the wait, see predict_run), in
+/// hookshot_predict_slow.txt beside the game: a line "device <vendor>:<device>:<driver>" and a line "<key> <k words> <seconds>" each.
+/// Read for the same device and driver only (a new driver may do better); the next prediction leaves them to the draw that needs them
+namespace {
+std::string predict_slow_path() {
+    std::string p = prepared_path();
+    return p.substr(0, p.size() - strlen("hookshot_prepared.bin")) + "hookshot_predict_slow.txt";
+}
+std::string predict_slow_device() {
+    char b[96];
+    snprintf(b, sizeof b, "device %x:%x:%x", (unsigned)dev.props.vendorID, (unsigned)dev.props.deviceID, (unsigned)dev.props.driverVersion);
+    return b;
+}
+std::mutex predict_slow_mu;
+std::unordered_set<uint64_t>& predict_slow_set() {   // (under predict_slow_mu)
+    static std::unordered_set<uint64_t> keys;
+    static bool read = false;
+    if (!read) {
+        read = true;
+        if (FILE* f = fopen(predict_slow_path().c_str(), "rb")) {
+            char line[256];
+            bool same = false;
+            if (fgets(line, sizeof line, f)) same = predict_slow_device() == std::string(line).substr(0, std::string(line).find_first_of("\r\n"));
+            while (same && fgets(line, sizeof line, f)) {
+                unsigned long long k = 0;
+                if (sscanf(line, "%llx", &k) == 1 && k) keys.insert(k);
+            }
+            fclose(f);
+        }
+    }
+    return keys;
+}
+bool predict_slow_has(uint64_t key) {
+    std::lock_guard lk(predict_slow_mu);
+    return predict_slow_set().count(key) != 0;
+}
+void predict_slow_add(uint64_t key, uint64_t kwords, long long seconds) {
+    std::lock_guard lk(predict_slow_mu);
+    auto& keys = predict_slow_set();
+    if (!keys.insert(key).second) return;
+    const std::string path = predict_slow_path();
+    FILE* f = fopen(path.c_str(), "rb");
+    const bool fresh = !f;
+    if (f) fclose(f);
+    if (fresh) {
+        f = fopen(path.c_str(), "wb");
+        if (f) fprintf(f, "%s\n", predict_slow_device().c_str());
+    } else if (!(f = fopen(path.c_str(), "ab")))
+        return;
+    if (f) fprintf(f, "%016llx %llu %lld\n", (unsigned long long)key, (unsigned long long)kwords, seconds), fclose(f);
+}
+}  // namespace
+
 void predict_run(void (*progress)(size_t done, size_t total), bool background, bool noted) {
     const auto t0 = std::chrono::steady_clock::now();
-    const std::vector<std::unique_ptr<PipeNote>> notes = pipe_notes_read();
-    if (notes.empty() || (!noted && getenv("RX_VK_NO_PREDICT"))) return;
+    // (hookshot) What the workers use lives on the heap, held by each of them: a worker whose driver compile outlasts the wait
+    // (RX_VK_PREDICT_WAIT_S) is detached and may run on after this function has returned
+    struct Shared {
+        std::vector<std::unique_ptr<PipeNote>> notes, made_up;
+        std::unordered_map<uint64_t, std::vector<const PipeNote*>> by_program;
+        std::vector<uint64_t> keys;
+        std::atomic<size_t> next{0}, done{0}, made{0}, read_in{0}, matched{0}, too_big{0}, pipelines_too_big{0}, slow_skipped{0};
+        std::atomic<bool> out_of_time{false}, out_of_memory{false}, abandoned{false};
+        std::atomic<uint64_t> in_flight[32]{};   // (each worker's program now: the progress line names them)
+        std::atomic<uint32_t> in_note[32]{};     // (and the pipeline of it the worker builds: its index among that program's)
+        std::atomic<int64_t> in_since[32]{};     // (and since when, ms)
+        std::atomic<uint32_t> in_words[32]{};    // (and its SPIR-V's size, 1000 words)
+        std::atomic<unsigned> worker_n{0};
+    };
+    const std::shared_ptr<Shared> shared = std::make_shared<Shared>();
+    shared->notes = pipe_notes_read();
+    if (shared->notes.empty() || (!noted && getenv("RX_VK_NO_PREDICT"))) return;
+    const std::vector<std::unique_ptr<PipeNote>>& notes = shared->notes;
     size_t programs = 0;
-    const std::vector<std::unique_ptr<PipeNote>> made_up = noted ? std::vector<std::unique_ptr<PipeNote>>{} : predict_pipelines(notes, &programs);
-    const std::vector<std::unique_ptr<PipeNote>>& predicted = noted ? notes : made_up;
-    std::unordered_map<uint64_t, std::vector<const PipeNote*>> by_program;
+    if (!noted) shared->made_up = predict_pipelines(notes, &programs);
+    const std::vector<std::unique_ptr<PipeNote>>& predicted = noted ? notes : shared->made_up;
+    auto& by_program = shared->by_program;
     for (const auto& n : predicted) by_program[n->prog].push_back(n.get());
-    std::vector<uint64_t> keys;
+    auto& keys = shared->keys;
     for (const auto& kv : by_program) keys.push_back(kv.first);
-    std::atomic<size_t> next{0}, done{0}, made{0}, read_in{0}, matched{0};
+    auto& next = shared->next;
+    auto& done = shared->done;
+    auto& made = shared->made;
+    auto& read_in = shared->read_in;
+    auto& matched = shared->matched;
     // (hookshot) A time budget, RX_VK_PREDICT_S (90 s by default; 0: none): once #1051 let the prediction find its programs again it
     // predicted ~28000 pipelines, and a first start after an update spent many minutes on them before the game's first frame (20 with
     // the CPU busy). Those not built by then are built in play when first drawn, as before the prediction worked
     static const int budget_s = getenv("RX_VK_PREDICT_S") ? atoi(getenv("RX_VK_PREDICT_S")) : 90;
-    std::atomic<bool> out_of_time{false}, out_of_memory{false};
+    auto& out_of_time = shared->out_of_time;
+    auto& out_of_memory = shared->out_of_memory;
     // (The pipelines are made for the driver's own cache and let go; a program of 502k SPIR-V words and one of 1014k (the game's
     // two largest) each took the driver's compiler over three minutes and, still growing at 11 GB of the process's commit, all the
     // PC had: C++ allocations were refused at the commit limit (0 MB of commit left), the compile failed (-13) and the memory stayed
-    // taken. The others, up to 133k words, take 25 s and a few hundred MB. Over RX_VK_PREDICT_MAX_KWORDS (300: 300k words; 0: no
+    // taken. The others, up to 133k words, take 25 s and a few hundred MB. Over RX_VK_PREDICT_MAX_KWORDS (100: 100k words, v0.4.3; 0: no
     // limit) a program is left to the draw that needs it, as it was before the prediction. And the prediction stops, the rest left
     // to play, when the system has less than RX_VK_PREDICT_RESERVE_MB (3072) of commit left)
     static const unsigned long long max_kwords = getenv("RX_VK_PREDICT_MAX_KWORDS") ? strtoull(getenv("RX_VK_PREDICT_MAX_KWORDS"), nullptr, 10) : predictlimits::kDefaultMaxKWords;
     static const unsigned long long reserve_mb = getenv("RX_VK_PREDICT_RESERVE_MB") ? strtoull(getenv("RX_VK_PREDICT_RESERVE_MB"), nullptr, 10) : predictlimits::kDefaultReserveMB;
-    std::atomic<size_t> too_big{0}, pipelines_too_big{0};
-    std::atomic<uint64_t> in_flight[32]{};   // (each worker's program now: the progress line names them)
-    std::atomic<uint32_t> in_note[32]{};     // (and the pipeline of it the worker builds: its index among that program's)
-    std::atomic<int64_t> in_since[32]{};     // (and since when, ms)
-    std::atomic<uint32_t> in_words[32]{};    // (and its SPIR-V's size, 1000 words)
-    std::atomic<unsigned> worker_n{0};
-    const auto worker = [&] {
+    auto& too_big = shared->too_big;
+    auto& pipelines_too_big = shared->pipelines_too_big;
+    auto& slow_skipped = shared->slow_skipped;
+    auto& in_flight = shared->in_flight;
+    auto& in_note = shared->in_note;
+    auto& in_since = shared->in_since;
+    auto& in_words = shared->in_words;
+    auto& worker_n = shared->worker_n;
+    // (RX_VK_PREDICT_WAIT_S, 60 by default; 0: wait for ever, as before: once the budget has run out (or the work is done) the
+    // builds in hand are given this long. A driver's compile cannot be taken back, and one on a GTX 1660 SUPER (Turing) sat in
+    // vkCreateGraphicsPipelines for 2 hours on a 144k-word program (the same takes ~25 s on Ampere): the builder, which sees the
+    // status line, never ended the step. After the wait the program is left to play, noted in hookshot_predict_slow.txt so the
+    // next prediction leaves it out, and its worker is let go on its own)
+    static const int wait_s = getenv("RX_VK_PREDICT_WAIT_S") ? atoi(getenv("RX_VK_PREDICT_WAIT_S")) : 60;
+    // (test only, RX_VK_TEST_SLOW_PIPELINE=<program key in hex>:<seconds>: that program's predicted builds sleep, as a hung driver would)
+    static const std::pair<uint64_t, int> test_slow = [] {
+        const char* e = getenv("RX_VK_TEST_SLOW_PIPELINE");
+        unsigned long long k = 0;
+        int s = 0;
+        return e && sscanf(e, "%llx:%d", &k, &s) == 2 ? std::make_pair((uint64_t)k, s) : std::make_pair((uint64_t)0, 0);
+    }();
+    const auto worker = [shared, t0, noted, background] {
+        Shared& S = *shared;
+        auto& next = S.next;
+        auto& done = S.done;
+        auto& made = S.made;
+        auto& read_in = S.read_in;
+        auto& matched = S.matched;
+        auto& out_of_time = S.out_of_time;
+        auto& out_of_memory = S.out_of_memory;
+        auto& too_big = S.too_big;
+        auto& pipelines_too_big = S.pipelines_too_big;
+        auto& slow_skipped = S.slow_skipped;
+        auto& in_flight = S.in_flight;
+        auto& in_note = S.in_note;
+        auto& in_since = S.in_since;
+        auto& in_words = S.in_words;
+        auto& worker_n = S.worker_n;
+        auto& by_program = S.by_program;
+        auto& keys = S.keys;
         ub_thread_off();   // (a background thread: see ub_thread_off)
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);   // (as prepare_run's: these are the driver's compiles, see DriverTurn)
         driver_cache_only = !noted;
@@ -9174,7 +9281,7 @@ void predict_run(void (*progress)(size_t done, size_t total), bool background, b
         std::atomic<uint64_t>& mine = in_flight[me];
         for (;;) {
             mine = 0;
-            if (prepare_stopped()) return;
+            if (prepare_stopped() || S.abandoned.load()) return;
             if (!background && budget_s > 0 && std::chrono::steady_clock::now() - t0 > std::chrono::seconds(budget_s)) {
                 out_of_time = true;
                 return;
@@ -9188,6 +9295,11 @@ void predict_run(void (*progress)(size_t done, size_t total), bool background, b
             const size_t i = next++;
             if (i >= keys.size()) return;
             const auto& list = by_program[keys[i]];
+            if (!noted && predict_slow_has(keys[i])) {   // (a program whose driver compile once outlasted the wait: left to the draw)
+                slow_skipped++;
+                done += list.size();
+                continue;
+            }
             mine = keys[i];
             program_cache_borrow(keys[i], [&](Program& p) {
                 ensure_layout(p);
@@ -9215,8 +9327,10 @@ void predict_run(void (*progress)(size_t done, size_t total), bool background, b
                             continue;
                         }
                         const auto t_build = std::chrono::steady_clock::now();
-                        if (const VkPipeline pl = build_graphics(p, n->s, note_targets(*n), (VkPrimitiveTopology)n->topo))
-                            vkDestroyPipeline(dev.device, pl, nullptr), made++;
+                        if (test_slow.first && test_slow.first == p.key) Sleep((DWORD)test_slow.second * 1000);
+                        const VkPipeline pl = build_graphics(p, n->s, note_targets(*n), (VkPrimitiveTopology)n->topo);
+                        if (S.abandoned.load()) return;   // (let go while it built: nothing is waiting for it, and what it used may be gone: no more work)
+                        if (pl) vkDestroyPipeline(dev.device, pl, nullptr), made++;
                         const double build_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_build).count();
                         static std::atomic<int> slow_logged{0};
                         if (build_ms > 3000 && slow_logged.fetch_add(1, std::memory_order_relaxed) < 40) {
@@ -9270,11 +9384,31 @@ void predict_run(void (*progress)(size_t done, size_t total), bool background, b
         Sleep(100);
         watch();
     }
-    while (!prepare_stopped() && std::count_if(std::begin(in_flight), std::end(in_flight), [](const auto& k) { return k.load() != 0; })) {
-        Sleep(100);   // (the builds in hand are let finish: a driver's compile cannot be taken back)
+    const auto building = [&] { return std::count_if(std::begin(in_flight), std::end(in_flight), [](const auto& k) { return k.load() != 0; }); };
+    const auto grace_from = std::chrono::steady_clock::now();
+    while (!prepare_stopped() && building()) {
+        // (the builds in hand are let finish: a driver's compile cannot be taken back. But not for ever, RX_VK_PREDICT_WAIT_S)
+        if (!background && wait_s > 0 && std::chrono::steady_clock::now() - grace_from > std::chrono::seconds(wait_s)) break;
+        Sleep(100);
         watch();
     }
-    for (std::thread& t : threads) t.join();
+    if (building()) {
+        // (still in the driver: told, written down so that the next prediction leaves each out, and the threads let go. Their
+        // state is on the heap (shared), and once `abandoned` they do nothing more when the driver returns. In the prepare run
+        // the process's exit ends the compile; the pipeline cache's save does not wait for it (the builds here use no cache)
+        shared->abandoned = true;
+        const auto now = std::chrono::steady_clock::now();
+        for (unsigned k = 0; k < std::min<unsigned>(worker_n.load(), 32); k++)
+            if (const uint64_t key = in_flight[k].load()) {
+                const long long secs = (std::chrono::duration_cast<std::chrono::milliseconds>(now - t0).count() - in_since[k].load()) / 1000;
+                logf("vk: predict: program %016llx (%uk words of SPIR-V) is still in the driver after %lld s (RX_VK_PREDICT_WAIT_S %d): "
+                     "given up, left out of the next predictions; a draw that needs it builds it in play",
+                     (unsigned long long)key, in_words[k].load(), secs, wait_s);
+                predict_slow_add(key, in_words[k].load(), secs);
+            }
+        for (std::thread& t : threads) t.detach();
+    } else
+        for (std::thread& t : threads) t.join();
     if (shader_key_on()) ledger_commit();
     logf("vk: %s%s %zu pipelines from %zu notes for %zu program variants no note names (%zu of %zu programs read, %zu pipelines had their variant): "
          "%zu made, %lld left out (listed as built, all steps so far), in %.1f s on %u workers%s",
@@ -9282,6 +9416,7 @@ void predict_run(void (*progress)(size_t done, size_t total), bool background, b
          keys.size(), matched.load(), made.load(), (long long)ledger_reused.load(),
          std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), workers,
          out_of_time.load() ? " (the time budget, RX_VK_PREDICT_S, ran out: the rest are built in play)" : "");
+    if (slow_skipped.load()) logf("vk: predict: %zu programs left out: their driver compile once outlasted the wait (hookshot_predict_slow.txt)", slow_skipped.load());
     if (too_big.load() || out_of_memory.load())
         logf("vk: predict: %zu programs (%zu pipelines) left out for their size, %s", too_big.load(), pipelines_too_big.load(),
              out_of_memory.load() ? "and the prediction stopped for want of commit" : "the others as they were asked for");
