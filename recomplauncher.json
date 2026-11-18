@@ -405,6 +405,29 @@
       }
     },
     {
+      "id": "framegen_by",
+      "label": "Frame generation by",
+      "help": "Who makes the frames at 2x and up. NVIDIA DLSS Frame Generation needs an RTX 40 or newer and NVIDIA's own runtime files (the Builder's DLSS tick fetches them); where it cannot run, the built-in frame generation makes them. Off unless chosen.",
+      "group": "Video",
+      "choices": [
+        {
+          "label": "Built-in / AMD FSR 3.1",
+          "set": {
+            "frame_generation_by": "0"
+          }
+        },
+        {
+          "label": "NVIDIA DLSS Frame Generation",
+          "set": {
+            "frame_generation_by": "1"
+          }
+        }
+      ],
+      "defaults": {
+        "frame_generation_by": "0"
+      }
+    },
+    {
       "id": "hdr",
       "label": "HDR",
       "help": "HDR10 output on an HDR screen (Windows: turn on Use HDR in the display settings).",

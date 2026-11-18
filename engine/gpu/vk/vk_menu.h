@@ -8,6 +8,7 @@ namespace mkwvk {
 // (out of the box every feature is off: what the game does on its own. The ini beside the executable keeps a player's choices)
 struct Options {
     int framegen = 0;     // made frames: 0 off, 1 Auto (to the display's refresh), or 2 to 8 times the game's frames
+    int framegen_by = 0;  // who makes the frames at a fixed multiplier: 0 the renderer's own (AMD FSR 3.1 at 2x, else its block matching), 1 NVIDIA DLSS Frame Generation (vk_dlss.cpp; RTX 40 and newer, with its runtime); off by default. Saved as frame_generation_by
     int pace = 0;         // frames shown on an even line (vk_framegen.cpp)
     int hdr = 0;          // (hookshot) HDR10 out (vk_framegen.cpp framegen_hdr): 0 off, 1 the SDR picture expanded, 2 the game's own (native) HDR; when the display has it (the swapchain made again at once)
     int hdr_white = 200;  // HDR paper white, nits (the picture's white)
