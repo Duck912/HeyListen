@@ -8085,7 +8085,8 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
             const VkImageView output_view = texture_view(dst, &out, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage,
                                                          &output_format, VK_FORMAT_B10G11R11_UFLOAT_PACK32);
             if (input_format == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32 && output_format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 &&
-                typed_upscale(cmd, input_view, output_view, dst, 0, key, "generic RGB9E5 fallback", gameplay_network(key))) {
+                typed_upscale(cmd, input_view, output_view, dst, 0, key, "generic RGB9E5 fallback",
+                              gameplay_network(key) && !upscaler_off())) {   // (Upscaler Off: no edge smoothing either)
                 full_barrier(cmd);
                 texture_written(dst);
                 return true;
@@ -8341,6 +8342,45 @@ static bool temporal_rejected_network(VkCommandBuffer cmd, uint64_t key, Texture
     if (seen.size() < 32 && seen.insert(key).second)
         logf("vk: network %016llx does not translate here: the temporal upscaler draws its upscale (%ux%u -> %ux%u)",
              (unsigned long long)key, src->width, src->height, dst->width, dst->height);
+    return true;
+}
+/// (hookshot) The Upscaler row's Off: the gameplay upscale networks (the keyed ones, and the Render resolution's fixed shares by
+/// their shape and formats, as temporal_upscale takes them) are not run: their dispatch draws the plain linear upscale of the
+/// 3D input, the typed path the stub has (shaders/taau_upscale.comp) with no FXAA and no history bound. At 100% (the same-size
+/// pass 9dc98871) that is the scene's colour decoded into the picture, a copy. No temporal state is touched. After fsr3_stand_in
+/// (frame generation's inputs are still made) and temporal_stand_in (not drawing when Off), before the TAAU stand-in
+static bool off_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
+    if (p.stages.empty() || !dev.push_descriptor || !vkCmdPushDescriptorSetKHR) return false;
+    const Stage& st = p.stages[0];
+    const bool known = gameplay_network(p.key);
+    if (!known && !(st.info.uses_cooperative_matrix && st.info.texture_descriptors.size() == 1 &&
+                    st.info.image_descriptors.size() == 1))
+        return false;
+    if (st.info.texture_descriptors.empty() || st.info.image_descriptors.empty() || !upscaler_off()) return false;
+    size_t ntex = 0;   // (build_descriptors' image infos: the textures', then the images')
+    for (const auto& d : st.info.texture_descriptors) ntex += d.count;
+    if (dw().imgs.size() <= ntex || !dw().imgs[0].imageView || !dw().imgs[ntex].imageView) return false;
+    const auto& od = st.info.image_descriptors[0];
+    const uint32_t out_handle = handle_of(s, st, od, 0);
+    if (!out_handle) return false;
+    Texture* out = nullptr;
+    uint32_t level = 0;
+    texture_view_of(out_handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, image_format(od.format), &out, &level);
+    if (!out || out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32) return false;
+    if (!known) {   // (another network of the upscale's shape: only the scene into the picture, the rest runs)
+        Texture* in = nullptr;
+        const uint32_t in_handle = handle_of(s, st, st.info.texture_descriptors[0], 0);
+        if (in_handle) texture_view_of(in_handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample, VK_FORMAT_UNDEFINED, &in);
+        if (!in || in->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || (out->width >> level) <= in->width) return false;
+    }
+    if (!typed_upscale(cmd, dw().imgs[0].imageView, dw().imgs[ntex].imageView, out, level, p.key, "Upscaler Off", false))
+        return false;
+    static std::mutex mu;
+    static std::unordered_set<uint64_t> seen;
+    std::lock_guard lk(mu);
+    if (seen.size() < 32 && seen.insert(p.key).second)
+        logf("vk: Upscaler Off: network %016llx not run, its dispatch draws the plain upscale into %ux%u",
+             (unsigned long long)p.key, out->width >> level, out->height >> level);
     return true;
 }
 bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
@@ -9886,6 +9926,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     }
     if (fsr3_stand_in(cmd, s, p)) return void(st_dispatches++);
     if (temporal_stand_in(cmd, s, p)) return void(st_dispatches++);
+    if (off_stand_in(cmd, s, p)) return void(st_dispatches++);
     if (taau_stand_in(cmd, s, p)) return void(st_dispatches++);
     const VkPipeline pipe = cpipe();
     if (!pipe) SKIP_HERE();

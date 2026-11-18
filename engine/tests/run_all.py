@@ -132,6 +132,7 @@ ARGS = {
     "tests/test_fg_scale_sharpen.py": ["--cxx", "g++"],
     "tests/test_astc_bc_encode.py": ["--cxx", "{cxx}"],
     "tests/test_taau_env_lookup.py": ["--cxx", "g++"],
+    "tests/test_upscaler_off.py": ["--cxx", "{cxx}"],
     "tests/test_target_overlap.py": ["--cxx", "g++"],
     "tests/test_segment_plan.py": ["--cxx", "g++"],
     "tests/test_desc_counts.py": ["--cxx", "{cxx}"],

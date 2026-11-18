@@ -101,6 +101,10 @@ int temporal_mode() {
     if (ur::is_fsr4(v) && fsr4_why() != FSR_OK) return ur::GAME;
     return v;
 }
+bool upscaler_off() {
+    // (the row's Off. RX_VK_DLSS / RX_VK_FSR4 for an engine that runs here, and RX_VK_FSR=1, go over it as over the row's FSR 3.1)
+    return opts.dlss == ur::OFF && !temporal_env_chosen() && !fsr3_wanted();
+}
 bool temporal_wanted() { return temporal_mode() != ur::GAME; }
 bool temporal_full_scale() { return ur::full_scale(temporal_mode()); }
 
