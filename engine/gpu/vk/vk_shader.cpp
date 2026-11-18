@@ -630,6 +630,9 @@ Shader::Profile make_profile(bool wide) {
     p.support_demote_to_helper_invocation = true;
     p.support_int64_atomics = true;
     p.support_float32_atomic_add = dev.float_atomic_add;   // (one OpAtomicFAddEXT for a float add, not a compare-exchange loop: vk_main.cpp)
+    // (8/16-bit global stores written as bytes/halves through narrow views, RX_VK_NATIVE_NARROW=0: the compare-exchange loop on the
+    // word as before; an RX_VK_NATIVE* switch, so the program cache stamp follows it)
+    p.support_native_narrow_global_store = !(getenv("RX_VK_NATIVE_NARROW") && atoi(getenv("RX_VK_NATIVE_NARROW")) == 0);
     p.support_derivative_control = true;
     p.support_native_ndc = false;   // (the vertex stage converts NVN's -1..1 depth: RuntimeInfo::convert_depth_mode)
     p.support_scaled_attributes = false;   // (*_UI2F / *_I2F read as integers, converted in the shader: R32 has no scaled format)
@@ -819,17 +822,16 @@ namespace {
 /// a handle the shader reads from a storage buffer, its handle program's)
 uint32_t descriptor_handle(const NvnState& s, const Stage& st, const Shader::TextureDescriptor& d) {
     if (d.handle_program != ~0U) return stage_handle(s, st, d.handle_program);
-    const int stage = st.nvn_stage;
-    uint32_t h = driver_bank_word(s, (int)d.cbuf_index, stage, d.cbuf_offset);
+    uint32_t h = stage_cbuf_word(s, st, d.cbuf_index, d.cbuf_offset);
     if (d.has_secondary)
-        h = h << d.shift_left | driver_bank_word(s, (int)d.secondary_cbuf_index, stage, d.secondary_cbuf_offset)
+        h = h << d.shift_left | stage_cbuf_word(s, st, d.secondary_cbuf_index, d.secondary_cbuf_offset)
                                     << d.secondary_shift_left;
     return h;
 }
 /// (hookshot) a storage image descriptor's handle word (its handle program's, read from a storage buffer)
 uint32_t descriptor_handle(const NvnState& s, const Stage& st, const Shader::ImageDescriptor& d) {
     if (d.handle_program != ~0U) return stage_handle(s, st, d.handle_program);
-    return driver_bank_word(s, (int)d.cbuf_index, st.nvn_stage, d.cbuf_offset);
+    return stage_cbuf_word(s, st, d.cbuf_index, d.cbuf_offset);
 }
 uint8_t texture_answer(uint32_t handle) {
     if (!handle) return 0xFF;
@@ -1372,7 +1374,7 @@ uint64_t disk_stamp() {
         add(&stages, sizeof stages);
     }
     for (char** e = _environ; e && *e; e++)
-        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH", "RX_VK_FOLD", "RX_VK_NO_INVARIANT", "RX_VK_NO_NAN_GUARD", "RX_VK_MARKERS", "EDEN_"})
+        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH", "RX_VK_LOCAL", "RX_VK_FOLD", "RX_VK_NO_INVARIANT", "RX_VK_NO_NAN_GUARD", "RX_VK_MARKERS", "EDEN_"})
             if (!strncmp(*e, pre, strlen(pre))) add(*e, strlen(*e));
     return h;
 }
@@ -1751,6 +1753,18 @@ void put_info(std::vector<uint8_t>& o, const Shader::Info& i) {
     put(o, (uint64_t)i.handle_programs.size());
     for (const auto& h : i.handle_programs) put_list(o, h);
 }
+/// (hookshot) every descriptor array within kMaxDescriptorCount: the counts come from hookshot_programs.bin, and two of 2^31
+/// wrapped the layout's sum to 0 (a push layout with billions of descriptors), and one made the binds loop that often
+constexpr uint32_t kMaxDescriptorCount = 4096;
+template <class Info> bool descriptor_counts_fit(const Info& i) {
+    auto fit = [](const auto& list) {
+        for (const auto& d : list)
+            if (d.count > kMaxDescriptorCount) return false;
+        return true;
+    };
+    return fit(i.constant_buffer_descriptors) && fit(i.storage_buffers_descriptors) && fit(i.texture_buffer_descriptors) &&
+           fit(i.image_buffer_descriptors) && fit(i.texture_descriptors) && fit(i.image_descriptors);
+}
 void get_info(Reader& r, Shader::Info& i) {
     if (!r.has(sizeof i)) return;   // (left as constructed: the record is bad, and left out)
     alignas(Shader::Info) static thread_local uint8_t fresh[sizeof(Shader::Info)];
@@ -1779,6 +1793,7 @@ void get_info(Reader& r, Shader::Info& i) {
     }
     i.handle_programs.resize((size_t)r.count(sizeof(uint64_t)));   // (each at least its own count)
     for (auto& h : i.handle_programs) r.list(h);
+    if (!descriptor_counts_fit(i)) r.bad = true;   // (left out, and translated again)
 }
 
 /// The record d of key as translation made it (to), from the file in (under mu when given): all of it, or its first limit bytes when
@@ -2397,7 +2412,7 @@ const Program* mesh_program_locked(const NvnState& s, const uint8_t color_types[
     jobs_push([job] {
         translate_mesh_into(*job->p, job->s, job->has_task ? &job->task : nullptr, job->mesh,
                             job->has_prim ? &job->prim : nullptr, job->has_fs ? &job->fs : nullptr, job->ct);
-    });
+    }, false, &raw->ready);   // (a draw that waits for it runs it at once if it is still queued: jobs_wait)
     return raw;
 }
 
@@ -2721,7 +2736,8 @@ const Program* program_pick(const NvnState& s, ProgramKind kind, const uint8_t c
     job->p = raw, job->s = s, job->vs = *stage_code[0], job->has_fs = stage_code[1] != nullptr;
     if (job->has_fs) job->fs = *stage_code[1];
     std::memcpy(job->ct, color_types, 8);
-    jobs_push([job] { translate_into(*job->p, job->s, &job->vs, job->has_fs ? &job->fs : nullptr, nullptr, job->ct); });
+    jobs_push([job] { translate_into(*job->p, job->s, &job->vs, job->has_fs ? &job->fs : nullptr, nullptr, job->ct); }, false,
+              &raw->ready);   // (as the mesh one: a waiting draw runs it, not every job queued before it)
     return raw;
 }
 
