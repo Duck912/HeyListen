@@ -5150,6 +5150,15 @@ bool write_png(const char* path, const uint8_t* rgba, uint32_t w, uint32_t h) {
 // (do_present: the game's picture is already HDR10, Native HDR taken. Read by present_image, and by vk_fsr4.cpp, whose context is
 // made for HDR colour while it is)
 std::atomic<bool> present_native_pq{false};
+/// (RX_VK_HDR_FORCE=1, for a PC with no HDR display: the game is told its display is HDR10 although the swapchain is SDR, so its
+/// own HDR path runs and can be looked at in the dumps and the shots; what the window shows is then not meant to look right)
+bool hdr_forced() {
+    static const bool on = getenv("RX_VK_HDR_FORCE") && atoi(getenv("RX_VK_HDR_FORCE")) != 0;
+    return on;
+}
+/// Whether the game is told it has an HDR10 display and its PQ picture is taken as it is (the HDR row on Native, or on our
+/// tone mapper: vk_hdr_tonemap.cpp's extern of this is why it is out of the unnamed namespace)
+bool hdr_game_native() { return (dev.hdr || hdr_forced()) && opts.hdr >= 2; }
 
 namespace {
 
@@ -5509,7 +5518,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         if (tex) src = tex->image, sw = tex->width, sh = tex->height;
         // (the Insert menu's HDR set to Native: the game, told its display is HDR10, presents PQ codes in RGB10A2 (vk
         // A2B10G10R10); that picture goes to the HDR10 swapchain as it is, not through the SDR-to-HDR pass)
-        present_native_pq.store(tex && dev.hdr && opts.hdr == 2 && tex->format == VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+        present_native_pq.store(tex && hdr_game_native() && tex->format == VK_FORMAT_A2B10G10R10_UNORM_PACK32,
                                 std::memory_order_relaxed);
         if (tex && !dev.offscreen && (opts.upscale || opts.sharpness || dev.hdr)) {
             // Keep the sampled view with the same cached image as the direct present, before advancing its age.
@@ -6900,7 +6909,7 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_CHEAT_FLIGHT) return menu_player_flight();
         if (id == HOS_OPT_CHEAT_ACTION) return menu_take_cheat_action();
         if (id == HOS_OPT_CHEAT_CAMERA) return menu_free_camera();
-        if (id == HOS_OPT_HDR_NATIVE) return dev.hdr && opts.hdr == 2;
+        if (id == HOS_OPT_HDR_NATIVE) return hdr_game_native();
         if (id == HOS_OPT_HDR_PEAK) return std::clamp(opts.hdr_peak, 400, 10000);
         if (id == HOS_OPT_HDR_WHITE) return std::clamp(opts.hdr_white, 80, 500);
         if (id == HOS_OPT_DISCORD) return opts.discord != 0;

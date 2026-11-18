@@ -40,6 +40,7 @@
 #include "vk_temporal.h"
 #include "vk_fsr3.h"          // (AMD FSR 3.1 in the gameplay upscale's place)
 #include "vk_fsr3_inputs.h"
+#include "vk_hdr_tonemap.h"   // (heylisten: the native HDR mode's tone-mapping pass)
 #include "vk_dump.h"
 #include "vk_gprof.h"
 #include "vk_jobs.h"
@@ -7112,6 +7113,78 @@ bool draw_writes_nothing(const Program& p, const NvnState& s, const Targets& at)
 std::atomic<int64_t> st_occ_proxy_skips{0};
 int64_t occ_proxy_skips() { return st_occ_proxy_skips.load(std::memory_order_relaxed); }
 
+/// (RX_VK_HDR_FIND=1, for finding the game's tone-mapping pass: the first draw of each program that samples a floating-point scene
+/// image (B10G11R11, RGB9E5, RGBA16F) and writes an 8-bit or 10-bit colour image, said once, with its target, what it samples and
+/// the sizes of its uniform buffers. The key and the inputs are all that is kept of it)
+static void hdr_find(const NvnState& s, const Program& p, const Targets& at) {
+    static const bool on = getenv("RX_VK_HDR_FIND") != nullptr;
+    if (!on || p.mesh || !at.n || !at.color[0]) return;
+    const VkFormat f = at.color_format[0];
+    if (f != VK_FORMAT_R8G8B8A8_UNORM && f != VK_FORMAT_R8G8B8A8_SRGB && f != VK_FORMAT_B8G8R8A8_UNORM &&
+        f != VK_FORMAT_B8G8R8A8_SRGB && f != VK_FORMAT_A2B10G10R10_UNORM_PACK32)
+        return;
+    bool scene = false;
+    for (const Texture* t : gfx_sampled())
+        scene |= t->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || t->format == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32 ||
+                 t->format == VK_FORMAT_R16G16B16A16_SFLOAT;
+    if (!scene) return;
+    static std::mutex mu;
+    static std::unordered_set<uint64_t> seen;
+    std::lock_guard lk(mu);
+    if (seen.size() >= 64 || !seen.insert(p.key ^ ((uint64_t)f << 56)).second) return;
+    char line[900];
+    int n = snprintf(line, sizeof line, "vk: HDR find: program %016llx (frame %llu) writes %ux%u vk %d (c0 #%u), targets %d, samples",
+                     (unsigned long long)p.key, (unsigned long long)texture_frame_no(), at.width, at.height, (int)f, at.color[0]->id, at.n);
+    for (const Texture* t : gfx_sampled())
+        if (n < 600) n += snprintf(line + n, sizeof line - n, " #%u %ux%u vk %d;", t->id, t->width, t->height, (int)t->format);
+    n += snprintf(line + n, sizeof line - n, " uniform buffers:");
+    for (const Stage& st : p.stages) {
+        const int ns = std::clamp(st.nvn_stage, 0, kNvnStages - 1);
+        for (int i = 0; i < 16 && n < 800; i++)
+            if (s.ubo[ns][i].addr && i + 3 < Shader::Info::MAX_CBUFS && st.info.constant_buffer_used_sizes[i + 3])
+                n += snprintf(line + n, sizeof line - n, " s%d.c%d %#llx+%#llx (used %u);", ns, i + 3, (unsigned long long)s.ubo[ns][i].addr,
+                              (unsigned long long)s.ubo[ns][i].size, (unsigned)st.info.constant_buffer_used_sizes[i + 3]);
+    }
+    logf("%s", line);
+}
+
+/// (heylisten, the HDR row's "Native + our tone mapper") The game's tone-mapping pass, a full-screen draw of its scene image into the
+/// HDR10 window image, done by our own pass (vk_hdr_tonemap.cpp) instead: the same image in, the same one out, the exposure read from
+/// the pass's own uniform buffer. true: it is done and the draw is left out. false: it cannot be (another kind of target, no
+/// pipeline), and the game's pass draws as it would
+static bool hdr_tonemap_draw(VkCommandBuffer cmd, NvnState& s, const Program& p, const Targets& at) {
+    if (p.stages.empty() || p.compute || p.mesh || at.n != 1 || !at.color[0] || at.depth || at.samples != VK_SAMPLE_COUNT_1_BIT ||
+        at.color_format[0] != VK_FORMAT_A2B10G10R10_UNORM_PACK32)
+        return false;
+    const Stage* fs = nullptr;
+    for (const Stage& st : p.stages)
+        if (st.vk_stage == VK_SHADER_STAGE_FRAGMENT_BIT) fs = &st;
+    if (!fs || fs->info.texture_descriptors.empty()) return false;
+    const uint32_t handle = handle_of(s, *fs, fs->info.texture_descriptors[0], 0);
+    Texture* scene = nullptr;
+    const VkImageView scene_view = handle ? texture_view_of(handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample, VK_FORMAT_UNDEFINED, &scene) : VK_NULL_HANDLE;
+    // (the scene as the game's pass takes it: a float image. Anything else bound first is not our pass's scene, and the
+    // game's draw is kept)
+    if (scene && scene->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 && scene->format != VK_FORMAT_E5B9G9R9_UFLOAT_PACK32 &&
+        scene->format != VK_FORMAT_R16G16B16A16_SFLOAT)
+        return false;
+    VkFormat out_format = VK_FORMAT_UNDEFINED;
+    const VkImageView out_view = texture_view(at.color[0], s.rt.color[0], s.rt.has_cview[0] ? &s.rt.cview[0] : nullptr, VK_IMAGE_VIEW_TYPE_2D,
+                                              ViewUse::Storage, &out_format, VK_FORMAT_A2B10G10R10_UNORM_PACK32);
+    if (!scene || !scene_view || !out_view || out_format != VK_FORMAT_A2B10G10R10_UNORM_PACK32) return false;
+    const VkDescriptorBufferInfo ubo = uniform_range(s, *fs, 3);
+    end_pass(cmd);
+    full_barrier(cmd);
+    if (!hdr_tonemap_record(cmd, p.key, scene_view, out_view, at.width, at.height, ubo)) return false;
+    full_barrier(cmd);
+    // (no reason to texture_written: it notes a virtual-pool texture's page map, and this is the draw path with no ParLock of
+    // its own — the upscale stand-in's storage writes say nothing either)
+    texture_written(at.color[0]);
+    descriptors_disturbed();   // (the pass's own pushes are gone from the compute bind point)
+    if (dump_on()) dump_image(cmd, at.color[0], at.color_level[0], at.color_layer[0], "hdr tone mapping result");
+    return true;
+}
+
 void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     Pass& ps = pass();   // (hookshot, once: the accessor is a call and a thread-local read at each use (__tls_get_addr in the shared library). The same object for the thread's life: draw_begin_recording resets it in place)
     if (par_stats_on) par_stats_draw();
@@ -7413,6 +7486,11 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     PROF_HOT(PROF_CMDS);
     texture_watch_prog(p.key);
     if (!same_desc) gfx_sampled() = draw_sampled();
+    hdr_find(s, p, at);   // (RX_VK_HDR_FIND)
+    if (!d.mesh && hdr_tonemap_wanted() && hdr_tonemap_key(p.key) && hdr_tonemap_draw(cmd, s, p, at)) {   // (heylisten: the HDR row's tone mapper)
+        st_draws++;
+        return;
+    }
     static const bool barrier_every = getenv("RX_VK_BARRIER_EVERY_DRAW") != nullptr;   // (an experiment: a pass each)
     if (barrier_every) end_pass(cmd);
     uint16_t writes;
@@ -9304,6 +9382,45 @@ void compute_optimize(Program& q) {
         logf("vk: compute pipeline of %016llx: optimized in %lld ms, bound from now on", (unsigned long long)q.key, (long long)ms);
 }
 
+/// (RX_VK_HDR_FIND=1: hdr_find's twin for dispatches: a compute program that samples a floating-point scene image and writes an
+/// 8-bit or 10-bit one, said once with the images' sizes and NVN formats and its uniform buffers' sizes)
+static void hdr_find_dispatch(const NvnState& s, uint64_t key) {
+    static const bool on = getenv("RX_VK_HDR_FIND") != nullptr;
+    if (!on) return;
+    uint32_t ntex = 0, nimg = 0;
+    cs_slot_counts(s, &ntex, &nimg);
+    ntex = std::min(ntex, 128u), nimg = std::min(nimg, 32u);
+    char line[900];
+    int n = snprintf(line, sizeof line, "vk: HDR find: compute %016llx (frame %llu) grid %ux%ux%u samples", (unsigned long long)key,
+                     (unsigned long long)texture_frame_no(), s.grid[0], s.grid[1], s.grid[2]);
+    bool scene = false, out = false;
+    auto describe = [&](const char* what, uint64_t h, bool sampled) {
+        nvn_tex t;
+        nvn_view v;
+        bool hv = false;
+        if (!h || !texture_of((int)(h & 0xFFFFF), &t, &v, &hv)) return;
+        const unsigned f = (unsigned)t.d.format;
+        if (sampled) scene |= f == NVN_FORMAT_R11G11B10F || f == NVN_FORMAT_RGB9E5F || f == NVN_FORMAT_RGBA16F;
+        else out |= f == NVN_FORMAT_RGBA8 || f == NVN_FORMAT_RGBA8_SRGB || f == NVN_FORMAT_RGB10A2 || f == NVN_FORMAT_BGRA8 ||
+                    f == NVN_FORMAT_BGRA8_SRGB;
+        if (n < 700)
+            n += snprintf(line + n, sizeof line - n, "%s %#llx %ux%u nvn %#x;", what, (unsigned long long)t.gpu, t.d.width, t.d.height, f);
+    };
+    for (uint32_t i = 0; i < ntex; i++) describe(" tex", s.tex[5][i], true);
+    n += snprintf(line + n, sizeof line - n, " writes");
+    for (uint32_t i = 0; i < nimg; i++) describe(" img", s.img[5][i], false);
+    if (!scene || !out) return;
+    n += snprintf(line + n, sizeof line - n, " uniform buffers:");
+    for (int i = 0; i < 8; i++)
+        if (s.ubo[5][i].addr && n < 840)
+            n += snprintf(line + n, sizeof line - n, " c%d %#llx+%#llx;", i + 3, (unsigned long long)s.ubo[5][i].addr,
+                          (unsigned long long)s.ubo[5][i].size);
+    static std::mutex mu;
+    static std::unordered_set<uint64_t> seen;
+    std::lock_guard lk(mu);
+    if (seen.size() < 64 && seen.insert(key).second) logf("%s", line);
+}
+
 void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t z, uint64_t indirect) {
     if (par_stats_on) par_stats_draw();
     PROF(PROF_DISPATCH);
@@ -9378,6 +9495,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     if ((!cp || cp->failed || slow_network) && upscale_stub(cmd, s, compute_code_key(s))) return void(st_dispatches++);
     if (slow_network) SKIP_HERE();   // (an earlier pass of the network: the stub is its last pass)
     if (!cp || !cp->ready.load(std::memory_order_acquire) || cp->failed) SKIP_HERE();
+    hdr_find_dispatch(s, cp->key);   // (RX_VK_HDR_FIND)
     {   // (hookshot, RX_VK_SKIP_PROG=<key prefix,...>: those programs' dispatches left out, for diagnosis)
         static const char* skip = getenv("RX_VK_SKIP_PROG");
         if (skip) {
