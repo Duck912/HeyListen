@@ -258,12 +258,24 @@ class RecompLauncherJsonTests(unittest.TestCase):
     def test_the_upscaler_and_frame_rate_rows_have_the_menu_values(self):
         by_key = {k: s for s in self.doc["settings"] for k in s["choices"][0]["set"]}
         up = {c["set"]["dlss"]: c["label"] for c in by_key["dlss"]["choices"]}
-        self.assertEqual(up, {"0": "The game's own", "1": "NVIDIA DLSS", "2": "NVIDIA DLAA", "3": "AMD FSR 3.1", "4": "AMD FSR 4",
-                              "5": "AMD FSR 4 Native AA", "6": "Off"})   # (gpu/vk/upscaler_rows.h: GAME DLSS DLAA FSR3 FSR4 FSR4_AA OFF)
+        # (DLAA (2) and FSR 4's Native AA (5) are not choices of the Upscaler row: they are the Render resolution's native choice (7) of
+        # DLSS and FSR 4; a saved dlss=2 or 5 is still read, and migrated, by the game: gpu/vk/upscaler_rows.h migrate)
+        self.assertEqual(up, {"0": "The game's own", "1": "NVIDIA DLSS", "3": "AMD FSR 3.1", "4": "AMD FSR 4", "6": "Off"})
+        res = {c["set"]["resolution"]: c["label"] for c in by_key["resolution"]["choices"]}
+        self.assertEqual(sorted(res), ["0", "1", "2", "3", "4", "5", "6", "7"])
+        self.assertIn("DLAA", res["7"])
+        self.assertIn("Native AA", res["7"])
         fps = [c["label"].split()[0] for c in by_key["frame_rate_limit"]["choices"]]
-        self.assertEqual(fps, ["60", "90", "120", "144", "165", "240"])   # (vk_menu.cpp tx_fps_limit)
+        self.assertEqual(fps, ["60", "90", "120", "144", "165", "240", "Unlimited"])   # (vk_menu.cpp tx_fps_limit)
+        # (the saved 0 to 5 keep their meaning: Unlimited is a new 6, in the row's range)
+        self.assertEqual([c["set"]["frame_rate_limit"] for c in by_key["frame_rate_limit"]["choices"]], [str(i) for i in range(7)])
         gen = [c["set"]["frame_generation"] for c in by_key["frame_generation"]["choices"]]
         self.assertEqual(gen, [str(i) for i in range(9)])
+        # (Frame generation by: the renderer's own and NVIDIA DLSS FG as saved before, AMD FSR 3.1 after them)
+        by = {c["set"]["frame_generation_by"]: c["label"] for c in by_key["frame_generation_by"]["choices"]}
+        self.assertEqual(sorted(by), ["0", "1", "2"])
+        self.assertIn("DLSS", by["1"])
+        self.assertIn("FSR 3.1", by["2"])
 
     def test_every_file_is_in_the_game_folder_prepare_makes(self):
         main = next(c for c in self.doc["config"] if c["id"] == "main")

@@ -264,8 +264,8 @@
     },
     {
       "id": "fps_limit",
-      "label": "Frame rate",
-      "help": "The game's own frame rate. Above 60 it needs Game speed on Real time, and a screen that runs that fast.",
+      "label": "Frame rate limit",
+      "help": "The most frames a second shown: the game's own and, with frame generation on, the frames made between them. With a fixed Frame generation multiplier the game runs at the limit over it (120 at 3x: the game at 40). Unlimited holds nothing back. Above 60 it needs Game speed on Real time, and a screen that runs that fast.",
       "group": "Video",
       "choices": [
         {
@@ -303,6 +303,12 @@
           "set": {
             "frame_rate_limit": "5"
           }
+        },
+        {
+          "label": "Unlimited",
+          "set": {
+            "frame_rate_limit": "6"
+          }
         }
       ],
       "defaults": {
@@ -335,7 +341,7 @@
     {
       "id": "framegen",
       "label": "Frame generation",
-      "help": "Makes frames between the game's own for smoother motion, at a little input delay. Fast motion can show artifacts.",
+      "help": "Makes frames between the game's own for smoother motion, at a little input delay. Fast motion can show artifacts. What Frame generation by makes: a higher value is kept within it (NVIDIA DLSS FG up to its runtime's top, AMD FSR 3.1 2x). The Frame rate limit is the rate shown.",
       "group": "Video",
       "choices": [
         {
@@ -400,7 +406,7 @@
     {
       "id": "framegen_by",
       "label": "Frame generation by",
-      "help": "Who makes the frames at 2x and up. NVIDIA DLSS Frame Generation needs an RTX 40 or newer and NVIDIA's own runtime files (the Builder's DLSS tick fetches them); where it cannot run, the built-in frame generation makes them. Off unless chosen.",
+      "help": "Who makes the made frames, and so how many Frame generation offers. NVIDIA DLSS Frame Generation needs an RTX 40 or newer and NVIDIA's own runtime files (the Builder's DLSS tick fetches them), makes 2x up to what its runtime makes on your GPU (6x on an RTX 50, 2x on an RTX 40) and has no Auto; where it cannot run, the built-in frame generation makes them. AMD FSR 3.1 makes 2x only. Built-in has Auto and 2x to 8x. Off unless chosen.",
       "group": "Video",
       "choices": [
         {
@@ -413,6 +419,12 @@
           "label": "NVIDIA DLSS Frame Generation",
           "set": {
             "frame_generation_by": "1"
+          }
+        },
+        {
+          "label": "AMD FSR 3.1 FG (2x only)",
+          "set": {
+            "frame_generation_by": "2"
           }
         }
       ],
@@ -452,7 +464,7 @@
     {
       "id": "upscaler",
       "label": "Upscaler",
-      "help": "What scales the 3D picture up to the output. DLSS needs an NVIDIA RTX card and its tick at setup; FSR 4 needs an AMD card with FSR 4 and its tick at setup; FSR 3.1 works on any card. Off runs no upscaling network at all (the 3D stretched to the output, no anti-aliasing), for a GPU where the game's own network shows glitches.",
+      "help": "What scales the 3D picture up to the output. DLSS needs an NVIDIA RTX card and its tick at setup; FSR 4 needs an AMD card with FSR 4 and its tick at setup; FSR 3.1 works on any card. Off runs no upscaling network at all (the 3D stretched to the output, no anti-aliasing), for a GPU where the game's own network shows glitches. DLAA (DLSS) and Native AA (FSR 4) are choices of Render resolution, with DLSS or FSR 4.",
       "group": "Upscaling",
       "choices": [
         {
@@ -468,12 +480,6 @@
           }
         },
         {
-          "label": "NVIDIA DLAA",
-          "set": {
-            "dlss": "2"
-          }
-        },
-        {
           "label": "AMD FSR 3.1",
           "set": {
             "dlss": "3"
@@ -483,12 +489,6 @@
           "label": "AMD FSR 4",
           "set": {
             "dlss": "4"
-          }
-        },
-        {
-          "label": "AMD FSR 4 Native AA",
-          "set": {
-            "dlss": "5"
           }
         },
         {
@@ -505,13 +505,19 @@
     {
       "id": "render_res",
       "label": "Render resolution",
-      "help": "The share of the output the 3D is drawn at; the upscaler fills in the rest. Auto follows the game's own dynamic resolution.",
+      "help": "The share of the output the 3D is drawn at; the upscaler fills in the rest. Auto follows the game's own dynamic resolution. Native is DLAA with DLSS and Native AA with FSR 4: the 3D at full size with the upscaler's anti-aliasing (with another upscaler it is 100%).",
       "group": "Upscaling",
       "choices": [
         {
           "label": "Auto",
           "set": {
             "resolution": "0"
+          }
+        },
+        {
+          "label": "Native (DLAA with DLSS, Native AA with FSR 4)",
+          "set": {
+            "resolution": "7"
           }
         },
         {

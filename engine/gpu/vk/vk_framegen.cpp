@@ -20,7 +20,9 @@
 #include <cmath>
 
 #include "vk_framegen.h"
+#include "framegen_rows.h"   // (the multiplier each Frame generation by makes, the limit's share)
 #include "vk_dlss.h"   // (NVIDIA DLSS Frame Generation: vk_dlss.cpp)
+#include "vk_temporal.h"   // (temporal_wanted: DLSS FG's inputs)
 #include "vk_fsr3_inputs.h"   // (AMD FSR 3.1 frame interpolation's depth and motion)
 #include "vk_fsr3fi.h"
 #include "vk_draw.h"   // (extern_guarded_shader_module, extern_guarded_compute)
@@ -240,7 +242,7 @@ bool init() {
         return undo();
     }
     fg.failed = false;
-    if (opts.framegen == 1)
+    if (framegen_now() == 1)
         logf("vk: frame interpolation ready: Auto, a frame for each of the display's refreshes (%d Hz; up to %d a game frame)",
              (display_refresh_mhz() + 500) / 1000, multiplier());
     else
@@ -467,10 +469,15 @@ void display_main() {
 
 } // namespace
 
-int framegen_capped(int framegen, int dlss_most) {
-    return framegen >= 2 && dlss_most > 0 ? std::min(framegen, dlss_most + 1) : framegen;
+int framegen_by_now() {
+    // (DLSS FG makes the frames only where it is asked for and has a temporal Upscaler's inputs: else the renderer's own does,
+    // as the Frame generation by row's line says)
+    if (dlss_fg_wanted() && temporal_wanted()) return framegen_rows::BY_DLSS;
+    return opts.framegen_by == framegen_rows::BY_FSR3 ? framegen_rows::BY_FSR3 : framegen_rows::BY_OWN;
 }
-int framegen_now() { return framegen_capped(opts.framegen, dlss_fg_most()); }
+int framegen_now() {
+    return framegen_rows::limited(menu_fps_limit(), framegen_rows::clamp(framegen_by_now(), dlss_fg_most(), opts.framegen));
+}
 
 // The Insert menu's Frame generation is off at 0. While it was ignored, every present still copied the frame and
 // reduced it to luma (framegen_record), then a second thread showed it. Open areas paid for that on a full GPU and
@@ -708,7 +715,7 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     // (the multiplier the sets were made for, ensure_size above: the row read again here could be one step up by now, the
     // menu runs on the display thread, and the set's last image would be one that was never made)
     const int cur = fg.cur, prev = cur ^ 1, m = fg.mult;
-    const bool auto_rate = opts.framegen == 1;   // (read once, for the same reason)
+    const bool auto_rate = framegen_now() == 1;   // (read once, for the same reason)
     const bool blend = fg.have_prev && !gap;
     static uint64_t sequence = 0;
     sequence++;
@@ -721,8 +728,11 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     set->made = 0;
     set->shown = -1;
     if (auto_rate) {   // (Auto: a frame for each of the display's refreshes, at its own time)
+        // (the display's refresh, or the Frame rate limit's period where that is longer: Auto fills what the game falls short of
+        // up to the limit, as the limit is the rate presented)
         const int mhz = display_refresh_mhz();
-        const int64_t period = (int64_t)(1e12 / (mhz > 0 ? mhz : 60000));
+        const int limit = menu_fps_limit();
+        const int64_t period = std::max((int64_t)(1e12 / (mhz > 0 ? mhz : 60000)), limit > 0 ? (int64_t)(1000000000LL / limit) : 0);
         float t[kMaxMult];
         int64_t at[kMaxMult];
         int n;

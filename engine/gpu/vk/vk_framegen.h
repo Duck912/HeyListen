@@ -6,12 +6,16 @@
 namespace mkwvk {
 
 bool framegen_on();
-/// (longshot) Frame generation's setting as it runs: the Insert menu's (opts.framegen: 0 Off, 1 Auto, 2 to 8 a fixed
-/// multiplier), a fixed one at most NVIDIA DLSS Frame Generation's runtime's most made frames + 1 while DLSS-G is to make the
-/// frames (vk_dlss.h dlss_fg_most: 6x on an RTX 50's runtime, 2x on an RTX 40's; that most is 0 otherwise: no cap). Past it
-/// NGX was not asked for the sets, and the renderer's own or AMD FSR 3.1 made every frame with DLSS FG chosen. A saved value
-/// past it is kept (another engine runs it), and is shown and run as that top. Off and Auto are as they are
-int framegen_capped(int framegen, int dlss_most);
+/// Who makes the frames now (framegen_rows.h BY_OWN, BY_DLSS, BY_FSR3): the Frame generation by row's choice, except that DLSS
+/// FG chosen is the renderer's own where DLSS-G does not run (not in this build, NGX's no) or has no temporal Upscaler's
+/// inputs to make frames from (its multiplier is not capped by its runtime then)
+int framegen_by_now();
+/// (longshot ec76f696, extended) Frame generation's setting as it runs: the Insert menu's (opts.framegen: 0 Off, 1 Auto, 2 to 8 a
+/// fixed multiplier) as the mode that makes the frames supports it (framegen_rows.h clamp): NVIDIA DLSS FG at most its runtime's
+/// most made frames + 1 (vk_dlss.h dlss_fg_most: 6x on an RTX 50's runtime, 2x on an RTX 40's; that most is 0 otherwise: no cap)
+/// and no Auto, AMD FSR 3.1 at 2x, the renderer's own up to 8x with Auto; a fixed multiplier then at most what leaves the game 20
+/// frames a second under the Frame rate limit (framegen_rows.h limited). A saved value past it is kept in the options file
+/// and is shown and run as the top
 int framegen_now();
 /// Records the frame's processing into the present's recording (src: the window texture's view, sw x sh, the crop
 /// x, y, w, h); false when interpolation cannot run (the present goes to the window as without it)

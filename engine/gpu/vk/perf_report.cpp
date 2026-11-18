@@ -157,7 +157,7 @@ void read_machine(const char* version) {
 }
 
 void read_settings() {
-    machine.upscaler = upscaler_name(opts.dlss);
+    machine.upscaler = upscaler_name(upscaler_rows::mode_for(opts.dlss, opts.resolution));   // (DLAA and FSR 4 AA: the native choice with DLSS or FSR 4)
     machine.preset = preset_name(opts.preset);
     machine.fps_cap = fps_cap_now();
 }
