@@ -19,6 +19,10 @@
 
 HL_SOUND_HOOK(80435300, "795ee90e082f72a1");    /* the sound manager's job: its head, and its load of the game step */
 HL_BGM_HOOK(83373400, "197e674c33455df1");      /* the music manager's update (inside that job): its clock and its change flags */
+HL_HORSE_HOOK(82c59eb0, "877587970044fa8a");    /* a horse's jump state machine (Epona's fences: Longshot 8e8a06db) */
+HL_FLOOR_HOOK(80159dc0, "5cc81137a91acbd0", "L_8015a39c");   /* a moving floor's carry in three character modules (the Shadow */
+HL_FLOOR_HOOK(8015d490, "923be46f8950ebcd", "L_8015dad4");    /* Temple's barge: Longshot 4f755527) */
+HL_FLOOR_HOOK(838baa40, "a40b3f20377e9b73", "L_838baf24");
 HL_SOLVER_HOOK(838ceb80, "c4203f2465e06081");   /* the solver's step count, the two places the game sets it */
 HL_SOLVER_HOOK(838cfc10, "228fd7a71a1ca0f0");
 
@@ -118,4 +122,51 @@ uint32_t hos_oot_solver_steps(uint32_t game, uint32_t scaled_bits, uint32_t per_
                     (oot_bits_float(scaled_bits) - 0.001f) / oot_bits_float(per_frame_bits), oot_bits_float(per_frame_bits));
     }
     return (uint32_t)steps;
+}
+
+/* (the frame's own time is published: a cap above 60 with the step hooks in) */
+static int frame_timed(void) {
+    return __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED) != 0;
+}
+
+/* The game's time object's step (this frame's, 1 at 60 fps) behind the pointer slot (the job's: the guest address of the pointer to
+   the object whose first word points to it), 0 when there is none */
+static uint32_t frame_step_at(uint64_t slot) {
+    const uint64_t object = G64(slot);
+    const uint64_t time = object ? G64(object) : 0;
+    return time ? *(const uint32_t *)GP(time + 0x10) : 0;
+}
+
+/* f_82c59eb0's test of its step against 1 (a horse's jump): step_bits its step (a float's bits), slot as above. 1: the step is the
+   whole frame's, the branch for steps under 1 is skipped (Longshot 8e8a06db) */
+int hos_oot_horse_whole_step(uint32_t step_bits, uint64_t slot) {
+    const int t = frame_timed();
+    const uint32_t frame = t ? frame_step_at(slot) : 0;
+    const int whole = oot_horse_whole_step(step_bits, frame, t);
+    if (fps_log()) {
+        static volatile LONG64 calls, skipped;
+        const LONG64 s = whole ? InterlockedIncrement64(&skipped) : skipped;
+        const LONG64 n = InterlockedIncrement64(&calls);
+        if (n % 600 == 0)
+            hos_log("oot: a horse's jump blend: the whole-frame step skipped the slow-motion branch %lld of %lld times (step %.3f, "
+                    "the frame's %.3f)", (long long)s, (long long)n, oot_bits_float(step_bits), oot_bits_float(frame));
+    }
+    return whole;
+}
+
+/* f_80159dc0's, f_8015d490's and f_838baa40's slow-time test before they carry a character by a tenth of its floor's velocity
+   (inv_dt_bits: the physics' 1/dt, which was over 100): 1, the tenth (the game's verdict) (Longshot 4f755527) */
+int hos_oot_floor_carry_slow(uint32_t inv_dt_bits, uint64_t slot) {
+    const int t = frame_timed();
+    const uint32_t frame = t ? frame_step_at(slot) : 0;
+    const int slow = oot_floor_carry_slow(inv_dt_bits, frame, t);
+    if (fps_log()) {
+        static volatile LONG64 calls, kept;
+        const LONG64 k = slow ? InterlockedIncrement64(&kept) : kept;
+        const LONG64 n = InterlockedIncrement64(&calls);
+        if (n % 600 == 0)
+            hos_log("oot: a moving floor's carry: the slow-time tenth kept %lld of %lld times (1/dt %.1f, the frame's step %.3f)",
+                    (long long)k, (long long)n, oot_bits_float(inv_dt_bits), oot_bits_float(frame));
+    }
+    return slow;
 }

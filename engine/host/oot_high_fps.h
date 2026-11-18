@@ -26,6 +26,21 @@
    it then, into a latch (host/hl_high_fps.c); the update's next run reads its flags with them. Two settings of one bit within
    one held stretch are handled once.
 
+   A horse's jump (f_82c59eb0, HL_HORSE_HOOK; Longshot 8e8a06db by CraftyCorvid, Epona gallops through fences above 60 fps): while a
+   horse gets ready to jump an obstacle the state machine sets each frame the blend frames of the move into its JumpReady
+   animation, so the blend ends at takeoff. With a step under 1 (slow motion at 60 fps) it takes last frame's plus the step
+   instead; above 60 fps every step is under 1, the blend frames grew each frame (25 at 60 fps, 100 to 1500 above) and the jump
+   animation never blended in. The step is compared with this frame's own step (the game's time object, +0x10) instead: a step
+   that is the whole frame's is not slow motion, one under it still takes the game's branch; at a cap of 60 and on a frame
+   slower than 60 fps the game's own test decides.
+
+   A moving floor's carry (f_80159dc0, f_8015d490 and f_838baa40, HL_FLOOR_HOOK; Longshot 4f755527 by CraftyCorvid, issue 439): a
+   character on a moving floor is carried by its velocity, but each module first tests the physics time object's 1/dt (+0x28)
+   and, above 100 (a frame under 10 ms: at 60 fps, time slowed below 0.6), carries it by a tenth. Above 100 fps every frame is
+   under 10 ms: on the Shadow Temple's barge Link and the enemies slid to its back. Above a cap of 60, on a frame shorter than a
+   60 fps one, 1/dt times the frame's step is tested instead (the game's test as at 60 fps); at a cap of 60 and on a frame of a
+   60 fps one or longer the game's own test decides.
+
    The physics world's solver steps: the game sets them each update to (int)(frame step * the steps of a 60 fps frame + 0.001)
    (f_838ceb80 and f_838cfc10, into the solver's +712; 8 a 60 fps frame in the places seen). A step under 1 cuts that short,
    and as the measured step wanders around its mean the count changes from frame to frame (8 x 0.49 is 3, 8 x 0.5 is 4 at 120
@@ -104,4 +119,23 @@ static inline int32_t oot_solver_steps(int32_t game, uint32_t scaled_bits, uint3
     int32_t steps = (int32_t)ceilf(scaled - 0.1f);
     if (steps < 1) steps = 1;
     return steps > game ? steps : game;
+}
+
+/* A horse's jump: 1 when f_82c59eb0's step (step_bits) is under 1 only because the frame is short, so its branch for steps
+   under 1 (slow motion) is skipped; 0 when the game's own test (step < 1) decides. frame_step_bits: this frame's step from the
+   game's time object (0 when it has none). The step is the frame's own when within 0.1% of it */
+static inline int oot_horse_whole_step(uint32_t step_bits, uint32_t frame_step_bits, int timed) {
+    const float step = oot_bits_float(step_bits), frame = oot_bits_float(frame_step_bits);
+    if (!timed || !(frame > 0.0f) || !(frame < 1.0f) || !(step > 0.0f)) return 0;
+    return step >= frame * 0.999f;
+}
+
+/* A moving floor's carry: 1 when the modules' slow-time test stands (asked once the game's, 1/dt over 100, held), 0 when the
+   frame is short and not slow, so the floor's velocity carries in full. inv_dt_bits: the physics time object's 1/dt;
+   frame_step_bits: this frame's step from the game's time object (0 when it has none). On a frame of a 60 fps one or longer
+   (a step of 1 or more) 1/dt times the step is at least 1/dt: the game's verdict */
+static inline int oot_floor_carry_slow(uint32_t inv_dt_bits, uint32_t frame_step_bits, int timed) {
+    const float inv_dt = oot_bits_float(inv_dt_bits), step = oot_bits_float(frame_step_bits);
+    if (!timed || !(step > 0.0f)) return 1;   /* (the game's own test decides) */
+    return inv_dt * step > 100.0f;
 }
