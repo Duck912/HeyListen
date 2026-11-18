@@ -48,6 +48,10 @@ void hl_answer(uint64_t guest, A64Fn fn, HlOn on, const char *what);
     __attribute__((constructor)) static void hl_solver_decl_##addr(void) { hl_gate_declared(0x##addr##ULL); } \
     extern const int hl_solver_hook_##addr
 
+/* HL_BGM_HOOK(83373400, "<hash>"): a lift hook (nx2/hl_gates.py) in the music manager's update (inside the sound job): its clock
+   counts whole 60 Hz steps and the change flags the sound gate held back reach it (host/hl_high_fps.c). Nothing in C. */
+#define HL_BGM_HOOK(addr, hash)     __attribute__((constructor)) static void hl_bgm_decl_##addr(void) { hl_gate_declared(0x##addr##ULL); }     extern const int hl_bgm_hook_##addr
+
 /* HL_HEAP_HOOK(804566e0, "<hash>"): a lift hook (nx2/hl_gates.py) around f_804566e0's four allocations that are not checked
    (two CPU buffers, two GPU-memory calls): a failed one is tried again in the heap's parents (host/hl_heap_retry.c). Both
    pairs of lines or none. Nothing in C. */

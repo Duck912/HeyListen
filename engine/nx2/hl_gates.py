@@ -143,6 +143,11 @@ def movie_site(s, addr, off):
 # - HL_SOUND_HOOK(80435300, "<hash>"): the sound manager's job. At its head: return at once while hos_oot_sound_gate
 #   (host/hl_high_fps.c) says so (the job at 60 Hz above a 60 cap); after its load of the game step: that step through
 #   hos_oot_sound_step (a whole one while the gate holds the job to whole steps).
+# - HL_BGM_HOOK(83373400, "<hash>"): (Longshot eb5ba6e2 / Hookshot bf802502, CraftyCorvid) the music manager's update, run inside
+#   the sound job, so at 60 Hz too: at its head hos_oot_bgm_begin (takes the change flags the sound gate held back); after its
+#   two loads of the time object's step (+16) and seconds (+24) both through hos_oot_sound_step / hos_oot_sound_seconds (a
+#   whole step while the gate holds the job); after each of its four reads of the battle manager's change flags (x26 + 2200)
+#   that byte with the held ones, hos_oot_bgm_flags (the battle music stopped after a fight above 60 fps).
 # - HL_SOLVER_HOOK(838ceb80, "<hash>"): after the cut of frame step x the solver's steps a 60 fps frame + 0.001, stored to
 #   the solver's +712: the count through hos_oot_solver_steps (rounded up while the step is under 1).
 # - HL_WHOLE_HOOK(80a87e50, "<hash>", <reg>, "<key>"): after the function's cut of an amount of the frame step (vreg 0's
@@ -159,7 +164,7 @@ def movie_site(s, addr, off):
 #   after it ("}" and the retry), so that taking the hook out leaves the lift as it was.
 # Each goes in only where its function's text hashes as recorded, both lines of a kind or none. The marker is the address
 # plus one, as a step hook's (one hook a function), so a tree that does not ask for it takes it out as a stale gate.
-WANT_LIFT = re.compile(r'^HL_(SOUND|SOLVER|WHOLE|HEAP)_HOOK\(\s*([0-9a-f]{8})\s*,\s*"([0-9a-f]*)"((?:\s*,\s*(?:\d+|"[^"\n]*"))*)\s*\)',
+WANT_LIFT = re.compile(r'^HL_(SOUND|SOLVER|WHOLE|HEAP|BGM|TURN|HORSE)_HOOK\(\s*([0-9a-f]{8})\s*,\s*"([0-9a-f]*)"((?:\s*,\s*(?:\d+|"[^"\n]*"))*)\s*\)',
                        re.M)
 CUT = "    c->x[%d]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);\n"
 SOUND_SLOT = "g_module_base + 0x80435000ULL + (int64_t)75927552"   # (the page of the step's pointer, whose +2192 holds it)
@@ -168,6 +173,9 @@ SOUND_LOAD = ("    c->x[8]=" + SOUND_SLOT + ";\n"
               "    c->x[8]=recomp_load64(c,c->x[8] + 2192);\n"
               "    c->x[8]=recomp_load64(c,c->x[8] + 0);\n"
               "    { { uint64_t _v=recomp_load32(c,(c->x[8]+16ULL)); a64_vset64(c->vreg[0],_v); } }\n")
+BGM_TIME = ("    { { uint64_t _v=recomp_load32(c,(c->x[8]+16ULL)); a64_vset64(c->vreg[8],_v); } }\n"
+            "    { { uint64_t _v=recomp_load32(c,(c->x[8]+24ULL)); a64_vset64(c->vreg[9],_v); } }\n")
+BGM_FLAGS = "    c->x[8]=recomp_load8(c,c->x[26] + 2200);\n"   # (the update's four reads of the change flags)
 SOLVER_STORE = "    recomp_store32(c,c->x[0] + 712,c->x[1]);\n"
 WHOLE_STORE = "    recomp_store32(c,%s,c->x[%d]);\n"
 # (the unsigned cut's addition of the elapsed counter: "u<N>" anchors on the cut followed by the addition to x<N>)
@@ -189,6 +197,13 @@ def lift_lines(kind, addr, args):
                 "if (!hos_oot_sound_gate(c, (uint32_t)c->x[2], " + SOUND_SLOT + " + 2192)) return; }" + mark,
                 "    { extern uint32_t hos_oot_sound_step(uint32_t); "
                 "a64_vset64(c->vreg[0], hos_oot_sound_step((uint32_t)c->vreg[0][0])); }" + mark]
+    if kind == "bgm":
+        return (["    { extern void hos_oot_bgm_begin(void); hos_oot_bgm_begin(); }" + mark,
+                 "    { extern uint32_t hos_oot_sound_step(uint32_t); extern uint32_t hos_oot_sound_seconds(uint32_t, uint32_t); "
+                 "const uint32_t _st = (uint32_t)c->vreg[8][0]; a64_vset64(c->vreg[9], hos_oot_sound_seconds((uint32_t)c->vreg[9][0], _st)); "
+                 "a64_vset64(c->vreg[8], hos_oot_sound_step(_st)); }" + mark] +
+                ["    { extern uint64_t hos_oot_bgm_flags(uint64_t, uint64_t); "
+                 "c->x[8] = hos_oot_bgm_flags(c->x[26] + 2200, c->x[8]); }" + mark] * 4)
     if kind == "solver":
         return ["    { extern uint32_t hos_oot_solver_steps(uint32_t, uint32_t, uint32_t); c->x[1] = "
                 "hos_oot_solver_steps((uint32_t)c->x[1], (uint32_t)c->vreg[0][0], (uint32_t)c->vreg[1][0]); }" + mark]
@@ -217,6 +232,14 @@ def lift_places(body, addr, kind, args):
         if body.count(SOUND_LOAD) != 1:
             return None
         return [len(HEAD % addr), body.index(SOUND_LOAD) + len(SOUND_LOAD)]
+    if kind == "bgm":
+        if body.count(BGM_TIME) != 1 or body.count(BGM_FLAGS) != 4:
+            return None
+        places, at = [len(HEAD % addr), body.index(BGM_TIME) + len(BGM_TIME)], 0
+        for _ in range(4):
+            at = body.index(BGM_FLAGS, at) + len(BGM_FLAGS)
+            places.append(at)
+        return places if places == sorted(places) else None
     if kind == "solver":
         anchor = CUT % 1 + SOLVER_STORE
         if body.count(anchor) != 1:

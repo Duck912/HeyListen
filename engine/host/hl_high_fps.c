@@ -4,7 +4,7 @@
 
    Upstream edits the lifted f_80435300, f_838ceb80 and f_838cfc10 in nx2/oot_patches.py. Here the lifted work folder is shared
    by every worktree, so the calls go in the way the step and movie hooks do (host/hl_step.c): lift hooks, HL_SOUND_HOOK and
-   HL_SOLVER_HOOK below with each function's text hash, lines nx2/hl_gates.py puts after anchors in that text, marked
+   HL_SOLVER_HOOK, HL_BGM_HOOK (Longshot eb5ba6e2, Hookshot bf802502 by CraftyCorvid: the music manager's clock and change flags) below with each function's text hash, lines nx2/hl_gates.py puts after anchors in that text, marked
    "hl gate <address + 1>", so a tree that does not ask for them takes them out. The functions' hashes are unchanged by them,
    and an exeFS mod that patches one leaves its hook out. The game's own code still runs: the sound job's step line sets
    vreg 0 again after the game's load, the solver's line sets x1 again after the game's cut.
@@ -18,6 +18,7 @@
 #include <stdlib.h>
 
 HL_SOUND_HOOK(80435300, "795ee90e082f72a1");    /* the sound manager's job: its head, and its load of the game step */
+HL_BGM_HOOK(83373400, "197e674c33455df1");      /* the music manager's update (inside that job): its clock and its change flags */
 HL_SOLVER_HOOK(838ceb80, "c4203f2465e06081");   /* the solver's step count, the two places the game sets it */
 HL_SOLVER_HOOK(838cfc10, "228fd7a71a1ca0f0");
 
@@ -47,6 +48,10 @@ static int fps_log(void) {
 static OotSoundGate sound_gate = OOT_SOUND_GATE_INIT;
 static long long sound_calls, sound_runs;   /* (HOS_FPS_LOG's counts, under sound_lock) */
 static SRWLOCK sound_lock = SRWLOCK_INIT;   /* (the job's phases may come from different threads) */
+static uint64_t bgm_flags_at;   /* (the guest address of the music manager's change flags, from its last read; under sound_lock) */
+static uint8_t bgm_held;        /* (the flags seen on frames the gate held the job, since the update last ran; under sound_lock) */
+/* shortcut (upstream's): one bit set on two held frames between runs is handled once (bit 6 then counts down once) */
+static uint8_t bgm_run;         /* (those, handed to the update's run: its own thread) */
 
 /* f_80435300's head: phase w2, slot the guest address of the pointer to the object whose +0x10 is the game step (the job's own
    load). 0: the job returns at once */
@@ -62,6 +67,7 @@ int hos_oot_sound_gate(Ctx *c, uint32_t phase, uint64_t slot) {
     long long ran = -1;
     AcquireSRWLockExclusive(&sound_lock);
     const int run = oot_sound_gate(&sound_gate, phase, step, t);
+    if (!run && bgm_flags_at) bgm_held |= *(const uint8_t *)GP(bgm_flags_at);   /* (what the update would have read now) */
     if (phase == 0 && fps_log()) {
         sound_runs += run;
         if (!(++sound_calls % 600)) ran = sound_runs, sound_runs = 0;
@@ -76,6 +82,28 @@ int hos_oot_sound_gate(Ctx *c, uint32_t phase, uint64_t slot) {
 /* The step f_80435300's phase 0 hands to the sound engine (its float's bits) */
 uint32_t hos_oot_sound_step(uint32_t step_bits) {
     return oot_sound_step(step_bits, sound_timed());
+}
+
+/* The frame's seconds f_83373400 reads, with the step beside it (floats' bits) */
+uint32_t hos_oot_sound_seconds(uint32_t seconds_bits, uint32_t step_bits) {
+    return oot_sound_seconds(seconds_bits, step_bits, sound_timed());
+}
+
+/* f_83373400's head: the change flags held back since its last run are this run's */
+void hos_oot_bgm_begin(void) {
+    AcquireSRWLockExclusive(&sound_lock);
+    bgm_run = bgm_held;
+    bgm_held = 0;
+    ReleaseSRWLockExclusive(&sound_lock);
+}
+
+/* f_83373400's reads of the change flags (at, their guest address; flags, the byte it read): with the ones held back */
+uint64_t hos_oot_bgm_flags(uint64_t at, uint64_t flags) {
+    AcquireSRWLockExclusive(&sound_lock);
+    bgm_flags_at = at;
+    const uint8_t run = bgm_run;
+    ReleaseSRWLockExclusive(&sound_lock);
+    return flags | run;
 }
 
 /* The solver steps of f_838ceb80 / f_838cfc10: game, the game's count; scaled_bits, the float it cut; per_frame_bits, the steps
