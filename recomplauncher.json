@@ -263,6 +263,29 @@
       }
     },
     {
+      "id": "hud_layout",
+      "label": "HUD layout",
+      "help": "On a screen that is not 16:9: the hearts, buttons and minimap at the screen's own edges, or in the middle 16:9.",
+      "group": "Video",
+      "choices": [
+        {
+          "label": "Screen's edges",
+          "set": {
+            "hud_layout": "0"
+          }
+        },
+        {
+          "label": "Middle 16:9",
+          "set": {
+            "hud_layout": "1"
+          }
+        }
+      ],
+      "defaults": {
+        "hud_layout": "0"
+      }
+    },
+    {
       "id": "fps_limit",
       "label": "Frame rate",
       "help": "The game's own frame rate. Above 60 it needs Game speed on Real time, and a screen that runs that fast.",

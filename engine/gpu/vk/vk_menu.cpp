@@ -364,6 +364,7 @@ const char* hn_resolution(int v, int variant) {
 bool row_fixed(const int* value) {
     return ((value == &opts.send_perf || value == &opts.send_crash) && !telemetry_available()) || (value == &opts.reflex && !reflex_available()) || (value == &opts.dlss && ur::upscaler_fixed(upscalers_available())) ||
            (value == &opts.resolution && ur::resolution_fixed(upscaler())) || (value == &opts.upscale && !filter_needed()) ||
+           (value == &opts.hud_layout && getenv("HOS_WIDE_UI") && *getenv("HOS_WIDE_UI")) ||   // (host/hos_wide_ui.c's, first)
            (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr));
 }
 /// (heylisten) The two telemetry rows: Off or On, and "Not available in this build" when the build has no address to send to
@@ -391,6 +392,16 @@ const char* tx_text_speed(int v) {
     return t[v];
 }
 const char* tx_ultrawide(int v) { return v ? "Monitor's shape" : "16:9"; }
+/// (the HUD layout row, HL_OPT_HUD_LAYOUT: host/hos_wide_ui.c places the HUD by it at each present, #1133)
+const char* tx_hud_layout(int v) { return v ? "Middle 16:9" : "Screen's edges"; }
+const char* hn_hud_layout(int v, int variant) {
+    static const char* const t[] = {"The hearts, the buttons and the minimap at the screen's own edges and corners.",
+                                    "The HUD where it is at 16:9, in the middle (fitted to the width on a narrower screen)."};
+    static const char* const held = "Set by HOS_WIDE_UI (hookshot_env.txt or the environment): remove that line to choose here.";
+    const char* env = getenv("HOS_WIDE_UI");
+    if (variant < 0) return env && *env ? held : t[v ? 1 : 0];
+    return variant == 0 ? t[v ? 1 : 0] : variant == 1 && env && *env ? held : nullptr;
+}
 const char* tx_prompts(int v) {
     static const char* t[HOS_PROMPT_N + 1] = {"Auto", "Switch", "Xbox", "PlayStation 4", "PlayStation 5", "Steam Deck"};
     return t[std::min(std::max(v, 0), (int)HOS_PROMPT_N)];
@@ -585,7 +596,9 @@ const char* hn_sharpness(int v, int variant) {
     return with_dlss ? dlss : v == 0 ? "Off: the picture as it is." : nullptr;
 }
 MENU_HINTS(hn_handheld, 0, "Docked: the Output resolution's size.", "Lower resolutions, lighter on the GPU.")
-MENU_HINTS(hn_ultrawide, 0, "The game's own shape.", "The camera takes the screen's shape, wider or narrower. The HUD is still stretched.")
+MENU_HINTS(hn_ultrawide, 0, "The game's own shape.",
+           "The camera takes the screen's shape, wider or narrower. The HUD keeps its 16:9 size, its corners at the "
+           "screen's edges (HUD layout).")
 MENU_HINTS(hn_robust, 0, "On, on every card.", "Can be faster on some NVIDIA cards.", "Always on.")
 MENU_HINTS(hn_fps, 0, nullptr, "With frame generation on, the game's own rate too.")
 MENU_HINTS(hn_menu_size, 0, "Large in fullscreen on a screen of 1080 lines or more while a controller is in use, else Medium.",
@@ -655,6 +668,9 @@ Row rows[] = {
      "Runs the game as if the console were undocked. Applies after a restart.", hn_handheld, true},
     {TAB_GRAPHICS, "Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
      "The camera's shape on a screen wider or narrower than 16:9 (4:3, 16:10). Applies after a restart.", hn_ultrawide, true},
+    {TAB_GRAPHICS, "HUD layout", &opts.hud_layout, 0, 1, 1, tx_hud_layout,
+     "On a screen that is not 16:9: where the hearts, buttons and minimap sit. At 16:9 both are the same. Changes at once.",
+     hn_hud_layout, false, true},
     {TAB_GRAPHICS, "Robust buffers", &opts.robust, 0, 2, 1, tx_robust,
      "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Applies after a "
      "restart.", hn_robust, true},

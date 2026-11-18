@@ -25,9 +25,11 @@
    an edge or sit far out, move to that side; a container across the centre is looked into; what is off the canvas or
    wider than it (a scrolling strip) is left alone. Up and down the same, when the HUD is drawn smaller (visit_y).
 
-   HOS_WIDE_UI=0 keeps the HUD in the middle 16:9 as before (on a narrower screen fitted to its width, as the menus);
+   The Insert menu's HUD layout row (HL_OPT_HUD_LAYOUT, gpu/vk/vk_opt_ids.h) at Middle 16:9 keeps the HUD in the middle 16:9
+   as before (on a narrower screen fitted to its width, as the menus); HOS_WIDE_UI=0 or 1, when set, stands over the row;
    HOS_WIDE_UI_LOG=<n> logs the first n changes of the plan, each root layout, and the plan's time. */
 #include "hos.h"
+#include "../gpu/vk/vk_opt_ids.h"   /* (HL_OPT_HUD_LAYOUT) */
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -548,7 +550,7 @@ static void plan(void) {
      smaller, by the picture's ratio over HUD_FULL, and what sits at the top or bottom moves out to the screen's top or bottom.
    - The menus (every layout whose root is not the HUD's) keep their 16:9 shape as before on a wider screen (the Ultrawide
      menus row: in the middle, or stretched); on a narrower one they fit its width, in the middle, never stretched.
-     HOS_WIDE_UI=0 turns the HUD's moves off.
+     The HUD layout row at Middle 16:9, or HOS_WIDE_UI=0 over it, turns the HUD's moves off.
 
    HOS_HUD_MAX_RATIO=<ratio> (0: the screen's edges at any width) and HOS_HUD_FULL_RATIO=<ratio> stand over the two limits. */
 static const float GAME = 16.0f / 9.0f, HUD_MAX = 12.0f / 5.0f, HUD_FULL = 1.5f, SURROUND = 48.0f / 9.0f;
@@ -580,8 +582,10 @@ void hos_wide_ui_tick(void) {
         for (int i = 0; i < 8; i++) last[i] = NAN;
     }
     const float r = hos_wide_ratio;
-    /* (the HUD's moves: HOS_WIDE_UI=0 puts them back in the middle 16:9, as the first versions had them) */
-    const int hud = !(env && *env && atoi(env) == 0);
+    /* (the HUD's moves: HOS_WIDE_UI when set, else the Insert menu's HUD layout, read at each present so a change shows at
+       once: 0 Screen's edges, 1 Middle 16:9, HL_OPT_HUD_LAYOUT, #1133) */
+    int rx_option(int id, int otherwise);
+    const int hud = env && *env ? atoi(env) != 0 : rx_option(HL_OPT_HUD_LAYOUT, 0) == 0;
     float qx = 0.0f, qy = 0.0f, fit = 1.0f, ex = 0.0f, ey = 0.0f;
     if (r > GAME * 1.001f) {   /* (wider: the middle 16:9 at the height's scale, as before) */
         qx = GAME / r, qy = 1.0f;

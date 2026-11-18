@@ -58,7 +58,7 @@ the table says what works and what does not yet.
 | Stutter when entering new areas | ⚠️ Still happens the first time you visit a place. The next visits are smooth |
 | Performance | ⚠️ Depends on the PC: some reach a steady 60 fps, others stay below it, more so in Hyrule Field |
 | Hyrule Field, Castle Town, Kakariko and the dungeons | ⚠️ Players got there, with open bugs: striped shadows in Hyrule Field ([#468](https://github.com/NotRexed/Hookshot/issues/468)), some crashes ([#317](https://github.com/NotRexed/Hookshot/issues/317), [#648](https://github.com/NotRexed/Hookshot/issues/648)) |
-| Ultrawide and 4:3 | ⚠️ The 3D keeps its shape, but the HUD is stretched and the picture is softer |
+| Ultrawide and 4:3 | ⚠️ The 3D keeps its shape, and the HUD keeps its 16:9 size at the screen's edges (Graphics' HUD layout); the picture is softer |
 | NVIDIA cards | ✅ Works. The most tested |
 | AMD cards | ⚠️ Some tested: reports from the RX 6600, RX 7800 XT and RX 7900 XTX. Known issue: the game loses the GPU in the Deku Tree on the RX 6600 ([#708](https://github.com/NotRexed/Hookshot/issues/708), [#614](https://github.com/NotRexed/Hookshot/issues/614)) |
 | Intel cards | ❓ Few reports, many of them black screens or crashes ([#17](https://github.com/NotRexed/Hookshot/issues/17)) |
@@ -244,6 +244,7 @@ choices and starts the game again, so progress since your last save is lost.
 | | Sharpness | 0 to 100%, in steps of 10 | 0% |
 | | Handheld profile | Off, On (after a restart) | Off |
 | | Ultrawide | 16:9, Monitor's shape: wider than 16:9, or narrower down to 5:4 (after a restart) | 16:9 |
+| | HUD layout | Screen's edges, Middle 16:9 (on a screen that is not 16:9) | Screen's edges |
 | | Robust buffers | Auto, Off, On (after a restart) | Auto |
 | Gameplay | FPS counter | Off, On | Off |
 | | Menu size | Auto, Small, Medium, Large | Auto |
@@ -292,7 +293,8 @@ choices and starts the game again, so progress since your last save is lost.
   the 1920x1080 option keeps HUD and text sharp when the game fills the screen by mapping them pixel for pixel. At
   3840x2160 the game's render targets get a bigger GPU pool, so a full-size 3D fits. On a 5120x1440 (32:9) ultrawide
   monitor, 5120x1440 gives a native frame with a sharp HUD. Set **Ultrawide** to Monitor's shape with it: it widens the
-  cameras to the frame's shape and keeps the HUD and movies in the middle 16:9; without it, the game's 16:9 picture is
+  cameras to the frame's shape and keeps the movies in the middle 16:9; the HUD keeps its 16:9 size, its corners at the
+  screen's edges (**HUD layout** puts it back in the middle 16:9). Without Monitor's shape, the game's 16:9 picture is
   stretched across the 32:9 output, sharp but wide. For one run, set `HOS_OUTPUT_RES` to `3` for 1920x1080,
   `0` for 2048x1152, `1` for 2560x1440, `2` for 3840x2160, or `4` for 5120x1440.
 - **Window scaling filter** matters only when your window's size differs from the Output resolution: for the sharpest

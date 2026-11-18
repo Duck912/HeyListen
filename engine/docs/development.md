@@ -84,7 +84,7 @@ screen. It costs some GPU time on cards that cull quickly, so it is off unless s
 | `HOS_LANGUAGE=<code>` | The game's language for this run, a code from `language.txt` |
 | `HOS_OUTPUT_RES=<0..4>`, `HOS_HANDHELD=1`, `HOS_ASPECT=<ratio>` | Over the options file: the output resolution (0 2048x1152, 1 2560x1440, 2 3840x2160, 3 1920x1080, 4 5120x1440, or one of those sizes written out; any other value is logged and the game's size kept), the handheld profile, a picture wider than 16:9 (2.3889 for 3440x1440) |
 | `HOS_DYNRES=0`, `HOS_REALTIME_STEP=0`, `HOS_TEXT_SPEED=<0..3>` | Over the options file: Resolution 100% (non-zero: Auto), Game speed Per frame (1: Real time), Text speed |
-| `HOS_WIDE_UI=0` or `1` | The HUD's layout on a screen that is not 16:9: `0` keeps it in the middle 16:9 as before (on a narrower screen fitted to its width), unset or `1` its corners at the screen's edges (`host/hos_wide_ui.c`) |
+| `HOS_WIDE_UI=0` or `1` | The HUD's layout on a screen that is not 16:9, over the menu's HUD layout row: `0` keeps it in the middle 16:9 as before (on a narrower screen fitted to its width), `1` its corners at the screen's edges (`host/hos_wide_ui.c`) |
 | `HOS_WIDE_UI_LOG=<n>` | The first n changes of the HUD's plan after each change of the picture's shape, each root layout class, and the plan's time per 600 presents |
 | `HOS_HUD_MAX_RATIO=<ratio>`, `HOS_HUD_FULL_RATIO=<ratio>` | Over the HUD's two limits: how far its sides reach on a wider picture (2.4, 12:5, by default; `0` the screen's edges at any width) and the narrowest shape at which it keeps its 16:9 size (1.5, 3:2, by default) |
 | `RX_VK_FRAMEGEN=0`, `RX_VK_FRAMEGEN_MULT=<2..8>`, `RX_VK_PACE=0`, `RX_VK_UPSCALE=<0..2>` | No frame generation whatever the menu says; over the options file: its multiplier, frame pacing, the upscaling filter |
@@ -259,6 +259,7 @@ number is not the obvious one:
 | `microphone` | 0 Off, 1 Default, 2 and up a microphone (the name in `microphone_device` decides which) |
 | `mouse_camera` | 0 As the stick, 1 Native |
 | `layout_preset` | 0 Nintendo, 1 Xbox / PC, 2 Swap Face, 3 Custom |
+| `hud_layout` | 0 the HUD's corners at the screen's edges, 1 in the middle 16:9 (`HOS_WIDE_UI` over it) |
 
 The other rows are 0 Off and 1 On. Some are read at the start, before the menu exists, by the code that needs them:
 `handheld_profile` and `output_res` (`host/nn_applet.c`), `ultrawide` (`host/hos_main.c`), `robust_buffers`
