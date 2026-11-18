@@ -6,6 +6,9 @@
 // frame: the map is asked of the host about once a second, and a summary's JSON is made and written on a thread of its own every
 // `period` seconds (RX_VK_PERF_INTERVAL) and at exit into the game folder's perf_pending/, which host/hos_crash_dialog.c's
 // hos_perf_send_run sends at the next start. Turning the row off deletes perf_pending/ and perf_sent/.
+// The same row also lets the pipeline state records the player's game made that the shipped list lacks go (state_report.h): at the
+// session's end they are queued into pipelines_pending/, which hos_pipes_send_run sends at the next start to /telemetry/pipelines.
+// HL_TELEMETRY_PIPELINES=0 turns that part off alone.
 // What HeyListen's overlay does not measure (the frame's parts: game, render, GPU wait, pacing; the draws left out; a read-back's
 // wait) is sent as 0, so the payload keeps Longshot's field tables, which the server validates.
 #include "perf_report.h"
@@ -23,6 +26,7 @@
 
 #include "../../host/hos_telemetry.h"
 #include "report_info.h"
+#include "state_report.h"
 #include "vk_draw.h"
 #include "vk_internal.h"
 #include "vk_menu.h"
@@ -186,14 +190,16 @@ bool where_now() {
     return full;
 }
 
-void write_summary(const fsys::path& dir, const std::string& name, const std::string& json) {
-    const fsys::path pending = dir / "perf_pending";
+/// A report into dir/<sub>/<name>.json, whole or nothing; false when `limit` are waiting there already or it could not be written
+bool write_summary(const fsys::path& dir, const std::string& name, const std::string& json, const char* sub = "perf_pending",
+                   int limit = kMaxPending) {
+    const fsys::path pending = dir / sub;
     std::error_code ec;
     {
         int waiting = 0;
         for (fsys::directory_iterator it(pending, ec), end; !ec && it != end; it.increment(ec))
             waiting += it->path().extension() == ".json";
-        if (waiting >= kMaxPending) return;
+        if (waiting >= limit) return false;
     }
     fsys::create_directory(pending, ec);
     const fsys::path tmp = pending / (name + ".tmp"), path = pending / (name + ".json");
@@ -204,6 +210,86 @@ void write_summary(const fsys::path& dir, const std::string& name, const std::st
     }
     if (ok) fsys::rename(tmp, path, ec);
     if (!ok || ec) fsys::remove(tmp, ec);   // (whole or nothing: the sender never reads half)
+    return ok && !ec;
+}
+
+constexpr int kMaxPipelinesPending = 4;   // (batches waiting in pipelines_pending at most: host/hos_perf_send.h HOS_PIPES_MAX_PENDING)
+std::mutex states_mu;
+int states_runs = 0;
+uint64_t state_stamp = 0, shader_stamp = 0;
+bool stamps_read = false;
+
+/// A file's bytes up to `limit` (none when it is not there)
+std::string read_file(const fsys::path& p, size_t limit) {
+    std::ifstream f(p, std::ios::binary);
+    std::string s;
+    if (!f) return s;
+    s.resize(limit);
+    f.read(s.data(), (std::streamsize)limit);
+    s.resize((size_t)f.gcount());
+    return s;
+}
+
+/// The two stamps the records are sent with, read once (the shader stamp asks the host: not at the very end of the process)
+void read_stamps() {
+    if (stamps_read) return;
+    stamps_read = true;
+    state_stamp = pipeline_state_stamp(), shader_stamp = program_cache_stamp();
+}
+
+/// The session's end (mu held): the records this player's game made that the shipped list lacks go into pipelines_pending/ for the
+/// next start to send, and are remembered in hookshot_pipeline_states_sent.bin. Says in the log how many, or why not. Needs the
+/// performance statistics row, an address and not HL_TELEMETRY_PIPELINES=0; at most state_report::kMaxRecords a session
+void states_queue() {
+    namespace sr = state_report;
+    std::unique_lock lk(states_mu, std::try_to_lock);   // (the window's close and the exit may both come here: the second finds nothing new)
+    if (!lk) return;
+    const bool first = states_runs++ == 0;
+    const char* why = sr::why_not(opts.send_perf == 1, telemetry_available(), getenv(HOS_TELEMETRY_PIPELINES_ENV));
+    const fsys::path dir = game_dir_path();
+    std::string list, shipped_bytes;
+    std::unordered_set<uint64_t> shipped;
+    if (!*why) {
+        shipped_bytes = read_file(dir / sr::kShippedFile, 64u << 20);
+        shipped = sr::list_hashes(shipped_bytes);
+        list = read_file(dir / sr::kListFile, 64u << 20);
+        if (shipped.empty()) why = "no shipped pipeline state list to tell new records from";
+        else if (sr::list_records(list).empty()) why = "this session recorded no pipeline states";
+    }
+    if (*why) {
+        if (first) logf("vk: pipeline states: nothing queued to send: %s", why);
+        return;
+    }
+    bool valid = false;
+    const std::string sent_bytes = read_file(dir / sr::kSentFile, sr::kMaxSentFile);
+    const std::unordered_set<uint64_t> sent = sr::sent_decode(sent_bytes, &valid);
+    const sr::Batch batch = sr::select_new(list, shipped, sent);
+    if (!batch.count) {
+        if (first) logf("vk: pipeline states: 0 new records (%zu in the shipped list, %zu sent before, %zu not fit to send)", batch.in_shipped, batch.already_sent, batch.refused);
+        return;
+    }
+    if (!machine_read) {
+        char map[120] = "";
+        int64_t movie[5] = {};
+        read_machine(host->perf_info ? host->perf_info(map, sizeof map, movie) : nullptr);
+    }
+    read_stamps();
+    sr::Meta meta;
+    meta.version = machine.version, meta.release = machine.release, meta.driver = machine.driver;
+    meta.vendor_id = dev.props.vendorID, meta.state_stamp = state_stamp, meta.shader_stamp = shader_stamp;
+    char name[48];
+    snprintf(name, sizeof name, "%lld-0", (long long)std::time(nullptr));
+    if (!write_summary(dir, name, sr::payload_json(meta, batch), "pipelines_pending", kMaxPipelinesPending)) {
+        logf("vk: pipeline states: %zu new records not queued: %d batches are waiting to be sent already, or the file could not be written", batch.count, kMaxPipelinesPending);
+        return;
+    }
+    {   // (remembered once queued: the same records are never queued again)
+        std::ofstream f(dir / sr::kSentFile, std::ios::binary | (valid ? std::ios::app : std::ios::trunc));
+        const std::string add = sr::sent_encode(batch.hashes, !valid);
+        f.write(add.data(), (std::streamsize)add.size());
+    }
+    logf("vk: pipeline states: %zu new records queued in pipelines_pending, sent at the next start (%zu in the shipped list, %zu sent before, %zu left for the next session)",
+         batch.count, batch.in_shipped, batch.already_sent, batch.over_cap);
 }
 
 /// The player turned the row off (or the address went): what is waiting and what was kept goes, nothing more is measured
@@ -211,13 +297,15 @@ void switch_off() {
     perf_measure.store(false, std::memory_order_relaxed);
     maps.clear(), current = nullptr, primed = false, last_frame_ns = 0;
     std::error_code ec;
-    for (const char* sub : {"perf_pending", "perf_sent"}) {
+    for (const char* sub : {"perf_pending", "perf_sent", "pipelines_pending", "pipelines_sent"}) {
         for (fsys::directory_iterator it(folder / sub, ec), end; !ec && it != end; it.increment(ec)) {
             const std::string ext = it->path().extension().string(), leaf = it->path().filename().string();
             if (ext == ".json" || ext == ".tmp" || leaf == ".next" || leaf.rfind(".sending.", 0) == 0) fsys::remove(it->path(), ec);
         }
     }
-    logf("vk: performance statistics off: what was waiting in perf_pending and perf_sent is deleted");
+    // (the pipeline records deleted before they were sent must not stay marked as sent)
+    fsys::remove(folder / state_report::kSentFile, ec);
+    logf("vk: performance statistics off: what was waiting in perf_pending and perf_sent (and the pipeline state records in pipelines_pending and pipelines_sent) is deleted");
 }
 
 /// The summary of what came in since the one before (under mu), written on a thread of its own unless `now` (the exit, a
@@ -258,7 +346,9 @@ void summarize(bool now) {
 void at_exit() {
     if (!perf_measure.load(std::memory_order_relaxed)) return;
     std::unique_lock lk(mu, std::try_to_lock);
-    if (lk) summarize(true);
+    if (!lk) return;
+    summarize(true);
+    states_queue();
 }
 
 /// Whether the summary should be measured now: the row is on and the build has an address (read once)
@@ -285,6 +375,7 @@ void follow_row() {
     int64_t translated = 0;
     shader_stats(&translated, &l_failed);   // (the renderer's counts so far: only what comes after is counted)
     l_gpu = gpu_time_ns();
+    read_stamps();
     logf("vk: performance statistics on (the Send performance statistics row): a summary every %.0f s into perf_pending", period);
     perf_measure.store(true, std::memory_order_relaxed);
 }
@@ -362,10 +453,11 @@ void perf_frame_shown() {
 }
 
 void perf_report_final(int event) {
-    if (!perf_measure.load(std::memory_order_relaxed)) return;
-    perf_event(event);
+    const bool measuring = perf_measure.load(std::memory_order_relaxed);
+    if (measuring) perf_event(event);
     std::lock_guard lk(mu);
-    summarize(true);
+    if (measuring) summarize(true);
+    states_queue();   // (off: logs why it queues nothing)
 }
 
 }   // namespace mkwvk
