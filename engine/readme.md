@@ -308,7 +308,9 @@ choices and starts the game again, so progress since your last save is lost.
 - **FPS counter** shows in the top right corner. With frame generation on, it also shows the game's own rate.
 - **Audio output** is the speakers the game mixes its sound for. Auto is 5.1 when your default output device has 5.1
   or more speakers, else stereo; Stereo or 5.1 chooses one whatever the device has (5.1 on stereo speakers is mixed
-  down). For one run, `HOS_AUDIO_CHANNELS=2` or `6` chooses stereo or 5.1 and wins over the menu.
+  down). For one run, `HOS_AUDIO_CHANNELS=2` or `6` chooses stereo or 5.1 and wins over the menu. In a 5.1 mix the centre
+  channel (voices, the ocarina) also goes to the front pair at -3 dB, so a headset or driver that drops the centre still
+  plays them; `HOS_AUDIO_CENTRE=0` turns that off for one run.
 - **Skip title screen** starts the game with your most recent save: HeyListen presses A through the title screen and its
   file list as soon as the game has a save. Until you have saved once, it leaves the title screen alone, so a new game can
   still be started. It applies after a restart; turn it off to watch the intro and use the title. For one run,
