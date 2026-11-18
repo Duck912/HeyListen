@@ -235,7 +235,7 @@ const char* dlss_preset_env() {
 }
 const char* tx_dlss_model(int v) {
     static const char* const t[] = {"DLSS 4 (Transformer, preset K)", "DLSS 4.5 (Transformer 2, preset M)",
-                                    "DLSS 4.5 (Transformer 2, preset L)", "NVIDIA default"};
+                                    "DLSS 4.5 (Transformer 2, preset L)", "NVIDIA default", "DLSS 3 (CNN, preset E)"};
     if (const char* e = dlss_preset_env()) {
         static char b[48];
         const unsigned p = ur::dlss_preset(v, e);
@@ -254,6 +254,7 @@ const char* hn_dlss_model(int v, int variant) {
         "it costs more GPU time, but you can use it.",
         "DLSS 4.5, preset L: NVIDIA tuned it for Ultra Performance, but it works in every mode. Costs the most GPU time, more on RTX 20 and 30 (no FP8).",
         "Lets DLSS's runtime pick for each mode: what it picks can change with a runtime update.",
+        "DLSS 3: NVIDIA's older CNN model, lighter on video memory and GPU time. First-run default under 7 GB of video memory.",
     };
     static const char* const unused = "Used by NVIDIA DLSS and DLAA: choose one in the Upscaler row.";
     static const char* const env = "Set for this run by RX_VK_DLSS_PRESET.";
@@ -2014,10 +2015,11 @@ static bool dlss_model_saved;   // (hookshot_options.ini has a dlss_model line)
 void menu_first_run_model(uint32_t vendor_id, uint32_t device_id) {
     if (dlss_model_saved || vendor_id != 0x10de) return;   // (only NVIDIA GPUs run DLSS; a saved value is never changed)
     dlss_model_saved = true;
-    opts.dlss_model = ur::default_model(vendor_id, device_id);
+    opts.dlss_model = ur::default_model(vendor_id, device_id, device_vram_bytes());
     save();   // (at once: the menu shows the real value, and the player's change is saved on top of it)
     logf("vk: DLSS model: first run, started at %s for this GPU (%#x), saved to the options file",
-         opts.dlss_model == ur::MODEL_M ? "DLSS 4.5 (preset M)" : "DLSS 4 (preset K)", (unsigned)device_id);
+         opts.dlss_model == ur::MODEL_CNN ? "DLSS 3 (CNN, preset E)" : opts.dlss_model == ur::MODEL_M ? "DLSS 4.5 (preset M)" : "DLSS 4 (preset K)",
+         (unsigned)device_id);
 }
 void menu_init() {
     static bool done;

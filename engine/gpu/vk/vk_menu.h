@@ -21,7 +21,7 @@ struct Options {
     int dlss = 0;         // the Upscaler (its name from before FSR: options files and the tests' stand-ins keep it): 0 the game's
                           // own network, 1 NVIDIA DLSS, 2 NVIDIA DLAA (a build with NVIDIA's SDK only), 3 AMD FSR 3.1 (vk_fsr3.cpp),
                           // 4 AMD FSR 4, 5 its native AA (a build with FSR 4 only). upscaler_rows.h; vk_temporal.cpp. Saved as dlss
-    int dlss_model = 0;   // DLSS's network for every mode, by its preset: 0 DLSS 4 (K), 1 DLSS 4.5 (M), 2 DLSS 4.5 (L), 3 NVIDIA's default (upscaler_rows.h
+    int dlss_model = 0;   // DLSS's network for every mode, by its preset: 0 DLSS 4 (K), 1 DLSS 4.5 (M), 2 DLSS 4.5 (L), 3 NVIDIA's default, 4 DLSS 3 (CNN, E) (upscaler_rows.h
                           // model_preset; vk_dlss.cpp). First run on an NVIDIA GPU: menu_first_run_model. RX_VK_DLSS_PRESET over it
     int sharpness = 0;    // 0 to 100
     int fps_limit = 0;    // the game's frame rate above 60 (Real time only): 0 60, 1 90, 2 120, 3 144, 4 165, 5 240 (host/nn_vi.c; HOS_FPS_LIMIT)

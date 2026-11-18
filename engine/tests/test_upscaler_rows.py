@@ -102,7 +102,7 @@ def main():
     if "int dlss_model = 0;" not in (ROOT / "gpu" / "vk" / "vk_menu.h").read_text(encoding="utf-8"):
         raise SystemExit("vk_menu.h: the DLSS model row's default is not K (0)")
     first = function(menu, "void menu_first_run_model(uint32_t vendor_id, uint32_t device_id) {")
-    if "dlss_model_saved" not in first or "ur::default_model(" not in first or "save();" not in first:
+    if "dlss_model_saved" not in first or "ur::default_model(vendor_id, device_id, device_vram_bytes())" not in first or "save();" not in first:
         raise SystemExit("menu_first_run_model: does not give an ini with no model the GPU's default and save it at once")
     init = function(menu, "void menu_init() {")
     if "dlss_model_saved = true" not in init:

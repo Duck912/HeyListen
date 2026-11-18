@@ -237,7 +237,7 @@ choices and starts the game again, so progress since your last save is lost.
 | | NVIDIA Reflex | Off, On, On + Boost (NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
 | | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440 (after a restart) | 2048x1152 |
 | | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on, below), AMD FSR 4, AMD FSR 4 Native AA (only in builds with FSR 4, below) | Game's own |
-| | DLSS model | DLSS 4 (Transformer, preset K), DLSS 4.5 (Transformer 2, preset M), DLSS 4.5 (Transformer 2, preset L), NVIDIA default (builds with DLSS; used by DLSS and DLAA) | by GPU: DLSS 4 on RTX 20 and 30, DLSS 4.5 (M) on RTX 40 and 50, first run only |
+| | DLSS model | DLSS 4 (Transformer, preset K), DLSS 4.5 (Transformer 2, preset M), DLSS 4.5 (Transformer 2, preset L), NVIDIA default, DLSS 3 (CNN, preset E) (builds with DLSS; used by DLSS and DLAA) | first run only, by GPU: DLSS 3 under 7 GB of video memory, else DLSS 4 on RTX 20 and 30, DLSS 4.5 (M) on RTX 40 and 50 |
 | | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS, FSR 3.1 or FSR 4: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLAA or FSR 4 Native AA: Native | Auto |
 | | Window scaling filter | Off, Catmull-Rom, Lanczos | Off |
 | | Sharpness | 0 to 100%, in steps of 10 | 0% |
@@ -574,17 +574,16 @@ The **DLSS model** row chooses DLSS's network, by NVIDIA's preset letter, for ev
 Quality, Balanced, Performance, Ultra Performance) on any RTX card: **DLSS 4 (Transformer, preset K)**, NVIDIA's first
 transformer and the one tested most here; **DLSS 4.5 (Transformer 2, preset M)** and **(preset L)**, its second-generation
 transformer (NVIDIA tunes M for Performance and L for Ultra Performance, and both work in every mode); and **NVIDIA
-default**, which lets DLSS's runtime pick for each mode, so it can change with a runtime update. NVIDIA's programming
+default**, which lets DLSS's runtime pick for each mode, so it can change with a runtime update; and **DLSS 3 (CNN, preset E)**, NVIDIA's older CNN model, lighter on video memory and GPU time. NVIDIA's programming
 guide (310.6.0) and its DLSS 4.5 announcement say the 4.5 presets are built for RTX 40 and 50 (FP8 tensor cores) and cost
 RTX 20 and 30 more GPU time (in the guide's table an RTX 3070 at 1080p output takes about 1.5 ms for K, 2.8 ms for M and
 4 ms for L), where NVIDIA suggests K; nothing stops an RTX 30 from choosing 4.5 L with DLAA. Only the first time, when
-`hookshot_options.ini` has no `dlss_model` yet, the game starts the row at DLSS 4 (K) on an RTX 20 or 30 and DLSS 4.5 (M)
-on an RTX 40 or 50 (told by the GPU's PCI device id: NVIDIA's ids run by generation, `0x2600` and up is Ada, which has
+`hookshot_options.ini` has no `dlss_model` yet, the game starts the row at DLSS 3 (the CNN) on a card with less than 7 GB
+of video memory, else at DLSS 4 (K) on an RTX 20 or 30 and DLSS 4.5 (M) on an RTX 40 or 50 (told by the GPU's PCI device id: NVIDIA's ids run by generation, `0x2600` and up is Ada, which has
 FP8) and writes it to the file at once; after that the file's value is the player's, every change in the menu is saved
-as it is made, and the GPU changes nothing. Under 7 GB of video memory the row no longer falls back to NVIDIA's CNN (E):
-a chosen model is the one drawn (`RX_VK_DLSS_PRESET=E` still asks for it). The runtime the SDK comes with (310.9.16) has
+as it is made, and the GPU changes nothing. A chosen model is the one drawn, whatever the card's memory. The runtime the SDK comes with (310.9.16) has
 all of them. A change applies at once, without a restart (`dlss_model=` in `hookshot_options.ini`: 0 DLSS 4 K, 1
-DLSS 4.5 M, 2 DLSS 4.5 L, 3 NVIDIA default; the numbers mean what they always did). `RX_VK_DLSS_PRESET=<letter>` (or `0` for NVIDIA's default) chooses
+DLSS 4.5 M, 2 DLSS 4.5 L, 3 NVIDIA default, 4 DLSS 3 CNN E; the numbers mean what they always did). `RX_VK_DLSS_PRESET=<letter>` (or `0` for NVIDIA's default) chooses
 the preset for one run and wins over the row; the log's `vk: NVIDIA DLSS: ... preset <letter>` line says which one was
 asked for, and with `RX_VK_DLSS_LOG=1` NGX's own `Using App hint Preset <letter>` lines say which it took.
 

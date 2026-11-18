@@ -49,6 +49,8 @@ in [USER_GUIDE.md](USER_GUIDE.md#install-with-recomplauncher).
   row of the menu and every value is one the row takes. The keys are the rows' names with `_` (`frame_rate_limit`,
   `frame_generation`, `skip_title_screen`); `dlss` is the Upscaler, `resolution` the Render resolution, `upscaling` the Window
   scaling filter, `output_res` the Output resolution (see `ini_key` in `vk_menu.cpp`).
+  `dlss_model` has no `defaults` on purpose: the schema calls them the game's values for keys the file does not have yet, which a
+  launcher may write before the first run, and the game picks that one for the GPU (`menu_first_run_model`).
 - `saves`, `folders`, `actions`: saves are `HeyListen/user/save` on Windows and `~/.local/share/heylisten/save` on Linux. The
   launcher attaches the newest `.log` of the `logs` folder to a crash report: on Windows the game (`host/hos_run_logs.h`, called
   from `hos_main.c` once `hookshot_log.txt` is open) keeps `HeyListen/logs/hookshot.log` (this run) and `hookshot.1.log` to

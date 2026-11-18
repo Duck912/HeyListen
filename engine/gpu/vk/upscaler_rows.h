@@ -103,9 +103,12 @@ inline int step_upscaler(int v, int dir, bool dlss_ok) { return step_upscaler(v,
 /// The DLSS model row (opts.dlss_model, saved as dlss_model): which of NVIDIA's networks DLSS and DLAA draw with, for EVERY
 /// mode and render size and on any RTX card, by its preset (NVSDK_NGX_DLSS_Hint_Render_Preset_*): 0 DLSS 4, the first
 /// transformer, preset K; 1 DLSS 4.5, the second generation transformer, preset M; 2 DLSS 4.5, preset L; 3 NVIDIA's default,
-/// preset 0 (the runtime picks per mode, and a runtime update can change it). The saved numbers keep their meaning from
-/// before DLSS 4.5 was named. Nothing overrides a chosen model: not the mode, not the GPU
-enum { MODEL_K = 0, MODEL_M = 1, MODEL_L = 2, MODEL_DEFAULT = 3, kModels = 4 };
+/// preset 0 (the runtime picks per mode, and a runtime update can change it); 4 DLSS 3, NVIDIA's last CNN model, preset E (older,
+/// lighter on video memory and GPU time). The saved numbers keep their meaning from before DLSS 4.5 was named (the CNN is a
+/// new number: an old file is unchanged). Nothing overrides a chosen model: not the mode, not the GPU
+enum { MODEL_K = 0, MODEL_M = 1, MODEL_L = 2, MODEL_DEFAULT = 3, MODEL_CNN = 4, kModels = 5 };
+/// Preset E (vk_dlss.cpp checks the number against the SDK's)
+constexpr unsigned kPresetE = 5;
 /// Presets of NVIDIA's transformers (K = DLSS 4; M and L = DLSS 4.5)
 constexpr unsigned kPresetK = 11, kPresetL = 12, kPresetM = 13;
 /// Whether the GPU has FP8 tensor cores, the reason DLSS 4.5 (M and L) costs RTX 20 and 30 more: an NVIDIA GPU (vendor 0x10de)
@@ -114,14 +117,19 @@ constexpr unsigned kPresetK = 11, kPresetL = 12, kPresetM = 13;
 /// 5090 0x2b85), so 0x2600 is the line. The device id is the one Vulkan reports (VkPhysicalDeviceProperties)
 inline bool fp8_gpu(uint32_t vendor_id, uint32_t device_id) { return vendor_id == 0x10de && device_id >= 0x2600; }
 /// The model a first run starts with, by the GPU (only until the player has one in hookshot_options.ini; menu_first_run_model
-/// writes it there at once): DLSS 4 (K) on RTX 20 and 30, which NVIDIA says pay more for DLSS 4.5; DLSS 4.5 (M) on RTX 40 and 50
-inline int default_model(uint32_t vendor_id, uint32_t device_id) { return fp8_gpu(vendor_id, device_id) ? MODEL_M : MODEL_K; }
+/// writes it there at once): with less than 7 GB of video memory (vram: device_vram_bytes(), 0 when not known: not) the CNN, on any
+/// RTX (less video memory and GPU time, the same picture at Performance: an RTX 3050 6 GB, 1080p, 1.55 ms less and 27 MB less of
+/// NGX's memory); else DLSS 4 (K) on RTX 20 and 30, which NVIDIA says pay more for DLSS 4.5; DLSS 4.5 (M) on RTX 40 and 50
+inline int default_model(uint32_t vendor_id, uint32_t device_id, uint64_t vram = 0) {
+    return vram && vram < (7ull << 30) ? MODEL_CNN : fp8_gpu(vendor_id, device_id) ? MODEL_M : MODEL_K;
+}
 /// The row's preset
 inline unsigned model_preset(int model) {
     switch (model) {
     case MODEL_M: return kPresetM;
     case MODEL_L: return kPresetL;
     case MODEL_DEFAULT: return 0;
+    case MODEL_CNN: return kPresetE;
     default: return kPresetK;   // (K, also for a value past the row)
     }
 }

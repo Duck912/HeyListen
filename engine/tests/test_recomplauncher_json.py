@@ -217,11 +217,14 @@ class RecompLauncherJsonTests(unittest.TestCase):
             lo, hi = rows[key]
             values = [c["set"][key] for c in setting["choices"]]
             self.assertEqual(len(set(values)), len(values), setting["id"])
-            for v in values + list(setting["defaults"].values()):
+            for v in values + list(setting.get("defaults", {}).values()):
                 self.assertRegex(v, r"^\d+$")
                 self.assertGreaterEqual(int(v), lo, setting["id"])
                 if hi is not None:
                     self.assertLessEqual(int(v), hi, setting["id"])
+            if key == "dlss_model":   # (no default: the game picks one for the GPU at the first run, vk_menu.cpp menu_first_run_model)
+                self.assertNotIn("defaults", setting)
+                continue
             self.assertEqual(set(setting["defaults"]), {key})
             self.assertIn(setting["defaults"][key], values)
         # (the main video and gameplay rows are there)

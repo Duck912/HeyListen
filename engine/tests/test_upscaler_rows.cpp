@@ -134,7 +134,7 @@ int main() {
     CHECK("model presets", ur::model_preset(ur::MODEL_K) == 11 && ur::model_preset(ur::MODEL_M) == 13 &&
                                ur::model_preset(ur::MODEL_L) == 12 && ur::model_preset(ur::MODEL_DEFAULT) == 0);
     CHECK("saved model numbers keep their meaning", ur::MODEL_K == 0 && ur::MODEL_M == 1 && ur::MODEL_L == 2 && ur::MODEL_DEFAULT == 3 &&
-                                                        ur::kModels == 4);
+                                                        ur::MODEL_CNN == 4 && ur::kModels == 5 && ur::model_preset(ur::MODEL_CNN) == 5 && ur::kPresetE == 5);
     CHECK("model: a value past the row is K", ur::model_preset(-1) == 11 && ur::model_preset(ur::kModels) == 11);
     CHECK("model without the switch", ur::dlss_preset(ur::MODEL_M, nullptr) == 13 && ur::dlss_preset(ur::MODEL_DEFAULT, nullptr) == 0);
     CHECK("RX_VK_DLSS_PRESET wins", ur::dlss_preset(ur::MODEL_M, "K") == 11 && ur::dlss_preset(ur::MODEL_K, "m") == 13 &&
@@ -152,6 +152,21 @@ int main() {
         CHECK("first-run model per generation", ur::default_model(0x10de, 0x1e04) == ur::MODEL_K && ur::default_model(0x10de, 0x2204) == ur::MODEL_K &&
                                                     ur::default_model(0x10de, 0x2584) == ur::MODEL_K && ur::default_model(0x10de, 0x2684) == ur::MODEL_M &&
                                                     ur::default_model(0x10de, 0x2b85) == ur::MODEL_M);
+        {
+            const uint64_t gb6 = 6ull << 30, gb7 = 7ull << 30, gb8 = 8ull << 30;
+            CHECK("first run under 7 GB: the CNN on any RTX", ur::default_model(0x10de, 0x2584, gb6) == ur::MODEL_CNN &&
+                                                                 ur::default_model(0x10de, 0x1e04, gb6) == ur::MODEL_CNN &&
+                                                                 ur::default_model(0x10de, 0x2684, gb6) == ur::MODEL_CNN &&
+                                                                 ur::default_model(0x10de, 0x2b85, gb7 - 1) == ur::MODEL_CNN);
+            CHECK("first run at 7 GB and more, or not known: by generation", ur::default_model(0x10de, 0x2584, gb7) == ur::MODEL_K &&
+                                                                              ur::default_model(0x10de, 0x2204, gb8) == ur::MODEL_K &&
+                                                                              ur::default_model(0x10de, 0x2684, gb8) == ur::MODEL_M &&
+                                                                              ur::default_model(0x10de, 0x2684, 0) == ur::MODEL_M &&
+                                                                              ur::default_model(0x10de, 0x2584, 0) == ur::MODEL_K);
+            CHECK("the CNN is the row's for every mode, RX_VK_DLSS_PRESET over it", ur::dlss_preset(ur::MODEL_CNN, nullptr) == 5 &&
+                                                                                    ur::dlss_preset(ur::MODEL_CNN, "K") == 11 &&
+                                                                                    ur::dlss_preset(ur::MODEL_K, nullptr) == 11);
+        }
         // (a model in the ini is never changed by the GPU: model_preset has no GPU argument, and a 30 series card runs
         // DLSS 4.5 L with DLAA as chosen)
         CHECK("an RTX 30 can choose 4.5 L for DLAA", ur::dlss_preset(ur::MODEL_L, nullptr) == 12 && ur::dlss_preset(ur::MODEL_M, nullptr) == 13 &&
