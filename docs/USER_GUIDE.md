@@ -201,6 +201,15 @@ When a new HeyListen release is out, the builder says so when it opens (it asks 
 your game folder again from the game files the folder keeps: you do not need the `.nup` again, and your saves stay.
 The in-game update offer is off unless you turn it on (`HOOKSHOT_UPDATE_CHECK=1` in the game folder's `hookshot_env.txt`).
 
+## Button prompts
+
+The **Button prompts** row (Insert menu, Controls page) chooses which controller's icons the game shows in its texts and menus:
+Auto follows the controller you plug in, or pick Xbox, PlayStation 4, PlayStation 5, Steam Deck or Switch. A new choice shows the
+next time you start the game. The icons are drawn when the builder makes your game folder, from your own game files and
+[Kenney's](https://kenney.nl/assets/input-prompts) CC0 Input Prompts, into the `prompts` folder there; they are not downloaded or
+copied from anywhere, so a folder from another build is not needed. No `prompts` folder in your game folder (a game built by a release up to 0.4.2,
+whose builder could not draw them): update to a newer release and build again to make it; the game's log says `prompts: no prompts folder` while it is missing.
+
 ## Known issues
 
 Occlusion is off; rare missing or teal textures while walking when VRAM runs short; tested on NVIDIA RTX (Windows; Linux: see its
