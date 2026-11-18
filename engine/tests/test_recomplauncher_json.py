@@ -179,7 +179,8 @@ class RecompLauncherJsonTests(unittest.TestCase):
         self.assertEqual((inp["role"], inp["shared"], inp["optional"]), ("runtime", "nvidia.dlss", True))
         self.assertEqual(inp["destination"], "HeyListen/ngx/nvngx_dlss.dll")   # (gpu/vk/vk_dlss.cpp: the game folder's ngx folder)
         src = (ENGINE / "gpu" / "vk" / "vk_dlss.cpp").read_text(encoding="utf-8")
-        self.assertIn('game_dir() / L"ngx"', src)
+        self.assertIn('game / L"ngx"', src)   # (runtime_dirs(game_dir()): the game folder's ngx folder first after RX_VK_DLSS_DIR)
+        self.assertIn('runtime_dirs(game_dir())', src)
 
     def test_set_option_keys_touches_only_its_keys(self):
         with tempfile.TemporaryDirectory() as d:

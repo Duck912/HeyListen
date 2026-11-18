@@ -1353,6 +1353,14 @@ def place_ngx_runtime(out):
         return None
     dst = ngx.install_runtime(sdk, platform, os.path.join(out, "ngx"))
     print("NVIDIA DLSS: %s (NVIDIA's, under NVIDIA's license: never share this game folder)" % dst, flush=True)
+    # (DLSS Frame Generation's runtime goes beside it when the SDK folder has it: without it NGX takes the driver's own,
+    # maybe older, copy. A folder fetched before it was in the table has not: scripts/ngx_sdk.py adds it)
+    fg = ngx.runtime_name(platform, "framegen")
+    if os.path.isfile(ngx.runtime(sdk, platform, "framegen")):
+        print("NVIDIA DLSS Frame Generation: %s (NVIDIA's too)" % os.path.join(out, "ngx", fg), flush=True)
+    else:
+        print("NVIDIA DLSS Frame Generation: %s has no %s yet (scripts/ngx_sdk.py fetches it): until then NGX takes the "
+              "driver's own, which may be older" % (sdk, fg), flush=True)
     return dst
 
 

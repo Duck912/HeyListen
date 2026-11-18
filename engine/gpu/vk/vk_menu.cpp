@@ -100,6 +100,7 @@ const char* tx_framegen(int v) {
     return t[v];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
+const char* tx_framegen_by(int v) { return v ? "NVIDIA DLSS FG" : "Built-in / AMD FSR 3.1"; }
 const char* tx_intel_compiles(int v) { return v ? "Side by side" : "One at a time"; }
 MENU_HINTS(hn_intel_compiles, 0,
            "The safe choice, and the best on a CPU with 4 cores or fewer: a shader Intel's compiler faults on is left out instead of "
@@ -563,6 +564,31 @@ const char* hn_framegen(int v, int variant) {
              : v == 5 ? "Four made frames" : v == 6 ? "Five made frames" : v == 7 ? "Six made frames" : "Seven made frames");
     return b[std::clamp(v, 2, 8)];
 }
+/// Frame generation by: who makes the frames at 2x and up (Auto stays the renderer's own). Variants of DLSS FG's value: it runs
+/// (0), no NVIDIA runtime (1), NGX said no (2), not in this build (3), not on this GPU (4)
+const char* hn_framegen_by(int v, int variant) {
+    static char b[220];
+    if (v <= 0) return variant > 0 ? nullptr : "The renderer's own: AMD FSR 3.1 at 2x where it runs, else its own block matching.";
+    if (variant > 4) return nullptr;
+    int k = variant;
+    if (k < 0) {
+        const DlssFgWhy why = dlss_fg_why();
+        k = why == FG_OK ? 0 : why == FG_NO_RUNTIME ? 1 : why == FG_REFUSED ? 2 : why == FG_NOT_BUILT ? 3 : 4;
+    }
+    switch (k) {
+    case 1: return "Not available: DLSS is not there (no NVIDIA runtime found: scripts/ngx_sdk.py fetches nvngx_dlss.dll and nvngx_dlssg.dll). The renderer's own makes the frames.";
+    case 2: return "NVIDIA's runtime said no here (it needs an RTX 40 or newer and a current driver; the log has its answer). The renderer's own makes the frames.";
+    case 3: return "Not in this build (it needs NVIDIA's SDK at build time). The renderer's own makes the frames.";
+    case 4: return "Not available on this GPU. The renderer's own makes the frames.";
+    default: break;
+    }
+    const int most = dlss_fg_most();
+    if (most > 0)
+        snprintf(b, sizeof b, "NVIDIA DLSS Frame Generation makes the frames, from the scene's depth and motion: up to %dx on this GPU. The renderer's own makes any set beyond that.", most + 1);
+    else
+        snprintf(b, sizeof b, "NVIDIA DLSS Frame Generation makes the frames, from the scene's depth and motion (RTX 40 and newer).");
+    return b;
+}
 MENU_HINTS(hn_pace, 0, "As soon as it is ready.", "At an even interval: less stutter, at up to one frame of delay.")
 MENU_HINTS(hn_output_res, 0, "The game's own size.",
            "The sharpest on a 2560x1440 screen: nothing to scale to the window.",
@@ -623,6 +649,9 @@ Row rows[] = {
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
      "show artifacts.", hn_framegen, false, true},
+    {TAB_GRAPHICS, "Frame generation by", &opts.framegen_by, 0, 1, 1, tx_framegen_by,
+     "Who makes the frames at 2x and up. NVIDIA DLSS Frame Generation (RTX 40 and newer) is off unless chosen here.",
+     hn_framegen_by, false, true},
     {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff, "When each frame is shown.", hn_pace},
     {TAB_GRAPHICS, "HDR", &opts.hdr, 0, 2, 1, tx_hdr,
      "HDR10 out on an HDR display (Windows: Use HDR on in the display settings). Expanded: the game's SDR picture, its white at "
@@ -953,7 +982,8 @@ bool row_shown(int i) {
     }
     return (rows[i].cheat < 0 || cheats_on()) &&
            (rows[i].value != &opts.dlss || ur::upscaler_shown(dlss_built() || fsr4_built(), fsr3::supported())) &&
-           (rows[i].value != &opts.dlss_model || ur::model_shown(dlss_built()));
+           (rows[i].value != &opts.dlss_model || ur::model_shown(dlss_built())) &&
+           (rows[i].value != &opts.framegen_by || dlss_built());
 }
 int tab_row_count(int t) {
     int c = 0;
@@ -2381,7 +2411,7 @@ void menu_tick() {
         // layout is not applied over them at start)
         if (open_now.load()) auto_pad = pad_last;   // (Menu size Auto: by what opened the menu)
         if (open_now.load()) opts.pad_layout = detect_pad_layout();
-        if (open_now.load()) dlss_probe(), fsr4_probe();   // (whether the Upscaler row can offer DLSS and FSR here: asked once)
+        if (open_now.load()) dlss_probe(), dlss_fg_probe(), fsr4_probe();   // (whether the Upscaler row can offer DLSS and FSR here: asked once)
         if (open_now.load()) refresh_mics();   // (the microphones as they are now)
     }
     if (open_now.load() && page == 5) {   // (hookshot) the restart question: Later (the default) or Restart now
