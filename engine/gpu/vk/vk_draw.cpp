@@ -8988,9 +8988,14 @@ void precompile_run(void (*progress)(size_t done, size_t total), bool wait) {
     // (upstream, Sync 11: without the lazy start, the compute programs play dispatched (hookshot_computes.bin), or every kept one
     // when there is no list yet. RX_VK_PRECOMPILE_COMPUTES=all / none)
     const char* which = getenv("RX_VK_PRECOMPILE_COMPUTES");
-    const std::unordered_set<uint64_t> used = lazy_compute ? std::unordered_set<uint64_t>{} : computes_read();
+    // (STUT1, RX_VK_LAZY_COMPUTE_WARM=0: off) The lazy start also builds, on the precompile's workers behind the start, the compute
+    // programs the plays before dispatched (hookshot_computes.bin: a few hundred, from the pipeline cache): an area's load
+    // dispatched ~10 of them in one submit, each waiting up to 50 ms, "slow submit: 888 ms: dispatch 267" (PC 3050, 0.9-1.3 s of the
+    // slow submits of a Market to Hyrule Field load)
+    static const bool warm = !getenv("RX_VK_LAZY_COMPUTE_WARM") || atoi(getenv("RX_VK_LAZY_COMPUTE_WARM")) != 0;
+    const std::unordered_set<uint64_t> used = lazy_compute && !warm ? std::unordered_set<uint64_t>{} : computes_read();
     const bool all_computes = !lazy_compute && (which ? !strcmp(which, "all") : used.empty());
-    if (!lazy_compute && !all_computes && !(which && !strcmp(which, "none"))) wanted.insert(used.begin(), used.end());
+    if ((lazy_compute ? warm : !all_computes) && !(which && !strcmp(which, "none"))) wanted.insert(used.begin(), used.end());
     const size_t programs_n = program_cache_load_some(wanted, [&](Program& p) {
         ensure_layout(p);
         if (p.compute) pre->computes.push_back(&p);
