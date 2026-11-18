@@ -100,6 +100,14 @@ HeyListen's `engine/` is Hookshot's source imported with its history and kept in
 - About 2 GB less RAM (compute pipelines built on first use) and a faster shader start-up.
 - Castle Town ground fixed while walking (no more flat mint, white or teal ground), and the teal-ground regression after evictions fixed.
 
+*Picture*
+- Native HDR (HDR10): a fourth value of the Insert menu's HDR row, **Native + our tone mapper**, replaces the game's own
+  tone-mapping pass (found by its program key) with our own shader — the game's light and paper white as they are, its
+  highlights rolled off to the display's peak brightness (ITU-R BT.2390's EETF) instead of running past what the display
+  shows, with a saturation row of its own. The approach (replacing the game's tone-mapping step rather than expanding its
+  SDR picture) is [RenoDX](https://github.com/clshortfuse/renodx)'s; the code is our own, from the published curves, with
+  no RenoDX code in this repository.
+
 *Tooling and packaging*
 - **HeyListen Builder**: its own releases, updates and work folder, so it never touches a Hookshot install; **emulator save import and export** with backup.
 - Game executable `HeyListen.exe`, an original icon (a blue fairy orb), and a Discord status that shows "Playing HeyListen".
@@ -160,6 +168,8 @@ It stands on the work of many people. Everything below is credit due to Hookshot
 - **[Kenney](https://kenney.nl/assets/input-prompts)** (Input Prompts, CC0): the Xbox, PlayStation and Steam Deck button icons of the Button prompts setting. The builder draws them into the game's icon font on your PC, so nothing of the game is shipped.
 - **[sostenesfreitas/ocarina-recomp](https://github.com/sostenesfreitas/ocarina-recomp)**: Hookshot's README layout, and notes that confirmed the mesh stage's control section.
 - **[MythosOfs/Orchid](https://github.com/MythosOfs/Orchid)**: the fog and exposure workaround for Ocarina of Time.
+- **[clshortfuse/renodx](https://github.com/clshortfuse/renodx)** (MIT): the approach of native HDR tone mapping (replacing
+  the game's tone-mapping step, not expanding its SDR picture). No RenoDX code is in this repository.
 - **Mesa (NAK)**: the reference for Ampere's instruction encoding.
 - Everyone who sent fixes to Hookshot: SkippySteve (Linux and the AppImage, and many more), monsterlag, klimovich008, hckrman101 (the exposure flicker and fog fixes, build speed, CI), shayderrr, gab9281, Wpaif, nicholasgower, ZurielAtr, Joey-Magnus, Zorkats, d3zessete, chrispository, vzeol, leonidasmark, Segmentree, ShyVortex, hiKareeem and i900gaming, among others.
 
