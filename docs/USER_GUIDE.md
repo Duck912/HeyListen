@@ -127,6 +127,15 @@ on CachyOS with a Radeon RX 9070 XT (Mesa's RADV driver). Expect problems and re
   its builder and its settings stay where they are, untouched, and HeyListen starts with no save. To carry on with a
   Hookshot save, close both games and copy `~/.local/share/hookshot/save` to `~/.local/share/heylisten/save` (copy, do not
   move).
+- **"Only a software renderer (llvmpipe) was found"**: a window with this message, and the game closes (its log has
+  `vk: only a software renderer was found`). The game needs your graphics card's own Vulkan driver, and Vulkan listed
+  only Mesa's `llvmpipe`, a renderer that runs on the CPU and cannot run the game (`vulkaninfo --summary` lists the same
+  device). Install your distribution's Mesa Vulkan driver for the GPU: `mesa-vulkan-drivers` (Debian, Ubuntu, Fedora;
+  it has AMD's and Intel's) or `vulkan-radeon` for AMD and `vulkan-intel` for Intel (Arch), or NVIDIA's own driver
+  (your distribution's NVIDIA driver package) for NVIDIA. Then check that `vulkaninfo --summary` lists your card and
+  start the game again. A game started inside a container, a Flatpak or a
+  sandbox that does not give it `/dev/dri` sees no card either: allow that device, or start the game outside it. The same
+  window can appear on Windows: install or update the graphics driver from AMD, NVIDIA or Intel there.
 - **If the game runs at a few frames a second**: it cannot use `/dev/udmabuf`. The game's log then says
   `guest memory as dma-bufs: no (/dev/udmabuf cannot be opened)`, and every block of the game's memory reaches the GPU by a
   slower way (3 to 8 fps in Kokiri Forest on the Radeon above). Some distributions give that device to the logged-in user,

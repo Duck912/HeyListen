@@ -192,6 +192,14 @@ bool create_instance() {
     return true;
 }
 
+static_assert(gpu_choice::TYPE_CPU == (int)VK_PHYSICAL_DEVICE_TYPE_CPU && gpu_choice::TYPE_DISCRETE == (int)VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
+              gpu_choice::TYPE_INTEGRATED == (int)VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU &&
+              gpu_choice::TYPE_VIRTUAL == (int)VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU && gpu_choice::TYPE_OTHER == (int)VK_PHYSICAL_DEVICE_TYPE_OTHER,
+              "gpu_choice.h's device types are Vulkan's");
+
+// (the one device there is is a software renderer, and RX_VK_ALLOW_CPU is not set: pick_device fails, and mkwvk_init says why)
+static std::string software_only_name;
+
 bool pick_device() {
     menu_init();
     uint32_t n = 0;
@@ -199,14 +207,24 @@ bool pick_device() {
     std::vector<VkPhysicalDevice> all(n);
     vkEnumeratePhysicalDevices(dev.instance, &n, all.data());
 
+    // (a software renderer, VK_PHYSICAL_DEVICE_TYPE_CPU: Mesa's llvmpipe and lavapipe, SwiftShader. Without the GPU's own Vulkan driver
+    // (Mesa's RADV or ANV, a vendor's) the loader lists only that one, and the game started on it and crashed (a Ryzen 5 5600H with
+    // llvmpipe, v0.4.2). Never taken while a GPU is there, nor alone, unless RX_VK_ALLOW_CPU=1 (developers: a run with no GPU))
+    const bool allow_cpu = gpu_choice::allow_cpu(getenv("RX_VK_ALLOW_CPU"));
+    std::vector<gpu_choice::Candidate> cands(n);
+    std::vector<std::string> names(n);
     std::vector<uint32_t> valid_gpus;
     gpu_device_names.clear();
+    software_only_name.clear();
     for (uint32_t i = 0; i < n; i++) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(all[i], &p);
-        logf("vk: device %u: %s, Vulkan %u.%u, driver %#x, type %d", i, p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
-             VK_API_VERSION_MINOR(p.apiVersion), p.driverVersion, (int)p.deviceType);
-        if (p.apiVersion >= VK_API_VERSION_1_3) {
+        const bool software = gpu_choice::is_software((int)p.deviceType);
+        logf("vk: device %u: %s, Vulkan %u.%u, driver %#x, type %d%s", i, p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
+             VK_API_VERSION_MINOR(p.apiVersion), p.driverVersion, (int)p.deviceType, software ? " (a software renderer)" : "");
+        cands[i] = {p.apiVersion >= VK_API_VERSION_1_3, (int)p.deviceType, p.driverVersion};
+        names[i] = p.deviceName;
+        if (gpu_choice::usable(cands[i], allow_cpu)) {
             valid_gpus.push_back(i);
             gpu_device_names.push_back(p.deviceName);
         }
@@ -219,8 +237,6 @@ bool pick_device() {
     // (amdvlk64.dll 32.0.11036.4002) crashed in its shader compiler (0xc0000409) on the game's compute pipelines while
     // the card's 32.0.32015.7029 built them. The same kind of GPU twice: the one with the newer driver wins.
     // RX_VK_DEVICE=<n> or opts.gpu_device: that device, as listed in the log
-    int best = -1, best_score = -1;
-    uint32_t best_driver = 0;
     int target_raw_idx = -1;
     if (const char* want = getenv("RX_VK_DEVICE")) {
         if (*want) target_raw_idx = atoi(want);
@@ -228,34 +244,28 @@ bool pick_device() {
         target_raw_idx = (int)valid_gpus[k];
     }
 
-    for (uint32_t i : valid_gpus) {
-        VkPhysicalDeviceProperties p;
-        vkGetPhysicalDeviceProperties(all[i], &p);
-        if (target_raw_idx >= 0) {
-            if ((int)i == target_raw_idx) best = (int)i, best_score = 3;
-            continue;
-        }
-        const int score = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 2 :
-                          p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 1 : 0;
-        if (score > best_score || (score == best_score && p.driverVersion > best_driver))
-            best = (int)i, best_score = score, best_driver = p.driverVersion;
+    const gpu_choice::Pick pick = gpu_choice::choose(cands.data(), (int)n, target_raw_idx, allow_cpu);
+    if (pick.target_unavailable)
+        logf("vk: preferred device %d not available, lacks Vulkan 1.3 or is a software renderer (RX_VK_ALLOW_CPU=1 allows one), "
+             "falling back to auto selection", target_raw_idx);
+    for (uint32_t i = 0; i < n; i++)
+        if (gpu_choice::is_software(cands[i].type) && pick.device >= 0 && !allow_cpu)
+            logf("vk: device %u (%s) is a software renderer: not used while a GPU is there", i, names[i].c_str());
+    if (pick.device < 0 && pick.software_only) {
+        software_only_name = names[0];
+        logf("vk: only a software renderer was found (%s), which cannot run the game: the GPU's Vulkan driver is missing, or "
+             "hidden from this process (Linux: Mesa's Vulkan driver for the GPU, such as mesa-vulkan-drivers, vulkan-radeon or "
+             "vulkan-intel, or NVIDIA's; Windows: the driver from AMD, NVIDIA or Intel). RX_VK_ALLOW_CPU=1 runs on it anyway",
+             names[0].c_str());
+        return false;
     }
-    if (best < 0 && target_raw_idx >= 0) {
-        logf("vk: preferred device %d not available or lacks Vulkan 1.3, falling back to auto selection", target_raw_idx);
-        for (uint32_t i : valid_gpus) {
-            VkPhysicalDeviceProperties p;
-            vkGetPhysicalDeviceProperties(all[i], &p);
-            const int score = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 2 :
-                              p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 1 : 0;
-            if (score > best_score || (score == best_score && p.driverVersion > best_driver))
-                best = (int)i, best_score = score, best_driver = p.driverVersion;
-        }
-    }
-    if (best < 0) {
+    if (pick.device < 0) {
         logf("vk: no Vulkan 1.3 GPU");
         return false;
     }
-    dev.physical = all[best];
+    if (gpu_choice::is_software(cands[pick.device].type))
+        logf("vk: RX_VK_ALLOW_CPU: running on the software renderer %s: far too slow to play, and it can crash", names[pick.device].c_str());
+    dev.physical = all[pick.device];
     vkGetPhysicalDeviceProperties(dev.physical, &dev.props);
     vkGetPhysicalDeviceMemoryProperties(dev.physical, &dev.memory);
     return true;
@@ -1225,7 +1235,20 @@ const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
         logf("vk: vulkan-1.dll not found");
         return nullptr;
     }
-    if (!create_instance() || !pick_device() || !create_device()) return nullptr;
+    if (!create_instance()) return nullptr;
+    if (!pick_device()) {
+        // (only a software renderer: a builder's --prepare-shaders run just fails (exit 3, as with no Vulkan at all, and it has no
+        // one to show a window to); the game's run shows the window and ends, in the host: it must not fall back to WebGPU either)
+#ifdef _WIN32
+        constexpr bool windows = true;
+#else
+        constexpr bool windows = false;
+#endif
+        if (!software_only_name.empty() && !prepare_only() && h->no_usable_gpu)
+            h->no_usable_gpu(gpu_choice::software_only_text(software_only_name.c_str(), windows).c_str());
+        return nullptr;
+    }
+    if (!create_device()) return nullptr;
     logf("vk: %s, Vulkan %u.%u, driver %#x; mesh shaders %s, host memory import %s, pipeline libraries %s",
          dev.props.deviceName, VK_VERSION_MAJOR(dev.props.apiVersion), VK_VERSION_MINOR(dev.props.apiVersion),
          dev.props.driverVersion, dev.mesh_shader ? "yes" : "no", dev.external_memory_host ? "yes" : "no",

@@ -283,6 +283,26 @@ static void host_out_of_memory(const char *what) {
 #endif
 }
 
+/* (heylisten, version 16) the Vulkan back end found only a software renderer (llvmpipe, lavapipe, SwiftShader): the game cannot run
+   on it, and the GPU's own driver is missing. The window (a message box: Windows', on Linux SDL's, through host/posix's MessageBoxA,
+   which also writes it to stderr; none for HOS_HEADLESS), then the game ends with 3, the code of no usable Vulkan in a
+   --prepare-shaders run (hos_main.c). A clean end: the crash window has nothing to say about it */
+static void host_no_usable_gpu(const char *text) {
+    hos_log("rx: no usable Vulkan GPU: only a software renderer was found, so the game stops (exit code 3)");
+    const char *headless = getenv("HOS_HEADLESS");
+    if (!headless || atoi(headless) == 0) {
+#ifndef _WIN32
+        int hos_sdl_load(void);
+        hos_sdl_load();   /* (host/posix MessageBoxA shows it through the SDL already loaded) */
+#endif
+        MessageBoxA(NULL, text, "HeyListen: graphics driver", MB_OK | MB_ICONERROR | MB_TOPMOST);
+    }
+    hos_log_flush();
+    void hos_crash_clean_end(void);
+    hos_crash_clean_end();
+    ExitProcess(3);
+}
+
 static MkwVkHost vk_host = {   /* (not const: trace_gpu set when HL_TRACE is on) */
     MKWVK_API_VERSION, host_log, hos_guest_base, hos_guest_size, hos_gpu_ptr, nvn_gpu_guest, nvn_gpu_read,
     nvn_gpu_write, host_collect, host_free_pages, host_mark_written, hos_ticks, hos_now_ns, nvn_tex_layout,
@@ -290,7 +310,7 @@ static MkwVkHost vk_host = {   /* (not const: trace_gpu set when HL_TRACE is on)
     hos_gpu_maps_generation, nvn_vmap_generation, hos_reserved_cpus, host_collect_in, host_guest_alloc,
     host_watch_guest_writes, hos_pad_raw, hos_binding, hos_bind, host_aspect_ratio, host_take_key_press,
     hos_mouse_pointer, hos_mic_count, hos_mic_name, hos_mic_select, hos_sdl_gyro_status, hos_log_flush, hos_prompts_face,
-    host_romfs_dir, NULL, hos_perf_info, host_out_of_memory,
+    host_romfs_dir, NULL, hos_perf_info, host_out_of_memory, host_no_usable_gpu,
 };
 
 static const MkwVkRenderer *vk;   /* the Vulkan back end, when it was chosen and started */
