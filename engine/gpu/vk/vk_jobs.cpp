@@ -118,8 +118,9 @@ void jobs_notify() {
     std::lock_guard lk(mu);
     done_cv.notify_all();
 }
-void jobs_wait(const std::atomic<bool>& flag) {
+bool jobs_wait(const std::atomic<bool>& flag) {
     std::unique_lock lk(mu);
+    const bool fresh = !flag.load(std::memory_order_acquire);   // (done already: nothing ran during this wait)
     // (still queued: run here, now. A draw that must wait for its pipeline waited for every job queued before it, and a new
     // area queues a hundred pipelines: with ten workers at 0.3-2 s a build, frames stopped for 6-12 s, the draw's own build
     // still in the queue. RX_VK_JOB_STEAL=0: waited for in turn, as before)
@@ -137,6 +138,7 @@ void jobs_wait(const std::atomic<bool>& flag) {
                 break;
             }
     done_cv.wait(lk, [&] { return flag.load(std::memory_order_acquire); });
+    return fresh;   // (the caller that watched its own translation end in its wait can leave its draw out of that frame)
 }
 int jobs_pending() {
     return pending.load();

@@ -801,6 +801,7 @@ void skip_report_impl(double frames) {
 }
 std::atomic<int64_t> st_pipelines, st_links, st_link_us, st_lib_hits, st_lib_cold, st_lib_built, st_lib_build_us;
 std::atomic<int64_t> st_pipe_fresh_skips;   // (TICK-008) draws left out for a pipeline in the building, into targets made this frame
+std::atomic<int64_t> st_stolen_skips;   // (hookshot) draws left out for the frame in which their own wait ran their translation
 std::atomic<int64_t> st_pipeline_us;
 double st_wait_ms;
 double st_shader_wait_ms;   // (st_wait_ms's waits for a program's translation; the rest are for its pipeline)
@@ -7266,15 +7267,60 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     auto wait_for = [&](const std::atomic<bool>& ready, bool shader) {
         PROF_EXACT();
         const auto t0 = std::chrono::steady_clock::now();
-        jobs_wait(ready);
+        const bool fresh = jobs_wait(ready);
         st_waits++;
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         st_wait_ms += ms;
         if (shader) st_shader_wait_ms += ms;
+        return fresh;
     };
+    // (hookshot) The storm hold: while the translation queue is still hundreds deep — a cold area's arrival, its fade
+    // rewriting the texture handles every game frame, each frame's state its own variant — this thread's draws are
+    // left out, and the frames show the area's earlier picture, as a draw left out always does. The frames the storm
+    // itself drew sampled the fade's transient words (white/cyan blowouts, green bands — the picture regression that
+    // 9c42f5e7's render-instead-of-stall unmasked); the queue's depth is the churn's own clock, so the first presents
+    // past the hold sample the state by then settled. The waits below still run, and still steal: it is what drains
+    // the queue at the pace the storm always had. Engaged above RX_VK_STORM_HOLD jobs (200), released below half of
+    // that: the queue saws with each frame's pushes, and a hold that flickered with it drew the churn's transient
+    // frames anyway. 0: off, drawn as before
+    static const int hold_deep = getenv("RX_VK_STORM_HOLD") ? atoi(getenv("RX_VK_STORM_HOLD")) : 200;
+    static const int64_t hold_off = (int64_t)std::max(1, hold_deep / 2);
+    thread_local bool hold_on = false;
+    const int64_t pending_jobs = jobs_pending();
+    if (hold_deep <= 0) hold_on = false;
+    else if (hold_on) {
+        if (pending_jobs < hold_off) hold_on = false;
+    } else if (pending_jobs >= (int64_t)hold_deep) hold_on = true;
+    static std::atomic<int64_t> st_storm_holds{0};
+    if (hold_on && cp->ready.load(std::memory_order_acquire)) {
+        st_pending_skips++;
+        st_storm_holds.fetch_add(1, std::memory_order_relaxed);
+        if (st_storm_holds.load(std::memory_order_relaxed) < 8 ||
+            st_storm_holds.load(std::memory_order_relaxed) % 2000 == 0)
+            logf("vk: a translation storm: %d jobs queued, the frame's draws left out until it drains",
+                 jobs_pending());
+        return;
+    }
     if (!cp->ready.load(std::memory_order_acquire)) {
         if (may_skip) return void(st_pending_skips++);
-        wait_for(cp->ready, true);
+        // (hookshot) The translation finished in this draw's own wait: stolen to run here (9c42f5e7) or a worker seen
+        // finishing it just then. Its variant's answers were read mid-storm — a cold area's arrival fades textures in and
+        // out and rewrites the handles every frame — and what the frames of the storm drew from them showed as white/cyan
+        // blowouts and green bands, the picture regression of #1714's unmasked race. The draw is left out of this frame, as
+        // a draw whose program was not ready always was; the frame itself keeps the steal's win (the translation ran, the
+        // queue advanced, no 6-12 s stall), and the next frame's pick re-validates the variant against the state by then.
+        // RX_VK_STOLEN_SKIP=0: drawn at once, as 9c42f5e7 alone
+        static const bool stolen_skip = !getenv("RX_VK_STOLEN_SKIP") || atoi(getenv("RX_VK_STOLEN_SKIP")) != 0;
+        const bool fresh = wait_for(cp->ready, true);
+        if (stolen_skip && fresh) {
+            st_pending_skips++;
+            st_stolen_skips.fetch_add(1, std::memory_order_relaxed);
+            if (st_stolen_skips.load(std::memory_order_relaxed) < 12 ||
+                st_stolen_skips.load(std::memory_order_relaxed) % 1000 == 0)
+                logf("vk: a draw waited out its own translation (program %016llx): left out for this frame",
+                     (unsigned long long)cp->key);
+            return;
+        }
     }
     if (exposure_log_on() && cp) exposure_note(s, *cp);
     if (cp->failed) SKIP_HERE();
