@@ -78,6 +78,7 @@ screen. It costs some GPU time on cards that cull quickly, so it is off unless s
 | `HOS_WINDOW_SIZE=<w>x<h>` | The window's size in pixels (1280x720 by default, wider for an ultrawide picture) |
 | `HOS_WINDOW_NOACTIVATE` (set) | The window opens behind the others and does not take the focus (Windows) |
 | `HOS_FULLSCREEN=1` | Starts in fullscreen; the Insert menu's Fullscreen row is then left alone |
+| `--fullscreen` (command line) | The same start, as a switch a shortcut or a launcher (RecompLauncher's PR 91) can pass: one run, the options file's Fullscreen row untouched |
 | `HOS_AUDIO=0` | No sound device is opened (the mixer still runs); `scripts/run-vk.ps1` sets it unless `-Sound` |
 | `HOS_AUDIO_NO_EFFECTS=1` | The audio effects (reverbs, delay, biquad filters on mixes and splitter destinations) are left out: the dry sound, to compare |
 | `HOS_AUDIO_NO_REVERB=1` | Only the reverbs left out |

@@ -25,6 +25,10 @@
   <a href="https://discord.gg/34GV5hdC3Q"><b>Discord</b></a>
 </p>
 
+<p align="center">
+  <a href="https://recomplauncher.com/game/heylisten"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/launcher/badge-light.svg"><img alt="Get it on RecompLauncher" src="https://recomplauncher.com/assets/press/launcher/badge-dark.svg" height="48"></picture></a>
+</p>
+
 HeyListen statically recompiles **your own** copy of the game (title `0400486024DEC000`) into a native program with a
 Vulkan back end: no emulator. It is a performance-focused fork of [Hookshot](https://github.com/NotRexed/Hookshot) by
 NotRexed.
