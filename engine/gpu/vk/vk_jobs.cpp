@@ -123,8 +123,10 @@ bool jobs_wait(const std::atomic<bool>& flag) {
     const bool fresh = !flag.load(std::memory_order_acquire);   // (done already: nothing ran during this wait)
     // (still queued: run here, now. A draw that must wait for its pipeline waited for every job queued before it, and a new
     // area queues a hundred pipelines: with ten workers at 0.3-2 s a build, frames stopped for 6-12 s, the draw's own build
-    // still in the queue. RX_VK_JOB_STEAL=0: waited for in turn, as before)
-    static const bool steal = !getenv("RX_VK_JOB_STEAL") || atoi(getenv("RX_VK_JOB_STEAL")) != 0;
+    // still in the queue. Off by default since v0.4.3 (2026-11-19): frames drawn during a new area's translation storm
+    // sampled state not yet settled (cyan/white areas, green bands on slower GPUs), and the hold that hid them left a wash
+    // at its release; the arrival waits again as in v0.4.2 until that is fixed. RX_VK_JOB_STEAL=1: run here)
+    static const bool steal = getenv("RX_VK_JOB_STEAL") && atoi(getenv("RX_VK_JOB_STEAL")) != 0;
     if (steal && !flag.load(std::memory_order_acquire))
         for (auto it = queue.begin(); it != queue.end(); ++it)
             if (it->flag == &flag) {
