@@ -29,6 +29,9 @@
 #include "vk_paths.h"
 #include "vk_shader.h"
 #include "upscaler_rows.h"
+#include "vk_framegen.h"
+#include "vk_fsr3.h"
+#include "vk_temporal.h"
 
 #ifdef _WIN32
 #include <psapi.h>
@@ -156,10 +159,26 @@ void read_machine(const char* version) {
     machine_read = true;
 }
 
+/// Frame generation, the DLSS model and the Render resolution as they are in effect now, not as the rows say: the rows keep a choice
+/// the PC cannot run (an upscaler without its runtime, frame generation with the window offscreen or its images not made)
+void read_effective_settings() {
+    int mult = 1;
+    bool automatic = false;
+    machine.framegen = pr::framegen_name(framegen_engine(&mult, &automatic));
+    machine.framegen_x = mult, machine.framegen_auto = automatic;
+    const int up = fsr3_wanted() ? (int)upscaler_rows::FSR3 : temporal_mode();   // (what runs: the Upscaler row's own, vk_menu.cpp)
+    static const char* const env = getenv("RX_VK_DLSS_PRESET");   // (vk_dlss.cpp wanted_preset's rule; the VRAM-aware first-run
+    //  default is the row's own here, vk_menu.cpp menu_first_run_model: the row value already carries what runs)
+    machine.dlss_model = pr::dlss_model_name(
+        (int)upscaler_rows::dlss_preset(opts.dlss_model, env && *env ? env : nullptr), upscaler_rows::is_dlss(up));
+    machine.render_scale = upscaler_rows::full_scale(up) ? 100 : upscaler_rows::percent(upscaler_rows::snap(up, opts.resolution));
+}
+
 void read_settings() {
     machine.upscaler = upscaler_name(upscaler_rows::mode_for(opts.dlss, opts.resolution));   // (DLAA and FSR 4 AA: the native choice with DLSS or FSR 4)
     machine.preset = preset_name(opts.preset);
     machine.fps_cap = fps_cap_now();
+    read_effective_settings();
 }
 
 /// The map from the host, and the movies' totals since the last ask, onto the map they played on. True when Link is on a map

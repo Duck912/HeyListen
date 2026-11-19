@@ -79,9 +79,13 @@ tail is the game's own log (no save data, no game files, no keys, no memory dump
 | `v` | integer | yes |  | The format's version: 1 |
 | `version` | string | yes | ≤ 40 characters | The game's version |
 | `cpu` | string |  | ≤ 120 characters | The CPU |
+| `dlss_model` | string |  | ≤ 40 characters | The network DLSS draws with, by its preset's letter (`K`, `M`, `L`, `E`, ...), `default` (NVIDIA's own pick) or `none` while DLSS or DLAA is not what upscales |
 | `driver` | string |  | ≤ 60 characters | The GPU driver's version |
 | `first` | boolean |  |  | The session's first summary |
 | `fps_cap` | integer |  | ≥ 0 | The frame rate cap in effect |
+| `framegen` | string |  | ≤ 40 characters | What makes the extra frames: `off`, `builtin` (the renderer's own interpolation), `fsr3` (AMD FSR 3.1's frame interpolation, at 2x where it runs) or `dlssg` (NVIDIA DLSS FG, the Frame generation by row's choice where its runtime runs and a temporal Upscaler's inputs are there) |
+| `framegen_auto` | boolean |  |  | The Frame generation row is Auto (a frame for each of the display's refreshes): `framegen_x` is then the most frames it gives a game frame |
+| `framegen_x` | integer |  | 1 to 8 | The frames shown for each of the game's: 1 with `framegen` `off`, 2 to 8 for a fixed multiplier, 2 to 4 with `framegen_auto` |
 | `gpu` | string |  | ≤ 120 characters | The GPU |
 | `kernel` | string |  | ≤ 60 characters | The kernel's version (Windows: `10.0.<build>`) |
 | `map` | string |  | ≤ 120 characters | The map played when the summary was made |
@@ -91,10 +95,19 @@ tail is the game's own log (no save data, no game files, no keys, no memory dump
 | `preset` | string |  | ≤ 40 characters | The graphics preset |
 | `ram_gb` | number |  | ≥ 0 | The PC's memory, GB |
 | `release` | boolean |  |  | A release's version built from the release's own sources |
+| `render_scale` | integer |  | 0 to 100 | The share of the output the 3D is drawn at, in percent (the Render resolution row: 100, 75, 67, 58, 50 or 33); 100 with DLAA or FSR 4's native AA; 0 for Auto, the game's own dynamic resolution |
 | `renderer` | string |  | ≤ 40 characters | The renderer |
 | `session_s` | number |  | ≥ 0 | Seconds since the session started |
 | `upscaler` | string |  | ≤ 40 characters | The upscaler in use |
 | `vram_gb` | number |  | ≥ 0 | The GPU's memory, GB |
+
+The settings in a summary are read when the summary is made, so a summary says what the player used at its end. `upscaler` is
+the Upscaler row's choice (`Game network`, `DLSS`, `DLAA`, `FSR 3.1`, `FSR 4`, `FSR 4 AA`, or `other` for a value past the
+row); `framegen`, `framegen_x`, `framegen_auto`, `dlss_model` and `render_scale` are what runs: a choice this PC cannot run
+(DLSS without its runtime, frame generation with its images not made or `RX_VK_FRAMEGEN=0`) is reported as it behaves, with
+`framegen` `off`, `framegen_x` 1 and `dlss_model` `none`. `framegen_x` comes from the multiplier the renderer makes its frames
+for (the row's, or Auto's limit from the display's refresh rate), not from a count of the frames shown; with `framegen_auto` the
+real multiplier is between 1 and `framegen_x`, by how the game's rate fits the display's.
 
 Per map (`MapSummary`):
 
@@ -119,7 +132,9 @@ Example:
 {"v": 1, "version": "v0.4.0", "release": true, "first": true, "session_s": 312,
  "os": "Windows 11", "kernel": "10.0.26200", "renderer": "Vulkan",
  "gpu": "NVIDIA GeForce RTX 3050", "driver": "NVIDIA 566.36", "vram_gb": 8, "cpu": "AMD Ryzen 5 5600", "ram_gb": 32,
- "upscaler": "DLSS", "preset": "Balanced", "fps_cap": 60, "map": "Kokiri Forest (child)",
+ "upscaler": "DLSS", "preset": "Balanced", "fps_cap": 60,
+ "framegen": "fsr3", "framegen_x": 2, "framegen_auto": false, "dlss_model": "K", "render_scale": 67,
+ "map": "Kokiri Forest (child)",
  "memory": {"vram_used_gb": 5.2, "vram_allowed_gb": 7.1, "ram_used_gb": 7.9},
  "maps": {"Kokiri Forest (child)": {"new": true, "seconds": 250,
    "frame_ms": [0, 0, 0, 0, 14800, 120, 40, 10, 4, 1, 0, 0, 0], "frame_ms_sum": 250010.5,
@@ -130,7 +145,7 @@ Example:
    "movie": {"shown": 0, "dropped": 0, "late": 0, "decode_ms": 0, "fallbacks": 0}}}}
 ```
 
-Never sent: paths, the user name, settings beyond the three above (the upscaler, the preset and the frame rate cap), the log,
+Never sent: paths, the user name, settings beyond the graphics ones above (the upscaler, the preset, the frame rate cap, frame generation and its multiplier, the DLSS model and the render resolution), the log,
 saves, anything from the game files. A summary carries no ID, so two summaries can't be tied to one player.
 
 ## How the parts fit

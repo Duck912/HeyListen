@@ -86,6 +86,7 @@ int main() {
         mc.version = "2.4.1 (source 1234abcd)", mc.os = "Arch Linux", mc.kernel = "6.12.3-arch1-1", mc.gpu = "AMD \"Radeon\" RX 7800 XT";
         mc.driver = "radv Mesa 25.2.4", mc.cpu = "AMD Ryzen 7 7800X3D", mc.upscaler = "FSR 3.1", mc.preset = "High";
         mc.vram_gb = 16, mc.ram_gb = 32, mc.fps_cap = 60;
+        mc.framegen = pr::framegen_name(pr::kFramegenFsr3), mc.framegen_x = 2, mc.dlss_model = pr::dlss_model_name(11, true), mc.render_scale = 67;
         pr::Memory mem{5.25, 15.5, 7.75};
         const std::string j = pr::summary_json(mc, true, 312.5, "Kokiri Forest (child)", &mem, maps);
         CHECK("version 1", j.rfind("{\"v\":1,", 0) == 0);
@@ -96,7 +97,35 @@ int main() {
         CHECK("hitches", j.find("\"hitches\":{\"pipeline_wait\":1,") != std::string::npos);
         CHECK("memory", j.find("\"memory\":{\"vram_used_gb\":5.25,\"vram_allowed_gb\":15.5,\"ram_used_gb\":7.75}") != std::string::npos);
         CHECK("numbers", j.find("\"session_s\":312.5,") != std::string::npos && j.find("\"fps_cap\":60,") != std::string::npos);
+        CHECK("frame generation, DLSS model and render scale, after the cap", j.find("\"fps_cap\":60,\"framegen\":\"fsr3\",\"framegen_x\":2,\"framegen_auto\":false,\"dlss_model\":\"K\",\"render_scale\":67,\"map\":") != std::string::npos);
         CHECK("closed", j.back() == '}' && std::count(j.begin(), j.end(), '{') == std::count(j.begin(), j.end(), '}'));
+    }
+
+    // frame generation, the DLSS model and the render scale: the names the server takes, and what a PC without them says
+    {
+        CHECK("framegen names", !std::strcmp(pr::framegen_name(pr::kFramegenOff), "off") && !std::strcmp(pr::framegen_name(pr::kFramegenBuiltin), "builtin") &&
+                                    !std::strcmp(pr::framegen_name(pr::kFramegenFsr3), "fsr3") && !std::strcmp(pr::framegen_name(pr::kFramegenDlssg), "dlssg") &&
+                                    !std::strcmp(pr::framegen_name(pr::kFramegens), "other") &&
+                                    !std::strcmp(pr::framegen_name(-1), "other"));
+        CHECK("the presets by their letter", pr::dlss_model_name(11, true) == "K" && pr::dlss_model_name(13, true) == "M" &&
+                                                 pr::dlss_model_name(12, true) == "L" && pr::dlss_model_name(5, true) == "E");
+        CHECK("NVIDIA's own pick", pr::dlss_model_name(0, true) == "default");
+        CHECK("no DLSS network: none, whatever the row says", pr::dlss_model_name(11, false) == "none" && pr::dlss_model_name(0, false) == "none");
+        CHECK("a preset past the letters", pr::dlss_model_name(27, true) == "other" && pr::dlss_model_name(-1, true) == "other");
+        std::map<std::string, pr::MapTotals> maps;
+        pr::add_frame(maps["Title and intro"], frame(16.6f, 0, 0, 0, 0), pr::Waits{}, 16.7, 0);
+        pr::Machine off;   // (a machine nothing is read for: frame generation off, no DLSS, Auto resolution)
+        const std::string j = pr::summary_json(off, false, 1, "Title and intro", nullptr, maps);
+        CHECK("the defaults", j.find("\"framegen\":\"off\",\"framegen_x\":1,\"framegen_auto\":false,\"dlss_model\":\"none\",\"render_scale\":0,") != std::string::npos);
+        pr::Machine autom;
+        autom.framegen = pr::framegen_name(pr::kFramegenBuiltin), autom.framegen_x = 3, autom.framegen_auto = true, autom.render_scale = 100;
+        const std::string a = pr::summary_json(autom, false, 1, "Title and intro", nullptr, maps);
+        CHECK("Auto: its limit, marked", a.find("\"framegen\":\"builtin\",\"framegen_x\":3,\"framegen_auto\":true,") != std::string::npos &&
+                                             a.find("\"render_scale\":100,") != std::string::npos);
+        autom.framegen = std::string(100, 'f'), autom.dlss_model = std::string(100, 'd');
+        const std::string k = pr::summary_json(autom, false, 1, "Title and intro", nullptr, maps);
+        CHECK("framegen and model cut at 40", k.find("\"framegen\":\"" + std::string(40, 'f') + "\",") != std::string::npos &&
+                                                  k.find("\"dlss_model\":\"" + std::string(40, 'd') + "\",") != std::string::npos);
     }
 
     // the kernel out of the Bug report's system line
@@ -122,6 +151,7 @@ int main() {
         const std::string j = pr::summary_json(mc, false, 1, "Title and intro", nullptr, maps);
         for (const char* key : {"\"v\":1", "\"version\"", "\"release\"", "\"first\"", "\"session_s\"", "\"os\"", "\"kernel\"", "\"renderer\"",
                                 "\"gpu\"", "\"driver\"", "\"vram_gb\"", "\"cpu\"", "\"ram_gb\"", "\"upscaler\"", "\"preset\"", "\"fps_cap\"",
+                                "\"framegen\"", "\"framegen_x\"", "\"framegen_auto\"", "\"dlss_model\"", "\"render_scale\"",
                                 "\"map\"", "\"maps\"", "\"new\"", "\"seconds\"", "\"frame_ms\"", "\"frame_ms_sum\"", "\"gpu_ms\"", "\"gpu_ms_sum\"",
                                 "\"parts_ms\"", "\"hitches\"", "\"pacing_misses\"", "\"draws_left_out\"", "\"events\"", "\"movie\"",
                                 "\"pipeline_wait\"", "\"shader_translate\"", "\"texture_upload\"", "\"memsync\"", "\"gpu_bound\"", "\"readback\"",
