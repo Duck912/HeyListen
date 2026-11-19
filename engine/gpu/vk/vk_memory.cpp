@@ -7188,8 +7188,9 @@ void memory_end_submission(VkCommandBuffer cmd) {
                 const int64_t f = st_direct_fast.load(), fb = st_direct_fast_bytes.load(), tv = st_import_texel_views.load(),
                               tvb = st_import_texel_bytes.load(), un = st_import_unswizzle_bytes.load();
                 logf("vk: GPU reads of imported guest memory (600 submits, a submit): binds on the lock-free path %.1f (%.2f MB), texel buffer "
-                     "views %.1f (%.2f MB), GPU unswizzles %.2f MB; mirrors %llu MB", (f - l_fast) / 600.0, (fb - l_fastb) / 600.0 / 1048576,
-                     (tv - l_tv) / 600.0, (tvb - l_tvb) / 600.0 / 1048576, (un - l_un) / 600.0 / 1048576, (unsigned long long)(mirror_bytes >> 20));
+                     "views %.1f (%.2f MB; %lld in these 600 submits, %lld so far), GPU unswizzles %.2f MB; mirrors %llu MB",
+                     (f - l_fast) / 600.0, (fb - l_fastb) / 600.0 / 1048576, (tv - l_tv) / 600.0, (tvb - l_tvb) / 600.0 / 1048576,
+                     (long long)(tv - l_tv), (long long)tv, (un - l_un) / 600.0 / 1048576, (unsigned long long)(mirror_bytes >> 20));
                 l_fast = f, l_fastb = fb, l_tv = tv, l_tvb = tvb, l_un = un;
             }
             if (wb_lazy_on()) {
