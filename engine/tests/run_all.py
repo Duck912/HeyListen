@@ -34,6 +34,7 @@ ARGS = {
     "tests/test_dead_targets_sweep.py": ["--cxx", "{cxx}"],
     "tests/test_precompile_save.py": ["--cxx", "{cxx}"],
     "tests/test_state_report.py": ["--cxx", "{cxx}"],
+    "tests/test_zone_report.py": ["--cxx", "{cxx}"],
     "tests/test_prepare_speed.py": ["--cxx", "{cxx}"],
     "tests/test_settings_atomic.py": ["--cc", "gcc"],
     "tests/test_host_alloc_wait.py": ["--cc", "gcc"],

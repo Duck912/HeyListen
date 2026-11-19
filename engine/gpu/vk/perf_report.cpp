@@ -9,6 +9,10 @@
 // The same row also lets the pipeline state records the player's game made that the shipped list lacks go (state_report.h): at the
 // session's end they are queued into pipelines_pending/, which hos_pipes_send_run sends at the next start to /telemetry/pipelines.
 // HL_TELEMETRY_PIPELINES=0 turns that part off alone.
+// The same row, the same address and HL_TELEMETRY_ZONES (on unless 0) also record, per map, the shader program keys and
+// pipeline state keys a map's draws first used (zone_report.h): each draw looks them up here once per key per map, and at the
+// session's end the maps not sent before are queued into zones_pending/, which hos_zones_send_run sends at the next start to
+// /telemetry/zones, so that a release can preload a zone's pipelines before the player enters it.
 // What HeyListen's overlay does not measure (the frame's parts: game, render, GPU wait, pacing; the draws left out; a read-back's
 // wait) is sent as 0, so the payload keeps Longshot's field tables, which the server validates.
 #include "perf_report.h"
@@ -21,18 +25,21 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <thread>
 
 #include "../../host/hos_telemetry.h"
 #include "report_info.h"
 #include "state_report.h"
+#include "upscaler_rows.h"
 #include "vk_draw.h"
 #include "vk_internal.h"
 #include "vk_menu.h"
 #include "vk_paths.h"
 #include "vk_shader.h"
-#include "upscaler_rows.h"
+#include "zone_report.h"
 
 #ifdef _WIN32
 #include <psapi.h>
@@ -166,6 +173,60 @@ void read_settings() {
     machine.fps_cap = fps_cap_now();
 }
 
+constexpr int kMaxZonesPending = 4;   // (batches waiting in zones_pending at most: host/hos_perf_send.h HOS_ZONES_MAX_PENDING)
+namespace zr = zone_report;
+std::mutex zones_mu;                    // (the draw threads' per-draw lookups, against the map switches and the queueing)
+std::vector<std::unique_ptr<zr::Zone>> zone_slots;   // (the session's maps, in first-visit order; only appended to)
+std::map<std::string, uint32_t> zone_ids;
+uint32_t zone_now = (uint32_t)zr::kMaxZones;   // (the map the draws record into: its place in zone_slots, or kMaxZones: none)
+int64_t zone_arrival_end = 0;          // (clock_ns: uses before it are the area's arrival)
+std::string zone_map;                  // (the name the recorder is on)
+int zones_runs = 0;
+bool zones_told_full = false;
+std::atomic<bool> zones_measure{false};   // (on: the row is on, an address and HL_TELEMETRY_ZONES not 0: read once a second)
+int64_t zone_uses = 0;                 // (the draw threads' lookups, for the log)
+
+/// The host named a map (mu held): the recorder's own switch of maps, not held back by the summary's map cap. The
+/// visits count and the arrival window are per entry, the first-use indexes restart with each visit
+void zone_enter(const std::string& name) {
+    zone_map = name;
+    if (!zones_measure.load(std::memory_order_relaxed)) return;
+    std::lock_guard lk(zones_mu);
+    auto it = zone_ids.find(name);
+    if (it == zone_ids.end()) {
+        if (zone_slots.size() >= zr::kMaxZones) {
+            zone_now = (uint32_t)zr::kMaxZones;
+            if (!zones_told_full)
+                zones_told_full = true,
+                logf("vk: zones: %zu maps this session already: %s is not recorded (a batch holds %zu maps)", zone_slots.size(),
+                     name.c_str(), zr::kMaxZones);
+            return;
+        }
+        zone_slots.push_back(std::make_unique<zr::Zone>());
+        zone_slots.back()->name = name;
+        zone_slots.back()->visits = 1;   // (this entry is its first: a map toured once is 1)
+        it = zone_ids.emplace(name, (uint32_t)zone_slots.size() - 1).first;
+    } else {
+        zone_slots[it->second]->visits++;
+    }
+    zr::Zone& z = *zone_slots[it->second];
+    z.next_first_program = z.next_first_state = 0;
+    zone_arrival_end = clock_ns() + (int64_t)(zr::kArrivalSeconds * 1e9);
+    zone_now = it->second;
+}
+
+/// (vk_draw.cpp, once a draw's program / pipeline key) the zone usage: a set lookup per draw, on the path that looked
+/// the key up, and the whole first-use note (the order, the arrival flag) only once per key per map
+void zone_note(bool program, uint64_t key) {
+    if (!zones_measure.load(std::memory_order_relaxed)) return;
+    std::lock_guard lk(zones_mu);
+    if (zone_now == (uint32_t)zr::kMaxZones) return;
+    zr::Zone& z = *zone_slots[zone_now];
+    zr::note_use(program ? z.programs : z.states, key, clock_ns() < zone_arrival_end,
+                 program ? z.next_first_program : z.next_first_state, program ? zr::kMaxPrograms : zr::kMaxStates);
+    zone_uses++;
+}
+
 /// The map from the host, and the movies' totals since the last ask, onto the map they played on. True when Link is on a map
 /// the summary has no room for (pr::kMaxMaps): it stays on the one before, for a summary to make room
 bool where_now() {
@@ -175,6 +236,7 @@ bool where_now() {
     if (!machine_read) read_machine(version);
     // (before a map: the start-up screen while the shaders are prepared, then the intro, the title and the file select)
     const std::string name = map[0] ? map : shaders_preparing() ? pr::kPreparingShaders : pr::kTitleAndIntro;
+    if (name != zone_map) zone_enter(name);   // (the zone recorder's own map switch: not held back by the summary's map cap)
     const bool full = current && name != current_map && !maps.count(name) && maps.size() >= (size_t)pr::kMaxMaps;
     if (!full && (!current || name != current_map)) {
         current_map = name;
@@ -292,12 +354,83 @@ void states_queue() {
          batch.count, batch.in_shipped, batch.already_sent, batch.over_cap);
 }
 
+/// The session's end (mu held): the maps whose keys were not queued before for this version and these stamps go to
+/// zones_pending/ for the next start to send, and are remembered in hookshot_zones_sent.bin. Says in the log how many
+/// maps, or why not. Needs the performance statistics row, an address and not HL_TELEMETRY_ZONES=0
+void zones_queue() {
+    std::unique_lock lk(zones_mu, std::try_to_lock);   // (the window's close and the exit may both come here: the second finds nothing new)
+    if (!lk) return;
+    const bool first = zones_runs++ == 0;
+    const char* why = zr::why_not(opts.send_perf == 1, telemetry_available(), getenv(HOS_TELEMETRY_ZONES_ENV));
+    const fsys::path dir = game_dir_path();
+    std::vector<const zr::Zone*> all;
+    for (const auto& z : zone_slots) all.push_back(z.get());
+    size_t uses = 0, capped = 0;
+    for (const zr::Zone* z : all) uses += z->programs.uses.size() + z->states.uses.size(), capped += z->programs.capped + z->states.capped;
+    if (*why) {
+        if (first) logf("vk: zones: nothing queued to send: %s", why);
+        return;
+    }
+    if (!machine_read) {
+        char map[120] = "";
+        int64_t movie[5] = {};
+        read_machine(host->perf_info ? host->perf_info(map, sizeof map, movie) : nullptr);
+    }
+    read_stamps();
+    bool valid = false;
+    const std::string sent_bytes = read_file(dir / zr::kSentFile, zr::kMaxSentFile);
+    const std::unordered_set<uint64_t> sent = zr::sent_decode(sent_bytes, &valid);
+    const uint64_t seed = zr::stamp_seed(machine.version, state_stamp, shader_stamp);
+    size_t already = 0;
+    const std::vector<const zr::Zone*> fresh = zr::unsent_zones(all, seed, sent, &already);
+    if (fresh.empty()) {
+        if (first) logf("vk: zones: 0 maps to send (%lld lookups this session, %zu keys, %zu maps sent before for this version)",
+                        (long long)zone_uses, uses, already);
+        return;
+    }
+    size_t over = 0;
+    const std::vector<std::vector<const zr::Zone*>> groups = zr::batch_groups(fresh, zr::kMaxBatchBytes, &over);
+    zr::Meta meta;
+    meta.version = machine.version, meta.release = machine.release, meta.driver = machine.driver;
+    meta.vendor_id = dev.props.vendorID, meta.state_stamp = state_stamp, meta.shader_stamp = shader_stamp;
+    const long long at = (long long)std::time(nullptr);
+    size_t queued = 0, batches = 0;
+    std::vector<uint64_t> marked;
+    for (const std::vector<const zr::Zone*>& g : groups) {
+        std::vector<std::string> parts;
+        for (const zr::Zone* z : g) parts.push_back(zr::zone_json(*z));
+        char name[48];
+        snprintf(name, sizeof name, "%lld-%zu", at, batches);
+        if (!write_summary(dir, name, zr::payload_json(meta, parts), "zones_pending", kMaxZonesPending)) {
+            logf("vk: zones: %zu maps not queued: %d batches are waiting to be sent already, or the file could not be written",
+                 fresh.size() - queued, kMaxZonesPending);
+            break;
+        }
+        batches++, queued += g.size();
+        for (const zr::Zone* z : g) marked.push_back(zr::zone_sent_hash(seed, z->name));
+    }
+    if (!marked.empty()) {   // (remembered once queued: the same map is never queued twice for the same version and stamps)
+        std::ofstream f(dir / zr::kSentFile, std::ios::binary | (valid ? std::ios::app : std::ios::trunc));
+        const std::string add = zr::sent_encode(marked, !valid);
+        f.write(add.data(), (std::streamsize)add.size());
+    }
+    if (queued)
+        logf("vk: zones: %zu maps (%lld lookups, %zu keys) queued in %zu batch%s in zones_pending, sent at the next start "
+             "(%zu maps sent before, %zu over a batch alone, %zu uses of keys past the caps)",
+             queued, (long long)zone_uses, uses, batches, batches == 1 ? "" : "es", already, over, capped);
+}
+
 /// The player turned the row off (or the address went): what is waiting and what was kept goes, nothing more is measured
 void switch_off() {
     perf_measure.store(false, std::memory_order_relaxed);
+    zones_measure.store(false, std::memory_order_relaxed);
     maps.clear(), current = nullptr, primed = false, last_frame_ns = 0;
+    {
+        std::lock_guard lk(zones_mu);
+        zone_slots.clear(), zone_ids.clear(), zone_now = (uint32_t)zr::kMaxZones, zone_map.clear(), zones_told_full = false;
+    }
     std::error_code ec;
-    for (const char* sub : {"perf_pending", "perf_sent", "pipelines_pending", "pipelines_sent"}) {
+    for (const char* sub : {"perf_pending", "perf_sent", "pipelines_pending", "pipelines_sent", "zones_pending", "zones_sent"}) {
         for (fsys::directory_iterator it(folder / sub, ec), end; !ec && it != end; it.increment(ec)) {
             const std::string ext = it->path().extension().string(), leaf = it->path().filename().string();
             if (ext == ".json" || ext == ".tmp" || leaf == ".next" || leaf.rfind(".sending.", 0) == 0) fsys::remove(it->path(), ec);
@@ -305,7 +438,9 @@ void switch_off() {
     }
     // (the pipeline records deleted before they were sent must not stay marked as sent)
     fsys::remove(folder / state_report::kSentFile, ec);
-    logf("vk: performance statistics off: what was waiting in perf_pending and perf_sent (and the pipeline state records in pipelines_pending and pipelines_sent) is deleted");
+    fsys::remove(folder / zr::kSentFile, ec);
+    logf("vk: performance statistics off: what was waiting in perf_pending and perf_sent (and the pipeline state records in "
+         "pipelines_pending and pipelines_sent, and the per-zone shader and pipeline keys in zones_pending and zones_sent) is deleted");
 }
 
 /// The summary of what came in since the one before (under mu), written on a thread of its own unless `now` (the exit, a
@@ -349,6 +484,7 @@ void at_exit() {
     if (!lk) return;
     summarize(true);
     states_queue();
+    zones_queue();
 }
 
 /// Whether the summary should be measured now: the row is on and the build has an address (read once)
@@ -363,6 +499,11 @@ void follow_row() {
     if (on == was) return;
     if (!on) return switch_off();
     folder = game_dir_path();
+    {   // (the zone recorder starts on the map it is already on, and a map's keys are recorded whole from its next entry)
+        std::lock_guard lk(zones_mu);
+        zone_map.clear();
+    }
+    zones_measure.store(hos_telemetry_zones_on(getenv(HOS_TELEMETRY_ZONES_ENV)), std::memory_order_relaxed);
     {   // (a summary cut short by an exit before: its .tmp, never sent and never counted)
         std::error_code ec;
         for (fsys::directory_iterator it(folder / "perf_pending", ec), end; !ec && it != end; it.increment(ec))
@@ -390,6 +531,9 @@ bool telemetry_available() {
 void perf_event(int e) {
     if (e >= 0 && e < pr::kEvents && perf_measure.load(std::memory_order_relaxed)) events[e].fetch_add(1, std::memory_order_relaxed);
 }
+
+void zone_note_program(uint64_t key) { zone_note(true, key); }
+void zone_note_state(uint64_t key) { zone_note(false, key); }
 
 void perf_frame_shown() {
     static std::atomic<unsigned> calls{0};
@@ -458,6 +602,7 @@ void perf_report_final(int event) {
     std::lock_guard lk(mu);
     if (measuring) summarize(true);
     states_queue();   // (off: logs why it queues nothing)
+    zones_queue();    // (the same moment: the per-zone keys are the recorder's own)
 }
 
 }   // namespace mkwvk

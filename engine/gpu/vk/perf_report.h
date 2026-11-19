@@ -29,6 +29,11 @@ void perf_event(int event);
 void perf_report_final(int event);
 /// (vk_replay.cpp) the GPU's own time so far, ns
 int64_t gpu_time_ns();
+/// (perf_report.cpp) a draw's program key, once per key per map: the zone usage recorder (zone_report.h), on only while
+/// the performance statistics row is on, the build has an address and HL_TELEMETRY_ZONES is not 0
+void zone_note_program(uint64_t key);
+/// (perf_report.cpp) the same for a graphics pipeline's key, where the draw looks it up
+void zone_note_state(uint64_t key);
 }   // namespace mkwvk
 
 namespace mkwvk::perf_report {
