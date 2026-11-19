@@ -86,6 +86,7 @@ def main():
 #include <mutex>
 #include <shared_mutex>
 #include <thread>
+#include <chrono>
 #include <vector>
 enum class Mode { Serial, Dry, Worker };
 thread_local Mode rmode = Mode::Serial;
@@ -121,10 +122,13 @@ int main() {
     ub_growing.store(true);
     std::atomic<bool> stop{false};
     std::atomic<long> bad{0}, reads{0};
+    std::atomic<int> ready{0};   // (the writer starts once every reader runs: on a busy Windows test machine the writer
+                                 //  could finish its 200,000 appends before a reader was scheduled, and the check counted no reads)
     std::vector<std::thread> readers;
     for (int t = 0; t < 4; t++)
         readers.emplace_back([&, t] {
             rmode = Mode::Worker;
+            ready++;
             unsigned x = 12345u + t;
             while (!stop.load()) {
                 const size_t n = par_conds_n.load(std::memory_order_acquire);
@@ -142,6 +146,7 @@ int main() {
                 reads++;
             }
         });
+    while (ready.load() < 4) std::this_thread::yield();
     rmode = Mode::Dry;
     for (size_t i = 0; i < N; i++) {
         append_cond(want(i));
@@ -151,6 +156,7 @@ int main() {
             updates_n.store(updates.size(), std::memory_order_release);
         }
     }
+    for (int s = 0; s < 2000 && reads.load() < 100; s++) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     stop = true;
     for (auto& r : readers) r.join();
     ub_growing.store(false);
