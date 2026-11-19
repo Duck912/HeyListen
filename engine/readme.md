@@ -228,6 +228,9 @@ restart" and the help on the Graphics tab lists it; closing the menu then asks w
 the change for the next start (and is not asked again until you change one of those rows); **Restart now** saves your
 choices and starts the game again, so progress since your last save is lost.
 
+The HDR tone mapper shows only with HDR set to Native, and the PsychoV35 rows only with that tone mapper on PsychoV35:
+they apply at once, with no new translation.
+
 | Tab | Option | Choices | Default |
 |---|---|---|---|
 | Graphics | Quality preset | Custom, Minimum (4GB), Low (6GB), Balanced (8GB), High (12GB), Ultra (16GB+) | Custom |
@@ -235,6 +238,17 @@ choices and starts the game again, so progress since your last save is lost.
 | | GPU device | Auto, or each graphics card by name (after a restart) | Auto |
 | | Frame generation | Off, 2x to 8x | Off |
 | | Frame pacing | Off, On | Off |
+| | HDR tone mapper | Vanilla (the game's curve), PsychoV35 (RenoDX's zelda-oot-oz; with HDR set to Native. DLSS, FSR and TAAU do not take its scene yet: the game's own upscale runs) | Vanilla |
+| | PsychoV35 UI brightness | 80 to 500 nits: the menus' and HUD's white; the scene keeps the paper white (RenoDX's UI Brightness) | 203 nits |
+| | PsychoV35 color space | Vanilla (the game's own matrix), BT.709, DCI-P3 (RenoDX's Global Color Space) | BT.709 |
+| | PsychoV35 midgray | Render, Vanilla (mid grey where the game's own curve puts it) | Vanilla |
+| | PsychoV35 match tone slope | Off, On (the game's own slope at mid grey) | On |
+| | PsychoV35 tone slope | 0 to 100: how steeply tones rise through mid grey | 50 |
+| | PsychoV35 hue clip emulation | 0 to 100: how much of the game's colour shift in its brightest parts is kept | 50 |
+| | PsychoV35 exposure | 0% to 200%: the scene's brightness at mid grey | 100% |
+| | PsychoV35 highlights, shadows, contrast, saturation | 0 to 100 each: RenoDX's grading (contrast 0 breaks the picture, as in the mod) | 50 |
+| | PsychoV35 bloom | 0 to 100: the glow around bright things (0 none, 100 twice the game's) | 50 |
+| | PsychoV35 reset all | Puts every PsychoV35 row back to RenoDX's defaults | |
 | | NVIDIA Reflex | Off, On, On + Boost (NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
 | | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440 (after a restart) | 2048x1152 |
 | | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on, below), AMD FSR 4, AMD FSR 4 Native AA (only in builds with FSR 4, below), Off (every build and GPU, `dlss=6`: no upscaling network, the 3D at the Render resolution stretched to the output, no anti-aliasing; Render resolution steps as for the game's own, Sharpness applies) | Game's own |
