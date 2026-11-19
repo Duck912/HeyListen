@@ -42,6 +42,7 @@ import kit
 import lifted_c
 import rtgen
 import logo_rgba
+import symtab
 import ui_fonts
 import toolchain
 import version
@@ -75,6 +76,21 @@ def icon_res():
         if os.path.exists(p):
             return p
     return None
+
+
+def write_symtab(map_path, binary_path, cc):
+    """The crash handler's names beside a freshly linked binary (nx2/symtab.py): the map the linker just wrote,
+    compacted to the functions' names and RVAs. Played on every player's PC, the game reads it at start-up, so a
+    report from another build still says f_<guest address> or the host function's name. A missing table only
+    leaves the frames module+offset."""
+    if not (os.path.exists(map_path) and os.path.exists(binary_path)):
+        return
+    try:
+        out_path = os.path.splitext(binary_path)[0] + ".sym"
+        n = symtab.write_map(map_path, binary_path, out_path, symtab.find_cxxfilt(cc))
+        print("crash names: %s (%d MB)" % (os.path.basename(out_path), n >> 20), flush=True)
+    except (OSError, ValueError) as e:
+        print("crash names: not written for %s: %s" % (os.path.basename(binary_path), e), flush=True)
 
 
 def check_vk_symbols(so):
@@ -803,6 +819,8 @@ def main():
     print("object keys: game-code headers %s, flags %s, hot flags %s, lifted code %s (%d files)" % (
         fp(deps), fp(norm(fl)), fp(norm(hot_fl)), code.hexdigest()[:10],
         sum(1 for x in srcs if os.path.basename(x).startswith("code_"))), flush=True)
+    # (the same key in the game's log and crash record: which lifted code a report ran, whatever PC built it)
+    lift_def = '-DHOOKSHOT_LIFT_KEY="%s"' % code.hexdigest()[:10]
     # the runtime: ordinary C at -O2, with its own headers (any host/*.h change rebuilds all of it)
     host_fl = target() + CPU + (["-I" + POSIX, "-D_GNU_SOURCE"] if LINUX else []) + \
         ["-I" + HOST, "-I" + rt64, "-I" + gen, "-I" + os.path.join(NATIVE, "include"),
@@ -830,7 +848,7 @@ def main():
               (["-I" + os.path.join(FFMPEG, "include")] if FFMPEG else []) +
               (FFMPEG_LX[0] if LINUX and FFMPEG_LX else []) +
               (["-I" + ZSTD] if os.path.basename(s) == "hl_stream.c" else []) +
-              ([stamp_def] if os.path.basename(s) == "hos_main.c" else []),
+              ([stamp_def, lift_def] if os.path.basename(s) == "hos_main.c" else []),
               host_deps + (zstd_deps if os.path.basename(s) == "hl_stream.c" else b"")) for s in host_srcs]
     if host_srcs:
         zflags_exe = target() + CPU + ["-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-DZSTD_DISABLE_ASM",
@@ -1088,6 +1106,7 @@ def main():
             print("\n".join(undefined[:60]) if undefined else (r.stdout + r.stderr)[-3000:])
             return 1
         print("linked %s: %d MB (%.0fs)" % (exe, os.path.getsize(exe) >> 20, time.time() - t))
+        write_symtab(exe + ".map", exe, cc)
         sdl = os.environ.get("HOOKSHOT_SDL2", "")   # (libSDL2-2.0.so.0 beside it, when the AppImage brings one)
         if sdl and os.path.exists(sdl):
             import shutil
@@ -1112,6 +1131,7 @@ def main():
             print("\n".join(undefined[:60]) if undefined else (r.stdout + r.stderr)[-3000:])
             return 1
         print("linked %s: %d MB (%.0fs)" % (exe, os.path.getsize(exe) >> 20, time.time() - t))
+        write_symtab(exe[:-4] + ".map", exe, cc)
         if wgpu:   # (wgpu_native.dll beside it; in use while the game runs)
             import shutil
             dll, dst = os.path.join(WGPU, "lib", "wgpu_native.dll"), os.path.join(out, "wgpu_native.dll")
@@ -1161,6 +1181,7 @@ def main():
         if LINUX and not check_vk_symbols(vdll):
             return 1
         print("linked %s: %d MB (%.0fs)" % (vdll, os.path.getsize(vdll) >> 20, time.time() - t))
+        write_symtab(vdll + ".map" if LINUX else vdll[:-4] + ".map", vdll, cc)
     if a.dll and not a.only:
         dll = os.path.join(out, "hookshot_game.dll")   # (+ hookshot_game.map: crash offsets -> f_<guest address>)
         t = time.time()

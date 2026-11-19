@@ -257,9 +257,11 @@ in-game menu (Insert) control it:
 - **Send crash reports automatically**: off by default. After a crash a window says what happened and asks. **Report
   manually** copies a report to your clipboard and opens a new issue on GitHub for you to paste it into; **Report
   automatically** shows you the exact report and sends it only when you press Send. With this row on, the report is sent at
-  once and the window shows only if that fails. The report has the crash's error line, the game version, your GPU, CPU,
-  RAM and operating system, the map, the last 150 lines of the game's log and its settings. Your home folder, user name and
-  the names of your audio devices are taken out first. It never has your saves, the game's files or keys.
+  once and the window shows only if that fails. The report has the crash's error line with the code of each step named
+  (`f_80580b38+0x1c4`, a function name, or a system file and offset), the game version and which lifted code it ran,
+  your GPU, CPU, RAM and operating system, the map, the last 150 lines of the game's log and its settings. Your home
+  folder, user name and the names of your audio devices are taken out first. It never has your saves, the game's files
+  or keys. See [crash reports](crash-reports.md).
 
 Turn either row off and what was waiting to be sent (`perf_pending`, `perf_sent`) is deleted. A build with no address
 to send to shows both rows as *Not available in this build* and sends nothing. Details and the exact fields:

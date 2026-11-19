@@ -37,11 +37,19 @@ def source_contract():
     assert 'if (code == 0xC0000374 || code == 0xC0000409) report_crash(info);' in glue
     assert 'SetUnhandledExceptionFilter(report_crash);' in glue
     assert 'AddVectoredExceptionHandler(1, commit_on_touch);' in glue
-    for line in ('CRASH: exception %#lx (%s %#llx, guest %#llx) at %s+%#llx',
+    for line in ('CRASH: exception %#lx (%s %#llx, guest %#llx) at %s+%#llx%s%s',
                  'CRASH: host backtrace:', 'CRASH: thread %s, sp %#llx',
                  'CRASH: guest backtrace: lr %#llx',
                  'CRASH: [x%d+%#05x] %016llx %016llx %016llx %016llx'):
         assert line in report, line
+    # every host frame and every guest return address is named from the build's own tables (f_<guest address> is
+    # layout-proof), and the build says which lifted code it ran
+    assert 'CRASH: host frame %d: %s+%#llx%s%s' in block(glue, "static void crash_frames("), "each host frame is named"
+    assert "hos_crash_name(name, offset, base, function, sizeof function)" in glue
+    assert 'hos_crash_lifted_name(start, (uintptr_t)ctx.Rip, function, sizeof function)' in block(glue, "static void crash_frames(")
+    assert 'CRASH: guest frame %d: %#llx %s' in report
+    assert 'CRASH: build %s, lifted code %s' in report
+    assert "hos_crash_guest_name(" in report
     # The log's host backtrace walks as the crash record's does: a frame with no unwind entry is a leaf, its return address at
     # rsp, so a jump into padding (SDL3.dll+0x11c011, 0x80000003) still shows its caller; then rsp and the first 8 stack words
     walk = block(glue, "static void crash_backtrace(")
@@ -56,7 +64,7 @@ def source_contract():
     # what a stack line may hold: module+offset (no folder), a small value or the hex of a readable address, "-"; never memory
     # behind a pointer, never a path
     place = block(glue, "static int crash_module(")
-    assert "strrchr(path, '\\\\')" in place and "snprintf(name, cap, \"%s\", base ? base + 1 : path)" in place
+    assert "strrchr(path, '\\\\')" in place and "snprintf(name, cap, \"%s\", leaf ? leaf + 1 : path)" in place
     assert not re.search(r"\bhos_log\(|\bputs\(|memcpy\(", stack)
     assert re.findall(r'"( [^"]*)"', stack) == [" %.20s+%#llx", " %#llx", " -"], re.findall(r'"( [^"]*)"', stack)
     sdl = (ROOT / "host/hos_sdl.c").read_text(encoding="utf-8")
@@ -153,7 +161,8 @@ def build(cc, temp, glue, threads, main):
     src, exe = temp / "fixture.c", temp / "fixture.exe"
     src.write_text(template, encoding="utf-8")
     cmd = [cc, "-std=gnu11", "-O1", "-fno-omit-frame-pointer", "-Wall", "-Wextra", "-Werror",
-           "-I", str(ROOT / "host"), str(src), str(ROOT / "host/hos_report_run.c"), "-o", str(exe)]
+           "-I", str(ROOT / "host"), str(src), str(ROOT / "host/hos_report_run.c"),
+           str(ROOT / "host/hos_crash_names.c"), "-o", str(exe)]
     if os.name == "nt":
         cmd += ["-ldbghelp", "-ladvapi32"]
     else:

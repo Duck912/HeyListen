@@ -12,6 +12,7 @@
 #include <string.h>
 #include <wchar.h>
 #include "hos_report_prefixes.h"
+#include "hos_crash_names.h"
 #include <windows.h>
 #ifndef _WIN32
 #include <signal.h>
@@ -24,6 +25,7 @@
 
 static _Thread_local int poison_alloc;
 static int fail_storage, io_mode, fail_prune;
+void hos_log(const char *fmt, ...);
 #ifndef _WIN32
 static int interruptions;
 #endif
@@ -157,6 +159,8 @@ static int log_queue(const char *line) { (void)line; return 0; }
 volatile int hos_control_on;
 void hos_control_log(const char *line) { (void)line; }
 void hos_log_flush(void) {}
+const char *hos_version(void) { return "fixture-v1-g1234"; }
+const char *hos_lift_key(void) { return "testlift01"; }
 static void log_flush(void) {}
 void hos_backtrace(void) {}
 void hl_trace_on_crash(Ctx *c, uint64_t a) { (void)c; (void)a; }
