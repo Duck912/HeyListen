@@ -820,7 +820,9 @@ Row rows[] = {
      "Off by default. On: the game counts how its frames go (frame times, stutters and what they waited on, per map) and sends "
      "a summary of the counts, without your name or any ID; what is kept of it is totals for all players. Every 5 minutes of play "
      "and at exit it writes a summary to perf_pending in the game folder, and sends it at the next start; perf_sent keeps a copy "
-     "of what was sent. Turning it off deletes both folders. See docs/performance-statistics.md.", hn_telemetry, false, true},
+     "of what was sent. At exit it also queues the graphics pipeline states your game made that the shipped list lacks (hashes "
+      "and render state only, nothing of the game's code or data; pipelines_pending, pipelines_sent), unless HL_TELEMETRY_PIPELINES=0. "
+      "Turning it off deletes those folders. See docs/performance-statistics.md.", hn_telemetry, false, true},
     {TAB_GAMEPLAY, "Send crash reports automatically", &opts.send_crash, 0, 1, 1, tx_telemetry,
      "Off by default: after a crash a window asks what to do. On: the crash report (the error, your PC's hardware, the end of the "
      "log, the settings, with your home folder, user name and device names taken out) is sent at once, without the window; if it "

@@ -29,6 +29,12 @@ enum {
 };
 enum { HOS_PERF_SENT_OK, HOS_PERF_REFUSED, HOS_PERF_BUSY };
 
+/* The pipeline state records (gpu/vk/state_report.h) go the same way from their own folders: one file a session at most
+   1.5 MiB (the server's limit must be over it), 4 waiting, 2 a start, the last 3 sent kept for the player to read */
+#define HOS_PIPES_PENDING "pipelines_pending"
+#define HOS_PIPES_SENT "pipelines_sent"
+enum { HOS_PIPES_MAX_PENDING = 4, HOS_PIPES_MAX_SENDS = 2, HOS_PIPES_KEEP_SENT = 3, HOS_PIPES_MAX_BODY = 1536 * 1024 };
+
 /* A summary's name, "<unix time>-<n>.json": 1 with its time and n, 0 for any other name */
 static inline int hos_perf_name(const char *name, int64_t *at, int64_t *n) {
     const char *p = name;

@@ -335,6 +335,11 @@ in-game menu (Insert) control it:
   the preset and frame rate cap, the game's version and the map names. It has no name, no
   ID and no path, and what the team keeps is totals for all players, nothing per player. `perf_sent` in the game folder keeps
   a copy of everything that was sent, to read.
+  The same row also lets the game send the **graphics pipeline states** it met that HeyListen's shipped list does not have
+  yet, at the next start, so the list can grow from what players actually run: for each, hashes of the game's shaders,
+  texture and vertex formats and a few render-state numbers, **nothing of the game's code or data**, plus the game version,
+  the GPU's vendor and driver and two build stamps. No name, no ID, no path. At most 1,800 a session, each one once;
+  `pipelines_sent` keeps a copy of what was sent. Set `HL_TELEMETRY_PIPELINES=0` to turn only this part off.
 - **Send crash reports automatically**: off by default. After a crash a window says what happened and asks. **Report
   manually** copies a report to your clipboard and opens a new issue on GitHub for you to paste it into; **Report
   automatically** shows you the exact report and sends it only when you press Send. With this row on, the report is sent at
@@ -342,7 +347,7 @@ in-game menu (Insert) control it:
   RAM and operating system, the map, the last 150 lines of the game's log and its settings. Your home folder, user name and
   the names of your audio devices are taken out first. It never has your saves, the game's files or keys.
 
-Turn either row off and what was waiting to be sent (`perf_pending`, `perf_sent`) is deleted. A build with no address
+Turn either row off and what was waiting to be sent (`perf_pending`, `perf_sent`, `pipelines_pending`, `pipelines_sent`) is deleted. A build with no address
 to send to shows both rows as *Not available in this build* and sends nothing. Details and the exact fields:
 [performance statistics](performance-statistics.md).
 
