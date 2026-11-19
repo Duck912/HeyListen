@@ -297,9 +297,10 @@ bool create_device() {
     // (RX_VK_FORCE_MESH_FALLBACK=1, a test: mesh shaders not used where they are, so the no-mesh fallback the GTX 10xx and RX 5000
     // cards run (issue 640) can be tried on any GPU)
     // (hookshot, issue 2245; the switch is Longshot's 8694e3c6) mesh_mode.h: RX_VK_MESH_SHADERS=native or compute chooses, unset is
-    // Automatic, and RX_VK_FORCE_MESH_FALLBACK=1 is Compute over it. Automatic is the compute path on Linux with an RDNA 2 AMD GPU (RADV, mesh_mode.h's ID list; RDNA 3 and 4 keep native):
-    // its native task/mesh draws lose the GPU (an RX 6800, issue 51). native keeps them there. A GPU without mesh shaders runs the
-    // compute path whatever the choice
+    // Automatic, and RX_VK_FORCE_MESH_FALLBACK=1 is Compute over it. Automatic is the compute path on Linux with an RDNA 2 or
+    // RDNA 3.5 AMD GPU (RADV, mesh_mode.h's ID list: its native task/mesh draws lose the GPU on RDNA 2, issue 51, and draw white
+    // foliage and glows on RDNA 3.5, issue 81; other RDNA 3 and 4 keep native): native keeps them there. A GPU without mesh
+    // shaders runs the compute path whatever the choice
 #ifdef _WIN32
     constexpr bool linux_os = false;
 #else
