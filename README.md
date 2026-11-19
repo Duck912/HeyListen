@@ -10,6 +10,7 @@
 </p>
 
 <p align="center">
+  <a href="https://recomplauncher.com/game/heylisten"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/launcher/badge-light.svg"><img alt="Get it on RecompLauncher" src="https://recomplauncher.com/assets/press/launcher/badge-dark.svg" height="48"></picture></a>
   <a href="https://github.com/Sacrappy/HeyListen/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/Sacrappy/HeyListen?label=release&color=3b82f6"></a>
   <a href="https://github.com/Sacrappy/HeyListen/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/Sacrappy/HeyListen/total?color=3b82f6"></a>
   <a href="https://github.com/Sacrappy/HeyListen/actions/workflows/linux.yml"><img alt="Linux checks" src="https://github.com/Sacrappy/HeyListen/actions/workflows/linux.yml/badge.svg?branch=main"></a>
