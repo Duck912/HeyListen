@@ -33,6 +33,8 @@ struct Options {
                           // 4 AMD FSR 4, 5 its native AA (a build with FSR 4 only). upscaler_rows.h; vk_temporal.cpp. Saved as dlss
     int dlss_model = 0;   // DLSS's network, by its preset: 0 K (transformer; E, the CNN, under 7 GB of video memory), 1 M, 2 L (second-generation transformer), 3 NVIDIA's
                           // default (upscaler_rows.h model_preset; vk_dlss.cpp). RX_VK_DLSS_PRESET over it
+    int dlss_pre_bloom = 0;   // (HeyListen, after Longshot 83b161e3) DLAA before the bloom: 0 off (DLAA after the game's bloom
+                              // and tone map), 1 on (vk_temporal.cpp pre_bloom_wanted; DLAA only). RX_VK_DLSS_PRE_BLOOM over it
     int sharpness = 0;    // 0 to 100
     int fps_limit = 0;    // the game's frame rate above 60 (Real time only): 0 60, 1 90, 2 120, 3 144, 4 165, 5 240 (host/nn_vi.c; HOS_FPS_LIMIT)
     int realtime = 1;     // game time follows the clock (host/nn_vi.c); 0: per frame (slower frames, slower game)
