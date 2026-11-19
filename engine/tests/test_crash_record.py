@@ -84,6 +84,7 @@ def source_contract():
         "hos_svc.c": ["ExitProcess(0);"],
         "hos_thread.c": ["ExitProcess(3);"],  # fatal: record, not a clean end
         "hos_update.c": ["ExitProcess(0);", "_exit(127);", "_exit(127);", "_exit(0);"],  # (the _exits: a forked child of the update launch)
+        "rx_backend.c": ["ExitProcess(3);"],  # (host_no_usable_gpu: only a software renderer; its window shown, then a clean end)
         "posix/display_sdl.c": ["ExitProcess(1);"],
         "posix/win32_posix.c": ["_exit((int)code);", "ExitProcess(code);"],  # platform implementations
     }

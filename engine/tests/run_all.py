@@ -211,6 +211,7 @@ ARGS = {
     "tests/test_jt_mark_export.py": ["--cxx", "{cxx}"],
     "tests/test_vcore_texels.py": ["--cxx", "{cxx}"],
     "tests/test_vcore_video_acquire.py": ["--cxx", "{cxx}"],
+    "tests/test_gpu_choice.py": ["--cxx", "{cxx}"],
 }
 
 # Python packages some tests import (CI installs them; the runner itself needs none)

@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 15
+#define MKWVK_API_VERSION 16
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA };
 /* (hookshot) the Motion page's rows (host/pad_sdl.c reads them, vk_replay.cpp's option answers them): Motion controls on
    or off, the horizontal's and the vertical's sensitivity in percent, each turned around, and the deadzone (0 to 2) */
@@ -153,6 +153,11 @@ typedef struct MkwVkHost {
        for, then the game stops, as for the host's own allocations (host/mkw_glue.c hos_alloc_failed). what names it in the
        log. Does not return */
     void (*out_of_memory)(const char *what);
+    /* (version 16) the only Vulkan device is a software renderer (llvmpipe, lavapipe, SwiftShader: the GPU's own driver is missing;
+       gpu/vk/vk_main.cpp pick_device, RX_VK_ALLOW_CPU=1 runs on it anyway): the host shows the message (text: what is wrong and
+       what to install, UTF-8) in a window, unless it has none (HOS_HEADLESS), and ends the game with exit code 3, as for no
+       usable Vulkan in a --prepare-shaders run (which the back end does not ask this for). Does not return */
+    void (*no_usable_gpu)(const char *text);
 } MkwVkHost;
 enum {
     MKWVK_TRACE_WRITEBACK = 1,     /* a mirror's GPU writes copied into guest memory (in a submission) */
