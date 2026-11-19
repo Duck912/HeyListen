@@ -5,7 +5,7 @@
    guest main thread, run every module's DT_INIT in rtld's order (the SDK crt's _init: TLS registration with musl,
    then the module's constructors), then nninitStartup and nnMain.
 
-   Usage: <game>.exe [image.bin] [--romfs <dir>] [--user <dir>] [--trace] [--prepare-shaders]
+   Usage: <game>.exe [image.bin] [--romfs <dir>] [--user <dir>] [--trace] [--fullscreen] [--prepare-shaders]
    Environment: HOS_TRACE=1 (log HLE calls), HOS_MEMORY_MB (memory the game is told it has),
                 HOS_NVN_CONTINUE=1 (go on past nvnBootstrapLoader). */
 #include "hos.h"
@@ -1583,6 +1583,15 @@ static int game_main(int argc, char **argv) {
         if (!strcmp(argv[i], "--romfs") && i + 1 < argc) hos_romfs_dir = argv[++i];
         else if (!strcmp(argv[i], "--user") && i + 1 < argc) hos_user_dir = argv[++i];
         else if (!strcmp(argv[i], "--trace")) hos_trace = 1;
+        else if (!strcmp(argv[i], "--fullscreen")) {   /* (heylisten) the start's display mode for this one run (RecompLauncher's PR 91
+                                                           asked for it): as the Fullscreen row of hookshot_options.ini, which the
+                                                           launcher writes for its own setting, but written nowhere, so the player's
+                                                           saved row is not touched (vk_menu.cpp fullscreen_tick leaves it alone) */
+#ifdef _WIN32
+            _putenv("HOS_FULLSCREEN=1");   /* (the window is made after this, hos_display_start: host/display.c goes fullscreen) */
+#endif
+            /* (Linux's main sets it before the display is made: here the argument is only kept out of the image's place) */
+        }
         else if (!strcmp(argv[i], "--prepare-shaders")) {   /* (hookshot) a build's last step: no game */
 #ifdef _WIN32
             _putenv("HOOKSHOT_PREPARE_ONLY=1");
@@ -1630,7 +1639,7 @@ static int game_main(int argc, char **argv) {
         }
     }
     if (!image) {
-        fprintf(stderr, "usage: %s [image.bin] [--romfs <dir>] [--user <dir>] [--trace] [--prepare-shaders]\n",
+        fprintf(stderr, "usage: %s [image.bin] [--romfs <dir>] [--user <dir>] [--trace] [--fullscreen] [--prepare-shaders]\n",
                 argv[0]);
         return 2;
     }
@@ -1814,6 +1823,10 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--prepare-shaders")) prepare_shaders = 1;
         else if (!strcmp(argv[i], "--romfs") || !strcmp(argv[i], "--user")) i++;
+        else if (!strcmp(argv[i], "--fullscreen")) setenv("HOS_FULLSCREEN", "1", 1);   /* (before the display: display_sdl.c reads it
+                                                                                            when the window is made; the parse inside
+                                                                                            game_main only keeps it out of the
+                                                                                            image's place) */
     }
     /* The builder's preparation worker needs Vulkan, but no SDL display. */
     const int window = prepare_shaders ? 0 : hos_display_init();
