@@ -383,6 +383,9 @@ inline void trace_gpu(uint32_t what, uint64_t guest, uint64_t size, uint64_t poo
     if (host && host->trace_gpu) host->trace_gpu(what, guest, size, pool, value, vk_timeline_completed());
 }
 void vk_timeline_wait(uint64_t v);
+/// (ported from Hookshot 54530a0d) A wait for the timeline to reach v, at most timeout_ms: true when it did. The capture's wait for
+/// its late pages names its own bound (its cap follows the GPU, vk_memory.cpp take_capture); every other caller keeps vk_timeline_wait
+bool vk_timeline_wait_for(uint64_t v, uint32_t timeout_ms);
 void vk_tl_note(const char* what, uint64_t a = 0, uint64_t b = 0);   // (stream R2, vk_replay.cpp: an event of RX_VK_TL's timeline from another file)
 void gpu_tail_note_late(uint64_t v);   // (TICK-057, vk_replay.cpp: a capture waited for v's late pages: the GPU's busy tail before it)
 /// (TICK-060, RX_VK_LATE_DEFER) vk_memory.cpp: the highest late value a pending fix waits for (0: none); the fixes whose value done

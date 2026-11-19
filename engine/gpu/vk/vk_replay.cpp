@@ -579,8 +579,10 @@ uint64_t vk_timeline_reached() {
     return v;
 }
 int64_t vk_value_submitted_ns(uint64_t v);
-void vk_timeline_wait(uint64_t v) {   // (at most 250 ms: a submission held back behind the caller's thread goes on without it)
-    if (!timeline || completed() >= v) return;
+// (ported from Hookshot 54530a0d) the wait's bound: the capture's late pages name their own (its cap follows the GPU, with
+// RX_VK_CAPTURE_WAIT_ADAPT=0 the 250 ms of vk_timeline_wait, as before)
+bool vk_timeline_wait_for(uint64_t v, uint32_t timeout_ms) {
+    if (!timeline || completed() >= v) return true;
     queue_flush_for(FR_VALUE);
     VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
     wi.semaphoreCount = 1;
@@ -588,7 +590,7 @@ void vk_timeline_wait(uint64_t v) {   // (at most 250 ms: a submission held back
     wi.pValues = &v;
     const uint64_t done0 = completed();
     const int64_t t0 = std::chrono::steady_clock::now().time_since_epoch().count(), sub = vk_value_submitted_ns(v);
-    const VkResult wres = vkWaitSemaphores(dev.device, &wi, 250000000ull);
+    const VkResult wres = vkWaitSemaphores(dev.device, &wi, (uint64_t)timeout_ms * 1000000ull);
     if (wres == VK_TIMEOUT) {
         static std::atomic<int> logged{0};
         if (logged++ < 8) logf("vk: a capture's wait for write-back %llu timed out (done %llu)", (unsigned long long)v, (unsigned long long)completed());
@@ -616,6 +618,10 @@ void vk_timeline_wait(uint64_t v) {   // (at most 250 ms: a submission held back
             unsub = wait_ns = max_ns = gpu_had_ns = ahead = 0;
         }
     }
+    return wres == VK_SUCCESS;
+}
+void vk_timeline_wait(uint64_t v) {   // (at most 250 ms: a submission held back behind the caller's thread goes on without it)
+    (void)vk_timeline_wait_for(v, 250);
 }
 namespace {
 
