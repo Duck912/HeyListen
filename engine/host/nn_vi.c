@@ -186,6 +186,14 @@ int hos_vi_native_interval(Ctx *c, int requested) {
    that behaviour */
 static int64_t shown_at[16];
 static volatile LONG64 shown_count;
+/* (heylisten) the pacing sleeps since the present before, us: the performance summary's pace part (gpu/vk/perf_parts.h),
+   taken by nvn_native.c at each present and handed to the renderer there. The presenting thread's own */
+static int64_t pace_since_present_us;
+int64_t hos_vi_pace_us(void) {
+    const int64_t us = pace_since_present_us;
+    pace_since_present_us = 0;
+    return us;
+}
 void hos_vi_native_acquire(int active) {
     static int no_pacing = -1, double_buffered = -1;
     if (no_pacing < 0) no_pacing = getenv("HOS_NO_PACING") != NULL;
@@ -197,7 +205,10 @@ void hos_vi_native_acquire(int active) {
         until = frame >= 0 && frame < n ? shown_at[frame & 15] : 0;
     }
     const int64_t now = hos_now_ns();
-    if (until > now) hos_sleep_ns(until - now);
+    if (until > now) {
+        hos_sleep_ns(until - now);
+        pace_since_present_us += (hos_now_ns() - now) / 1000;
+    }
 }
 /* (mkw-recomp) MKW's frame pacer (0x806bcbb0, x19 when it sets the interval: nvn_native.c): its measured frame time
    (+0x128, ticks), its running excess (+0x218) and interval (+0x214), logged with the frame rate */

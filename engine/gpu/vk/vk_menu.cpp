@@ -31,6 +31,7 @@
 #include "vk_menu.h"
 #include "vk_perf.h"
 #include "perf_report.h"   // (telemetry_available, perf_frame_shown: the two telemetry rows)
+#include "perf_parts.h"   // (the host's pushes at each present: the frame's pacing sleep, a map loading)
 #include "vk_menu_hit.h"
 #include "vk_draw.h"   // (pipeline_cache_save: Restart now keeps what was built)
 #include "oot_cheat_items.h"
@@ -2432,6 +2433,14 @@ void menu_option_set(int id, int value) {
     if (id >= OOT_CHEAT_ITEM_BASE && id < OOT_CHEAT_ITEM_BASE + kItems) {   // (the game side's inventory counts)
         if (item_counts[id - OOT_CHEAT_ITEM_BASE].exchange(value, std::memory_order_relaxed) != value && page == 4)
             menu_refresh = true;
+        return;
+    }
+    if (id == perf_parts::kOptPace) {   // (the frame's pacing sleep, host/nvn_native.c's push: the summary's pace part)
+        perf_parts::note_pace(value);
+        return;
+    }
+    if (id == perf_parts::kOptLoading) {   // (the game loads a map, host/hos_main.c's push: the hitch rows' load side)
+        perf_parts::note_loading(value);
         return;
     }
     if (id == HOS_OPT_CHEAT_FLIGHT) {

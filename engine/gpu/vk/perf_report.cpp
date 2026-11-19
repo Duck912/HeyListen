@@ -1,7 +1,9 @@
 // (heylisten) The performance summary (perf_report.h), ported from Longshot's #983: on only when the player chose "Send
 // performance statistics" in the menu (opts.send_perf, hookshot_options.ini's send_performance_stats=, OFF by default) AND the
 // build has an address to send to (nx2/addresses.ini's telemetry=, stamped into hookshot_version.txt, or HL_TELEMETRY_URL for a
-// test; empty: nothing is measured or written). Each frame shown is added here, on the thread that presents, to its map's
+// test; empty: nothing is measured or written). HOS_PERF_REPORT=1: measured and written the same way with no address, a
+// summary for this machine alone that the sender (which still needs an address) never sends.
+// Each frame shown is added here, on the thread that presents, to its map's
 // totals: a bucket, a few sums and the renderer's counters read since the frame before. No allocation, no file and no lookup a
 // frame: the map is asked of the host about once a second, and a summary's JSON is made and written on a thread of its own every
 // `period` seconds (RX_VK_PERF_INTERVAL) and at exit into the game folder's perf_pending/, which host/hos_crash_dialog.c's
@@ -9,8 +11,10 @@
 // The same row also lets the pipeline state records the player's game made that the shipped list lacks go (state_report.h): at the
 // session's end they are queued into pipelines_pending/, which hos_pipes_send_run sends at the next start to /telemetry/pipelines.
 // HL_TELEMETRY_PIPELINES=0 turns that part off alone.
-// What HeyListen's overlay does not measure (the frame's parts: game, render, GPU wait, pacing; the draws left out; a read-back's
-// wait) is sent as 0, so the payload keeps Longshot's field tables, which the server validates.
+// (v0.4.3) The frame's parts are measured now (perf_parts.h): the game's step, the renderer's work, the waits for the GPU and
+// the pacing sleep fill parts_ms, and the hitch causes cover the driver's compiles, the descriptor work, the swapchain's block,
+// the read-backs and the presenting thread's gaps (os_wait). What HeyListen's overlay still does not measure is sent as 0 (the
+// draws left out are the replay's own count now), so the payload keeps Longshot's field tables, which the server validates.
 #include "perf_report.h"
 
 #include <algorithm>
@@ -25,6 +29,7 @@
 #include <thread>
 
 #include "../../host/hos_telemetry.h"
+#include "perf_parts.h"
 #include "report_info.h"
 #include "state_report.h"
 #include "vk_draw.h"
@@ -38,8 +43,10 @@
 #include "vk_temporal.h"
 
 #ifdef _WIN32
+#include <windows.h>
 #include <psapi.h>
 #else
+#include <time.h>
 #include <unistd.h>
 #endif
 
@@ -62,11 +69,12 @@ std::map<std::string, pr::MapTotals> maps;
 std::map<std::string, bool> seen_maps;   // (maps this session has sent: the server counts a session on a map once)
 pr::MapTotals* current = nullptr;
 std::string current_map;
+bool map_switched = false;   // (the map changed since the frame before: its load is the frame's, perf_frame_shown)
 pr::Machine machine;
 bool machine_read = false;
 fsys::path folder;
 std::atomic<int64_t> events[pr::kEvents];
-int64_t started_ns = 0, last_movie[5] = {}, last_frame_ns = 0, l_gpu = 0;
+int64_t started_ns = 0, last_movie[5] = {}, last_frame_ns = 0, l_gpu = 0, l_rb = 0, l_cpu = 0, l_skips = 0, l_fresh = 0;
 double period = pr::kPeriodDefault;
 double since_map = 0, since_summary = 0, avg_ms = 0, last_ms = 0;
 bool first = true;
@@ -77,6 +85,40 @@ bool primed = false;
 int64_t clock_ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
+
+#ifdef _WIN32
+/// This thread's CPU time, ns: its cycles (QueryThreadCycleTime: the time it ran, kernel and user, not the wall clock)
+/// against the performance counter, the scale calibrated once with a busy loop. The summary's os_wait is the wall time
+/// this thread was not running, and game_cpu the part of the game's step it was
+int64_t thread_cpu_ns() {
+    static const double ns_per_cycle = [] {
+        ULONG64 c0, c1;
+        LARGE_INTEGER f, a, b;
+        QueryPerformanceFrequency(&f);
+        if (!QueryThreadCycleTime(GetCurrentThread(), &c0)) return 0.0;
+        QueryPerformanceCounter(&a);
+        const LONGLONG until = a.QuadPart + f.QuadPart / 250;   // (a busy ~4 ms, once: the scale of the thread's cycles)
+        volatile double sink = 0;
+        for (;;) {
+            sink += 1.0;
+            QueryPerformanceCounter(&b);
+            if (b.QuadPart >= until || sink < 0) break;
+        }
+        return QueryThreadCycleTime(GetCurrentThread(), &c1) && c1 > c0
+                   ? perf_ticks_to_ns(b.QuadPart - a.QuadPart, f.QuadPart) / double(c1 - c0)
+                   : 0.0;
+    }();
+    ULONG64 c = 0;
+    if (ns_per_cycle <= 0 || !QueryThreadCycleTime(GetCurrentThread(), &c)) return 0;
+    return (int64_t)((double)c * ns_per_cycle);
+}
+#else
+int64_t thread_cpu_ns() {
+    timespec ts{};
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+#endif
 
 /// The build's address, or HL_TELEMETRY_URL's: "" without one (host/hos_telemetry.h's rule)
 std::string address_now() {
@@ -196,6 +238,7 @@ bool where_now() {
     const std::string name = map[0] ? map : shaders_preparing() ? pr::kPreparingShaders : pr::kTitleAndIntro;
     const bool full = current && name != current_map && !maps.count(name) && maps.size() >= (size_t)pr::kMaxMaps;
     if (!full && (!current || name != current_map)) {
+        if (current) map_switched = true;   // (an area change: the frame that spans its load carries it, perf_frame_shown)
         current_map = name;
         current = &maps[name];
         current->fresh = !seen_maps.count(name);
@@ -314,6 +357,7 @@ void states_queue() {
 /// The player turned the row off (or the address went): what is waiting and what was kept goes, nothing more is measured
 void switch_off() {
     perf_measure.store(false, std::memory_order_relaxed);
+    perf_parts::on.store(false, std::memory_order_relaxed);
     maps.clear(), current = nullptr, primed = false, last_frame_ns = 0;
     std::error_code ec;
     for (const char* sub : {"perf_pending", "perf_sent", "pipelines_pending", "pipelines_sent"}) {
@@ -370,10 +414,21 @@ void at_exit() {
     states_queue();
 }
 
-/// Whether the summary should be measured now: the row is on and the build has an address (read once)
+/// HOS_PERF_REPORT=1 (from the real environment): a summary with no address to send to, measured and written the same
+/// way for this machine alone; the sender still needs an address, so nothing ever leaves the game folder
+bool perf_local() {
+    static const bool local = [] {
+        const char* e = getenv("HOS_PERF_REPORT");
+        return e && *e && atoi(e) != 0;
+    }();
+    return local;
+}
+
+/// Whether the summary should be measured now: the row is on and the build has an address (or HOS_PERF_REPORT: local).
+/// Read once
 bool wanted() {
     static const bool available = !address_now().empty();
-    return available && opts.send_perf == 1;
+    return (available || perf_local()) && opts.send_perf == 1;
 }
 
 /// The row changed (checked about once a second, under mu): on starts a session's measuring, off deletes what was kept
@@ -393,10 +448,13 @@ void follow_row() {
     started_ns = clock_ns();
     int64_t translated = 0;
     shader_stats(&translated, &l_failed);   // (the renderer's counts so far: only what comes after is counted)
-    l_gpu = gpu_time_ns();
+    l_gpu = gpu_time_ns(), l_rb = readback_wait_ns();
+    (void)thread_cpu_ns();   // (its cycles calibrated here, once: the presenting thread's os_wait needs them)
     read_stamps();
-    logf("vk: performance statistics on (the Send performance statistics row): a summary every %.0f s into perf_pending", period);
+    logf("vk: performance statistics on (the Send performance statistics row)%s: a summary every %.0f s into perf_pending",
+         perf_local() && address_now().empty() ? ", HOS_PERF_REPORT: local, no address so nothing is ever sent" : "", period);
     perf_measure.store(true, std::memory_order_relaxed);
+    perf_parts::on.store(true, std::memory_order_relaxed);
 }
 
 }   // namespace
@@ -423,25 +481,46 @@ void perf_frame_shown() {
     const int64_t now = clock_ns();
     // (the renderer's counters since the frame before: what the slow frames waited on)
     static int64_t l_prof[PROF_COUNT];
-    static double l_wait_ms, l_shader_ms;
+    static double l_wait_ms, l_shader_ms, l_pipe_ms, l_link_ms, l_lib_ms;
+    static int64_t l_render = 0, l_wait_ns = 0, l_present_ns = 0;
     double wait_ms_total = 0;
-    {
-        int64_t skips = 0, waits = 0;
-        draw_stats3(&skips, &waits, &wait_ms_total);
-    }
+    int64_t skips = 0, waits = 0;
+    draw_stats3(&skips, &waits, &wait_ms_total);
+    const int64_t fresh_skips = draw_pipe_fresh_skips();
     const double shader_ms = draw_shader_wait_ms();
+    int64_t passes = 0, mesh = 0, links = 0, lib_hits = 0, lib_cold = 0, lib_built = 0;
+    double pipe_ms = 0, link_ms = 0, lib_build_ms = 0;
+    draw_stats2(&passes, &mesh, &pipe_ms);
+    draw_stats4(&links, &link_ms, &lib_hits, &lib_cold, &lib_built, &lib_build_ms);
+    const int64_t render_ns = perf_parts::t_render, wait_in = perf_parts::t_wait, present_in = perf_parts::t_present;
+    const int64_t cpu = thread_cpu_ns(), rb = readback_wait_ns();
     const auto dp = [](int i) { return (prof_ns[i] - l_prof[i]) / 1e6; };
     pr::Waits w;
-    w.translate = shader_ms - l_shader_ms;
+    w.translate = std::max(0.0, shader_ms - l_shader_ms);
     w.pipeline = std::max(0.0, (wait_ms_total - l_wait_ms) - w.translate);
     w.upload = dp(PROF_UPLOAD);
     w.memsync = dp(PROF_MEMSYNC);
+    w.readback = std::max(0.0, (rb - l_rb) / 1e6);
+    w.driver_compile = std::max(0.0, pipe_ms - l_pipe_ms) + std::max(0.0, link_ms - l_link_ms) +
+                       std::max(0.0, lib_build_ms - l_lib_ms);
+    w.descriptors = dp(PROF_DESC);
+    w.present = std::max(0.0, (present_in - l_present_ns) / 1e6);
     for (int i = 0; i < PROF_COUNT; i++) l_prof[i] = prof_ns[i];
-    l_wait_ms = wait_ms_total, l_shader_ms = shader_ms;
+    l_wait_ms = wait_ms_total, l_shader_ms = shader_ms, l_pipe_ms = pipe_ms, l_link_ms = link_ms, l_lib_ms = lib_build_ms;
     const int64_t gpu = gpu_time_ns();
     fs::Frame f;
     f.gpu_ms = (float)std::max<int64_t>(0, gpu - l_gpu) / 1e6f;
     l_gpu = gpu;
+    // (the parts on this thread, since the frame before: the deltas of the scopes perf_parts.h keeps here; the pacing
+    // sleep the host pushed at this present, the GPU waits inside the renderer's calls (the recording slot, the read-backs,
+    // the swapchain), the renderer's own work beside them. f.ms is known only under the lock below, where they are cut to it)
+    const double pace_ms = perf_parts::pace_us.exchange(0, std::memory_order_relaxed) / 1000.0;
+    const double rb_ms = w.readback, wait_ms = (wait_in - l_wait_ns) / 1e6, present_ms = w.present;
+    const double render_ms = (render_ns - l_render) / 1e6, cpu_ms = (cpu - l_cpu) / 1e6;
+    const int64_t left_out = (skips - l_skips) + (fresh_skips - l_fresh);
+    l_render = render_ns, l_wait_ns = wait_in, l_present_ns = present_in;
+    l_rb = rb, l_cpu = cpu, l_skips = skips, l_fresh = fresh_skips;
+    f.left_out = (uint16_t)std::clamp<int64_t>(left_out, 0, 0xffff);
 
     std::lock_guard lk(mu);
     const int64_t before = last_frame_ns;
@@ -460,12 +539,29 @@ void perf_frame_shown() {
         if (where_now()) summarize(false), since_summary = 0, where_now();
         since_map = 0;
     }
+    {   // (the frame's parts, cut to its ms: game + render + gpu_wait + pace is the whole frame)
+        f.part[fs::kPace] = (float)std::clamp(pace_ms, 0.0, (double)f.ms);
+        const double rest = (double)f.ms - f.part[fs::kPace];
+        f.part[fs::kGpuWait] = (float)std::clamp(rb_ms + wait_ms + present_ms, 0.0, std::max(0.0, rest));
+        f.part[fs::kRender] =
+            (float)std::clamp(render_ms - wait_ms - present_ms, 0.0, std::max(0.0, rest - f.part[fs::kGpuWait]));
+        f.part[fs::kGame] = (float)std::max(0.0, rest - f.part[fs::kGpuWait] - f.part[fs::kRender]);
+        // (the game's CPU at work, and the wall time this thread was neither running nor in the renderer nor pacing)
+        w.os_wait = std::max(0.0, (double)f.part[fs::kGame] - std::max(0.0, cpu_ms - (double)f.part[fs::kRender]));
+    }
     // (the target: the cap's. A hitch is twice the longer of the target and the recent average, before this frame: a frame
     // twice the usual, never every frame of a game the GPU holds under its cap)
     const double usual = avg_ms ? avg_ms : f.ms;
     avg_ms = usual * 0.98 + f.ms * 0.02;
     const double target = 1000.0 / fps_cap_now();
-    pr::add_frame(*current, f, w, target, last_ms, usual);
+    // (a map was loading, or the frame just after one: the stall a load makes is presented once the load has ended, so
+    // the flag is kept for that frame too: host/hos_main.c pushes Sequence_IsLoadingBanc's level, as it changes. A map
+    // change marks the frame as well: the load blocks the game thread, so the flag is never seen from its tick)
+    static bool load_last = false;
+    const bool load_now = perf_parts::loading.load(std::memory_order_relaxed) != 0;
+    const bool loading = load_now || load_last || map_switched;
+    load_last = load_now, map_switched = false;
+    pr::add_frame(*current, f, w, target, last_ms, usual, loading);
     last_ms = f.ms;
     since_map += f.ms / 1000.0, since_summary += f.ms / 1000.0;
     if (since_summary >= period) summarize(false), since_summary = 0;

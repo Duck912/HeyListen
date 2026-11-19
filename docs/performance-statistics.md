@@ -121,17 +121,18 @@ Per map (`MapSummary`):
 | `frame_ms_sum` | number | The frame times' sum, ms |
 | `gpu_ms` | array of 11 numbers | Frame counts by the GPU's own time: up to 2, 4, 6, 8.33, 11.1, 16.7, 25, 33.3, 50, 100 ms, then the rest |
 | `gpu_ms_sum` | number | The GPU times' sum, ms |
-| `parts_ms` | object | `game`, `render`, `gpu_wait`, `pace`: **0 in HeyListen** (its overlay does not measure a frame's parts) |
-| `hitches` | object | Frames over twice the longer of their target and the recent average (and at least 25 ms), by what they waited on most: `pipeline_wait`, `shader_translate`, `texture_upload`, `memsync`, `gpu_bound`, `readback` (0: not measured), `game_cpu` and `pace` (0: not measured), `other` |
+| `parts_ms` | object | `game`, `render`, `gpu_wait`, `pace`: each part's **average ms a frame** over the summary's frames on the map (v0.4.3, measured on the thread that presents: the game's step, the renderer's work, the waits for the GPU, the pacing sleep; with frame generation on, the made frames' thread) |
+| `hitches` | object | Frames over twice the longer of their target and the recent average (and at least 25 ms), by what they waited on most: `pipeline_wait`, `shader_translate`, `texture_upload`, `memsync`, `gpu_bound`, `readback`, `game_cpu`, `pace`, `driver_compile` (vkCreate*Pipelines and the GPL libraries' builds and links), `descriptors` (descriptor building and binding), `present` (the swapchain: waiting for its image, the present call), `os_wait` (the presenting thread off the CPU: a gap with no work), `other` (nothing measured is a quarter of the frame) |
+| `hitch_detail` | object | Per cause with hitches (v0.4.3): `count`, `ms_sum`, `ms_max` of those frames, and `load_count`, `load_ms_sum`, `load_ms_max` of those that happened **while the game was loading a map** (an area change: `Sequence_IsLoadingBanc`, and the frame the map changed on, since a load blocks the game thread and the flag is kept for the frame it spans), for the server's `hitch` table: cause = the key, `load` = which row (0: count/ms_sum/ms_max, 1: load_count/load_ms_sum/load_ms_max), `first_visit` = the map's `new` |
 | `pacing_misses` | number | Frames more than a quarter of the target off the one before |
-| `draws_left_out` | number | **0 in HeyListen** (not counted) |
+| `draws_left_out` | number | The replay's draws left out (a program or pipeline not ready: skipped rather than waited for; v0.4.3, was 0) |
 | `events` | object | `program_failed`, `device_lost`, `swapchain_recreated`, `movie_upscaler_dropped`, `dlss_recreated`, `vram_over_budget` |
 | `movie` | object | `shown` (pictures the game took), `dropped` (skipped to keep up with the sound), `late`, `decode_ms`, `fallbacks`: the last three are 0 in HeyListen |
 
 Example:
 
 ```json
-{"v": 1, "version": "v0.4.0", "release": true, "first": true, "session_s": 312,
+{"v": 1, "version": "v0.4.3", "release": true, "first": true, "session_s": 312,
  "os": "Windows 11", "kernel": "10.0.26200", "renderer": "Vulkan",
  "gpu": "NVIDIA GeForce RTX 3050", "driver": "NVIDIA 566.36", "vram_gb": 8, "cpu": "AMD Ryzen 5 5600", "ram_gb": 32,
  "upscaler": "DLSS", "preset": "Balanced", "fps_cap": 60,
@@ -141,8 +142,12 @@ Example:
  "maps": {"Kokiri Forest (child)": {"new": true, "seconds": 250,
    "frame_ms": [0, 0, 0, 0, 14800, 120, 40, 10, 4, 1, 0, 0, 0], "frame_ms_sum": 250010.5,
    "gpu_ms": [0, 2100, 9800, 2900, 150, 25, 0, 0, 0, 0, 0], "gpu_ms_sum": 81200,
-   "parts_ms": {"game": 0, "render": 0, "gpu_wait": 0, "pace": 0},
-   "hitches": {"pipeline_wait": 3, "texture_upload": 1}, "pacing_misses": 12, "draws_left_out": 0,
+   "parts_ms": {"game": 3.4, "render": 2.1, "gpu_wait": 8.9, "pace": 2.3},
+   "hitches": {"pipeline_wait": 3, "readback": 2, "os_wait": 1, "other": 1},
+   "hitch_detail": {"pipeline_wait": {"count": 3, "ms_sum": 140.5, "ms_max": 62.1, "load_count": 2, "load_ms_sum": 110.2, "load_ms_max": 62.1},
+                    "readback": {"count": 2, "ms_sum": 95.4, "ms_max": 55.2, "load_count": 0, "load_ms_sum": 0, "load_ms_max": 0},
+                    "os_wait": {"count": 1, "ms_sum": 210.7, "ms_max": 210.7, "load_count": 1, "load_ms_sum": 210.7, "load_ms_max": 210.7}},
+   "pacing_misses": 12, "draws_left_out": 4,
    "events": {"swapchain_recreated": 1},
    "movie": {"shown": 0, "dropped": 0, "late": 0, "decode_ms": 0, "fallbacks": 0}}}}
 ```
@@ -186,13 +191,22 @@ this PC's own names and folders.
 
 ## How the parts fit
 
-- **The game** (`gpu/vk/perf_report.cpp`, `perf_report.h`): while the row is on and the build has an address, each frame
-  shown (`menu_note_frame`) is added to its map's totals (a few array increments, 5 ns). Every 5 minutes of play
-  (`RX_VK_PERF_INTERVAL`, 60 to 840 s) a summary is made under a lock and written on a thread of its own to
+- **The game** (`gpu/vk/perf_report.cpp`, `perf_report.h`, `perf_parts.h`): while the row is on and the build has an address
+  (or `HOS_PERF_REPORT=1`), each frame shown (`menu_note_frame`) is added to its map's totals (a few array increments, 5 ns).
+  Every 5 minutes of play (`RX_VK_PERF_INTERVAL`, 60 to 840 s) a summary is made under a lock and written on a thread of its own to
   `perf_pending/<unix time>-<n>.json`; the last is written when the window closes (`mkwvk_close_asked`) or the device is
   lost. A summary holds 16 maps at most; at most 48 summaries wait (past that the game writes none). The map and the movies'
   totals come from the host (`hos_perf_info`, `MkwVkHost::perf_info`, API version 14). Turning the row off stops all of it and
   deletes `perf_pending/` and `perf_sent/`. Off, the cost is a look at the row every 64th frame.
+- **The frame's parts** (`gpu/vk/perf_parts.h`, v0.4.3): on the thread that presents, two cheap clock reads at the renderer's
+  entries (`vk_replay.cpp`'s `submit_q`, `present`, the replay thread's jobs) time the render part; the waits inside them (a
+  recording slot come round again, the swapchain's image and present call) are the GPU-wait part; the pacing sleep is measured
+  host-side (`nn_vi.c`'s acquire) and pushed at each present (`nvn_native.c`, as the Cheats page's inventory counts go); the rest
+  of the frame is the game's step, and the presenting thread's CPU time (one read a frame) splits it into its CPU at work
+  (`game_cpu`) and a gap with no work (`os_wait`). The read-backs' waits — the exposure meter's page is one a frame always
+  waits for — are counted where they were already timed (`vk_replay.cpp` `invalidate`), as are the driver's pipeline compiles
+  (`draw_stats2`/`draw_stats4`). Nothing is timed per draw, and while the row is off the scopes cost one atomic load each. With
+  frame generation on the parts are the made frames' thread; the causes (all of them counters) hold either way.
 - **The sender** (`hos_perf_send_run` in `host/hos_crash_dialog.c`, rules in `host/hos_perf_send.h`): the game ships no
   Python, so Longshot's `nx2/perf_report.py` is ported to C. At the game's start, on a thread of its own, with the row on and an
   address, it posts what waits in `perf_pending/`, oldest first, one request each with the system's `curl` (10 s limit), at most
@@ -218,6 +232,7 @@ this PC's own names and folders.
 | `HL_TELEMETRY_URL` | the build's address | Where reports go, for a test against a local server. From the real environment only (`hookshot_env.txt` is refused it). https only |
 | `HL_TELEMETRY_TEST_HTTP=1` | off | With `HL_TELEMETRY_URL`, also takes a plain `http://` address on this PC itself (`127.0.0.1`, `localhost`, `[::1]`). For tests only |
 | `HL_TELEMETRY_PIPELINES=0` | on (with the row) | Turns off only the pipeline state records: none is queued or sent, the performance summaries go as the row says |
+| `HOS_PERF_REPORT=1` | off | With **Send performance statistics** on, measure and write the summaries even in a build with no address: for this machine alone, into `perf_pending/`, never sent (the sender still needs an address). A run's breakdown without any server |
 | `RX_VK_PERF_INTERVAL` | `300` s | Seconds of play between two summaries (60 to 840) |
 | `HL_PERF_MAX_SENDS` | `12` | Summaries sent at one start (1 to 48) |
 | `HL_PERF_TIMEOUT` | `10` s | A request's time limit (2 to 60) |
@@ -239,3 +254,6 @@ HeyListen.exe
 with **Send performance statistics** on in the menu: a summary is written to `perf_pending/` after a minute of play and
 sent at the next start. `HOS_CRASH_TEST=start` shows the crash window; Report automatically then shows and posts the report.
 `tests/test_telemetry.py` and `tests/test_crash_dialog.py` run the same paths against a stand-in for `curl`.
+
+Without any server at all, `HOS_PERF_REPORT=1` (with the row on) writes the same summaries to `perf_pending/` and nothing
+can ever leave the game folder: a run's hitch breakdown, read straight out of the file.
