@@ -126,6 +126,8 @@ void vkGetPhysicalDeviceFormatProperties(VkPhysicalDevice, VkFormat format, VkFo
 void end_pass(VkCommandBuffer) {}
 // (the temporal upscaler, off here: upscale_stub offers it the frame first, vk_draw.cpp temporal_rejected_network)
 bool temporal_wanted() { return false; }
+bool upscaler_off_now = false;   // (the Upscaler row's Off, vk_temporal.cpp upscaler_off)
+bool upscaler_off() { return upscaler_off_now; }
 static bool temporal_rejected_network(VkCommandBuffer, uint64_t, Texture *, const nvn_tex *, Texture *, const nvn_tex *) {
     return false;
 }
@@ -158,10 +160,11 @@ VkImageView texture_view(Texture *t, const nvn_tex *, const nvn_view *v, VkImage
     *f = VK_FORMAT_B10G11R11_UFLOAT_PACK32;
     return (VkImageView)102;
 }
+bool typed_temporal = false;
 static bool typed_upscale(VkCommandBuffer, VkImageView input, VkImageView output, Texture *t,
                           uint32_t level, uint64_t, const char *, bool temporal) {
-    assert(input == (VkImageView)101 && output == (VkImageView)102 && t == &dst && level == 0 &&
-           !temporal);
+    assert(input == (VkImageView)101 && output == (VkImageView)102 && t == &dst && level == 0);
+    typed_temporal = temporal;
     typed_calls++;
     return pipeline_ok;
 }
@@ -202,10 +205,16 @@ int main(int argc, char **argv) {
         src.levels = 2;
     if (mode == "swizzle")
         source.d.swizzle_r = 4;
-    if (mode == "fd")
+    if (mode == "fd" || mode == "off-fd")
         key = 0xfd029a317a9a4b94ull;
-    if (mode == "9dc")
+    if (mode == "9dc" || mode == "9dc-same" || mode == "off-9dc-same")
         key = 0x9dc98871eb7fc101ull;
+    if (mode == "off-fd" || mode == "off-9dc-same")
+        upscaler_off_now = true;   // (Upscaler Off: the same typed upscale, with no edge smoothing)
+    if (mode == "9dc-same" || mode == "off-9dc-same" || mode == "same") {   // (the full-size pass: Render resolution 100%)
+        source.d.width = 128, source.d.height = 64;
+        src.width = 128, src.height = 64;
+    }
     if (mode == "pipeline-failure")
         pipeline_ok = false;
     if (mode == "no-storage")
@@ -217,13 +226,21 @@ int main(int argc, char **argv) {
     NvnState state;
     state.tex[5][0] = 1;
     state.img[5][0] = 2;
+    if (mode == "same") {   // (another network that keeps the size: not an upscale, left to its dispatch as before)
+        assert(!upscale_stub((VkCommandBuffer)5, state, key) && typed_calls == 0 && blits == 0 && writes == 0);
+        puts("PASS: same");
+        return 0;
+    }
     assert(upscale_stub((VkCommandBuffer)5, state, key));
-    if (mode == "captured") {
+    if (mode == "captured" || mode == "fd" || mode == "9dc" || mode == "9dc-same" || mode == "off-fd" || mode == "off-9dc-same") {
+        // (the gameplay networks reach this only when left out (no f16 shaders): their RGB9E5 input read as B10G11R11 by the
+        // blit was the full-screen noise of RX_VK_NO_F16, and the full-size pass was skipped, the 3D black. Both as the TAAU
+        // network's stand-in draws (taau_stand_in: temporal, edges smoothed); the other networks' as before)
         if (typed_calls != 1 || views != 2 || blits != 0) {
             puts("RED: captured RGB9E5 input still used physical-format blit");
             return 7;
         }
-        assert(writes == 1);
+        assert(writes == 1 && typed_temporal == (mode != "captured" && mode.rfind("off-", 0) != 0));
     } else if (mode == "movie") {
         assert(movie_calls == 1 && typed_calls == 0 && blits == 0 && writes == 1);
     } else if (mode == "pipeline-failure") {
@@ -249,7 +266,7 @@ def main():
         exe = tmp / ('check.exe' if os.name == 'nt' else 'check')
         source.write_text(PREFIX + body + SUFFIX, encoding='utf-8')
         subprocess.run([args.cxx, '-std=c++20', '-UNDEBUG', str(source), '-o', str(exe)], env=env, check=True)
-        cases = ('captured', 'r11', 'movie', 'view', 'skip', 'mip', 'swizzle', 'fd', '9dc',
+        cases = ('captured', 'r11', 'movie', 'view', 'skip', 'mip', 'swizzle', 'fd', '9dc', '9dc-same', 'off-fd', 'off-9dc-same', 'same',
                  'pipeline-failure', 'no-storage', 'no-e5-sample', 'no-e5-linear')
         for case in cases:
             subprocess.run([str(exe), case], env=env, check=True)

@@ -77,6 +77,11 @@ struct Device {
     VkPhysicalDeviceVulkan12Features vk12{};
     VkPhysicalDeviceVulkan13Features vk13{};
     VkShaderStageFlags sg32_stages = 0;   // (stages that run at 32 lanes when asked: the size the translated programs assume)
+    // (wave64, issue 67: stages whose programs are translated for subgroups wider than the guest's 32 lanes (the translator then limits
+    // ballots, votes, shuffles and the lane id to the 32-lane partition), and the subgroup size they run at. 0 / 32 where the GPU runs
+    // them at 32 lanes, so those GPUs translate exactly as they did: vk_main.cpp, vk_shader.cpp make_profile)
+    VkShaderStageFlags warp_wide_stages = 0;
+    uint32_t warp_lanes = 32;
     uint32_t max_push_descriptors = 0;
     // no window (HOS_HEADLESS): presents go to an image of their own, which RX_VK_SHOTS can write out
     bool offscreen = false;
@@ -121,6 +126,11 @@ inline uint64_t storage_binding_align() {
     const uint64_t a = dev.props.limits.minStorageBufferOffsetAlignment;
     return device_own || a > 16 ? a : 16;
 }
+
+/// Whether translated shaders keep 16-bit floats (vk_shader.cpp): the device's shaderFloat16, or RX_VK_NO_F16 / RX_VK_F16. Without
+/// them the translator lowers the game's f16 math to 32 bits and the cooperative-matrix networks are left out (vk_draw.cpp's
+/// stand-ins draw their upscale)
+bool float16_shaders();
 
 /// (longshot #252) Windows Intel's compiler (igvk64, UHD and Arc) faults when two threads hand it shaders at once: an Arc A750
 /// froze the PC on four compute pipelines, and an Intel UHD read address 0x170 inside igvk64 during the first scene's compiles.
@@ -348,8 +358,11 @@ void memory_stamp_gpu(uint64_t guest, uint64_t size);   // (a GPU write: memory_
 void memory_protect_gpu(uint64_t guest, uint64_t size);  // (RX_VK_PROTECT_BARE=1: pages a shader writes through a table pointer)
 /// (vk_replay.cpp) guest memory as the stream's place sees it: as submitted, the stream's uniform updates before it over it
 bool ub_read(uint64_t addr, void* dst, uint64_t n);
-/// [guest, guest + n) as of the submit being replayed: live itself, or scratch holding it with the kept pages over it
-const uint8_t* memory_as_submitted(uint64_t guest, const uint8_t* live, uint64_t n, std::vector<uint8_t>& scratch);
+/// [guest, guest + n) as of the submit being replayed: live itself, or scratch holding it with the kept pages over it. first: a
+/// texture's first upload, which takes only the copies the submission being recorded took (RX_VK_FIRST_UPLOAD_OWN, issue 66);
+/// again: a re-upload, the same (RX_VK_REUPLOAD_OWN)
+const uint8_t* memory_as_submitted(uint64_t guest, const uint8_t* live, uint64_t n, std::vector<uint8_t>& scratch, bool first = false,
+                                   bool again = false);
 void memory_drop_shadow(uint64_t guest, uint64_t size);   // (a write the capture did not take: the copies go)
 /// (EvilBoyce) the newest submission value whose write-back reaches into [guest, guest + size) (0: none ever); *ever set
 /// when any write-back ever did
@@ -466,6 +479,8 @@ bool precompile_wanted();                     // vk_draw.cpp
 bool precompile_blocking();                   // vk_draw.cpp: RX_VK_PRECOMPILE_WAIT=1 (else the pipelines are built while the game runs)
 void precompile_run(void (*progress)(size_t done, size_t total), bool wait = true);
 bool prepare_run(void (*progress)(size_t done, size_t total), bool background);
+/// (hookshot) How far prepare_run is by what its work costs (prepare_work.h), 0..1; -1 when none runs. The builder's bar goes by it
+double prepare_progress_by_cost();
 bool prepare_is_update();
 bool prepare_is_lazy_update();                 // (the update prepare_is_update found is lazy: nothing is made before the game)
 void prepare_background();
