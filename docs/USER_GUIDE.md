@@ -192,6 +192,45 @@ on CachyOS with a Radeon RX 9070 XT (Mesa's RADV driver). Expect problems and re
   `~/.local/share/heylisten/builder`; then it builds your game folder again from the game files the folder keeps. A
   release that has no Linux files yet cannot be installed on Linux: wait for its AppImage to appear on the release page.
 
+## V-Sync and G-Sync / FreeSync (VRR)
+
+Two rows on the Insert menu's Graphics tab (Insert or F1), both applied at once, no restart.
+
+**V-Sync** says whether frames wait for the screen's refresh.
+
+- **Off** (the default, how the game always was): the latest frame is shown at once. The least delay; the picture can tear
+  where the game's frame rate and the screen's do not match.
+- **On**: frames wait for the refresh: no tearing, a little more delay, and the frame rate cannot pass the refresh rate. With
+  frame generation, a multiplier the refresh has no room for shows fewer made frames per game frame (the game keeps its own rate).
+- **Adaptive**: as On, but a frame that misses its refresh is shown at once instead of waiting a whole refresh, so one slow
+  moment does not drop the frame rate to half. Where the driver has no relaxed V-Sync it is the same as On.
+
+**VRR (G-Sync / FreeSync)** is **new**, for a screen with a variable refresh rate. **Off** by default: nothing changes until
+you turn it on. **On** gives the screen what it needs to follow the game's frame rate:
+
+1. V-Sync On's present mode (no tearing); the V-Sync row is overridden while VRR is On.
+2. In fullscreen, the game's window is made as a borderless popup window covering the screen, which Windows can show directly
+   (independent flip) instead of through its desktop compositor. G-Sync and FreeSync only work on that path.
+3. The Frame rate limit, when above 60, is held 3 fps under the screen's refresh rate (NVIDIA's advice), a lower limit of
+   yours is kept: 141 fps on a 144 Hz screen, 237 on 240. With frame generation, the made frames are spaced the same way.
+4. NVIDIA Reflex is left as you set it: turn it **On** for the lowest delay (it is not used with frame generation).
+
+**Auto** is On in fullscreen when the display lists a variable refresh range in its EDID (a hint, not proof), Off otherwise.
+The game's log (`logs/`) says what was chosen and why on a line starting `vk: VRR:`; the F10 overlay's Presentation line says
+`fifo (VRR)` when it is on.
+
+**To use G-Sync (NVIDIA)**: in the NVIDIA Control Panel, *Set up G-Sync*, tick *Enable G-Sync, G-SYNC Compatible*, and choose
+*Enable for full screen mode* (or *windowed and full screen mode*). Then in the game: Fullscreen On, VRR On (the G-Sync
+indicator, *Display > G-SYNC Compatible Indicator* in the control panel, or your monitor's own refresh rate display, shows
+the screen following the game). **FreeSync (AMD)**: turn FreeSync on in the AMD software's *Display* page and in the monitor's
+menu, then the same rows. Windowed play also works with NVIDIA's *windowed and full screen* choice, with no popup window.
+
+VRR is new and has been tested only for what a PC without a variable refresh screen can show (the present mode, the window,
+the frame rate limit). If you have a G-Sync or FreeSync screen, please tell us whether it works for you, and what screen, GPU
+and driver you have, on the [issue tracker](https://github.com/Sacrappy/HeyListen/issues). On Linux the rows set the present
+mode in the same way, but variable refresh is the compositor's job (enable it in your desktop's display settings; the game
+has no window style to change there).
+
 ## Mods
 
 File mods work as in Hookshot: put them in a `mods` folder in the game folder, beside `HeyListen.exe`, in the layout

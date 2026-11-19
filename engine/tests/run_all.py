@@ -77,6 +77,7 @@ ARGS = {
     "tests/test_astc_cpu.py": ["--cxx", "{cxx}"],
     "tests/test_capture_past_end.py": ["--cxx", "{cxx}"],
     "tests/test_target_pool_cap.py": ["--cxx", "{cxx}"],
+    "tests/test_present_mode.py": ["--cxx", "{cxx}"],
     "tests/test_shadow_fast.py": ["--cxx", "{cxx}"],
     "tests/test_collect_fast.py": ["--cc", "{cxx}"],
     "tests/test_late_fix_order.py": ["--cxx", "{cxx}"],

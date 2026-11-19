@@ -191,8 +191,9 @@ void perf_picture(uint32_t w, uint32_t h, const ImVec4& c) {
     const char* engine = upscaler_off() ? "no upscaler" : fsr3_wanted() ? "FSR 3.1" : (mode > 0 && mode < upscaler_rows::kUpscalers ? engines[mode] : "");
     snprintf(v[3], sizeof v[3], "%s%s%s", engine, *engine ? " + " : "", scaling[opts.upscale < 0 || opts.upscale > 2 ? 0 : opts.upscale]);
     {   // (HeyListen) the frame rate limit (what host/nn_vi.c paces at): the rate shown, the game's frames and the made ones. With a
-        // fixed frame generation multiplier the game runs at the limit over it
-        const int limit = menu_fps_limit();
+        // fixed frame generation multiplier the game runs at the limit over it. The VRR row holds a limit above 60 under the refresh
+        int limit = menu_fps_limit();
+        if (const int cap = vrr_fps_cap(); limit > 60 && cap >= 60 && cap < limit) limit = cap;   // (the VRR row: held under the refresh)
         const int mult = framegen_on() && framegen_now() >= 2 ? framegen_now() : 1;
         if (limit == 0 && mult > 1) snprintf(v[4], sizeof v[4], "Unlimited, %dx frame generation", mult);
         else if (limit == 0) snprintf(v[4], sizeof v[4], "Unlimited");

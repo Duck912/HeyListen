@@ -127,7 +127,13 @@ static void fps_plan(int *limit, int *mult) {
     int m = rx_option(HL_OPT_FRAMEGEN_MULT, 1);
     m = m < 2 ? 1 : m > 8 ? 8 : m;
     if (!rx_option(0, 1)) v = 60, m = 1;   /* (Per frame: the game's steps are whole frames of 1/60 s: 60, with the frames made on top) */
-    else if (v > 0) v = v < 30 ? 30 : v > 360 ? 360 : v;
+    else if (v > 0) {
+        v = v < 30 ? 30 : v > 360 ? 360 : v;
+        if (v > 60) {   /* (the VRR row: a few fps under the refresh; 0 when VRR is off, which leaves the limit alone) */
+            const int cap = rx_option(HL_OPT_VRR_CAP, 0);
+            if (cap >= 60 && cap < v) v = cap;
+        }
+    }
     else v = 0;   /* (Unlimited) */
     *limit = v, *mult = m;
 }

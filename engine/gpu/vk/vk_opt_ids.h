@@ -12,6 +12,11 @@
    Off, Auto, or it is not running). The game's own rate is the limit over it. */
 #define HL_OPT_FRAMEGEN_MULT 91
 
+/* The VRR row's cap (host/nn_vi.c asks, gpu/vk/vk_replay.cpp answers in frames a second): the display's refresh - 3 while VRR is
+   on, 0 when it is off or the refresh is not known. A limit above 60 is held to it, whether it comes from the row or HOS_FPS_LIMIT.
+   91 is the frame generation multiplier's on this tree, so 92: free here (90 the Frame rate limit's) */
+#define HL_OPT_VRR_CAP 92
+
 /* The Skip title screen row (host/oot_autoload.c asks, gpu/vk/vk_replay.cpp answers 0 or 1). 44 is the id Longshot's change
    of the same row uses in vk_api.h (free in this tree: the ids there run 32 to 35, 40 to 43), so the two agree. */
 #define HL_OPT_SKIP_TITLE 44

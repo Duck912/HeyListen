@@ -37,19 +37,21 @@ HOST = r"""
 #include <string.h>
 #define HL_OPT_FPS_LIMIT 90
 #define HL_OPT_FRAMEGEN_MULT 91
-static int option_limit = 60, option_mult = 1, option_realtime = 1;
+#define HL_OPT_VRR_CAP 92
+static int option_limit = 60, option_mult = 1, option_realtime = 1, option_vrr_cap = 0;
 int rx_option(int id, int otherwise) {
     if (id == 0) return option_realtime;
     if (id == HL_OPT_FPS_LIMIT) return option_limit;
     if (id == HL_OPT_FRAMEGEN_MULT) return option_mult;
+    if (id == HL_OPT_VRR_CAP) return option_vrr_cap;
     return otherwise;
 }
 FPS_PLAN
 int main(int argc, char **argv) {
     if (argc != 5) return 90;
     option_limit = atoi(argv[1]), option_mult = atoi(argv[2]), option_realtime = atoi(argv[3]);
+    option_vrr_cap = argv[4][0] == '-' ? 0 : atoi(argv[4]);
     printf("%d %d %lld\n", fps_limit(), fps_unlimited(), (long long)fps_period_ns());
-    (void)argv[4];
     return 0;
 }
 """
@@ -133,8 +135,12 @@ def check_runtime():
         "the renderer does not answer the multiplier that runs (1 when frame generation does not run)"
     ids = (VK / "vk_opt_ids.h").read_text(encoding="utf-8")
     assert re.search(r"#define HL_OPT_FRAMEGEN_MULT 91\b", ids), "HL_OPT_FRAMEGEN_MULT is not 91"
+    assert re.search(r"#define HL_OPT_VRR_CAP 92\b", ids), "HL_OPT_VRR_CAP is not 92"
+    assert not re.search(r"#define HL_OPT_\w+ 92\b", ids.replace("#define HL_OPT_VRR_CAP 92", "", 1)), \
+        "another option id is 92 (HL_OPT_VRR_CAP's)"
     host = (ROOT / "host" / "nn_vi.c").read_text(encoding="utf-8")
     assert "rx_option(HL_OPT_FRAMEGEN_MULT, 1)" in host, "the host does not ask the multiplier"
+    assert "rx_option(HL_OPT_VRR_CAP, 0)" in host, "the host does not ask the VRR row's cap"
     # the host paces at the exact period of the game's rate, and Unlimited out of the way of the game's own limiter
     presented = block(host, "void hos_vi_native_presented(void) {", where="host/nn_vi.c")
     assert "fps_period_ns()" in presented, "hos_vi_native_presented: the exact period of the game's rate"
@@ -193,6 +199,23 @@ def main():
         env_limit = dict(env, HOS_FPS_LIMIT="144")
         out = run([str(host_exe), "60", "2", "1", "-"], env=env_limit).split()
         assert (int(out[0]), int(out[2])) == (72, 1000000000 * 2 // 144), out
+        # the VRR row's cap (feat/vsync-vrr): a limit above 60 is held under the refresh; below 60, above the limit or
+        # Per-frame it changes nothing, and Unlimited has none of it either
+        for limit, mult, realtime, cap, want_fps, want_unlimited, want_period in (
+            (165, 1, 1, 162, 162, 0, 1000000000 // 162),
+            (240, 4, 1, 162, 41, 0, 1000000000 * 4 // 162),
+            (240, 4, 1, 58, 60, 0, 1000000000 * 4 // 240),      # (a cap under 60 would hold the game under its console rate)
+            (90, 1, 1, 200, 90, 0, 1000000000 // 90),          # (a cap over the limit leaves it alone)
+            (0, 4, 1, 162, 360, 1, 0),                           # (Unlimited)
+            (100, 1, 0, 162, 60, 0, 1000000000 // 60),           # (Per frame: the cap does not apply)
+        ):
+            out = run([str(host_exe), str(limit), str(mult), str(realtime), str(cap)], env=env).split()
+            got = (int(out[0]), int(out[1]), int(out[2]))
+            assert got == (want_fps, want_unlimited, want_period), \
+                "limit %d x%d realtime %d cap %d: %s, wanted %s" % (limit, mult, realtime, cap, got,
+                                                                    (want_fps, want_unlimited, want_period))
+        out = run([str(host_exe), "60", "2", "1", "117"], env=env_limit).split()
+        assert (int(out[0]), int(out[2])) == (59, 1000000000 * 2 // 117), out   # (the cap over HOS_FPS_LIMIT too)
         # menu_fps_limit
         menu_cpp, menu_exe = work / "menu.cpp", work / "menu.exe"
         menu_cpp.write_text(MENU.replace("FRAMEGEN_ROWS", rows).replace("MENU_FPS_LIMIT", fps_limit_fn), encoding="utf-8")

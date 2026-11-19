@@ -6022,8 +6022,12 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     static int hdr_was = -1;   // (the Insert menu's HDR as the swapchain was made for it; -1: not yet looked at)
     const bool hdr_changed = hdr_was >= 0 && hdr_was != opts.hdr;   // (turned on or off: the swapchain's format)
     if (hdr_was < 0) hdr_was = opts.hdr;
+    static int present_was = -1;   // (the V-Sync and VRR rows as the swapchain was made for them: present_choice_key)
+    const int present_now = present_choice_key();
+    const bool present_changed = present_was >= 0 && present_was != present_now;
+    if (present_was < 0) present_was = present_now;
     const uint64_t want = dev.swap_resize.exchange(0, std::memory_order_acquire);
-    if (want || !dev.swapchain || reflex_swapchain_stale() || hdr_changed) {   // (resized, gone, Reflex or HDR changed)
+    if (want || !dev.swapchain || reflex_swapchain_stale() || hdr_changed || present_changed) {   // (resized, gone, Reflex, HDR, V-Sync or VRR changed)
         std::lock_guard qk(dev.present_mu);
         const uint32_t width = want ? (uint32_t)(want >> 32) : dev.swap_extent.width;
         const uint32_t height = want ? (uint32_t)want : dev.swap_extent.height;
@@ -6038,6 +6042,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
             return;   // (the old swapchain may already be retired; do not acquire or reset a frame fence)
         }
         hdr_was = opts.hdr;
+        present_was = present_now;
     }
     if (src) {   // (the Window scaling filter's row: whether the window is the picture's size. Only the game's frames and the
                  // made ones: the start-up screen (no src) is drawn at the window's own size, which made the row read "Not
@@ -6913,7 +6918,7 @@ void fill_replay_table(MkwVkRenderer& t) {
         return id == 0 ? opts.realtime : id == 1 ? menu_is_open() : id == 2 ? resolution_auto() && !temporal_full_scale() : id == 3 ? (temporal_full_scale() ? 10000 : resolution_scale()) : id == 4 ? opts.pad_background : id == 5 ? opts.text_speed : id == 6 ? opts.mouse_native :
                id == 7 ? opts.mouse_sens : id == 8 ? opts.mouse_invert : id == 9 ? opts.rumble : id == 16 ? opts.invert_cam_x : id == 17 ? opts.invert_cam_y : id == HOS_OPT_GYRO ? opts.gyro : id == HOS_OPT_GYRO_SENS_X ? opts.gyro_sens_x : id == HOS_OPT_GYRO_SENS_Y ? opts.gyro_sens_y : id == HOS_OPT_GYRO_INV_X ? opts.gyro_inv_x : id == HOS_OPT_GYRO_INV_Y ? opts.gyro_inv_y : id == HOS_OPT_GYRO_DEADZONE ? opts.gyro_deadzone :
                id == HOS_OPT_DLSS_JITTER_W || id == HOS_OPT_DLSS_JITTER_H || id == HOS_OPT_DLSS_JITTER_PHASES ? jitter_option(id) :
-               id == HL_OPT_FPS_LIMIT ? menu_fps_limit() : id == HL_OPT_FRAMEGEN_MULT ? (framegen_on() && framegen_now() >= 2 ? framegen_now() : 1) : 0;   // (HeyListen: the frame rate limit and the multiplier it is shared with, host/nn_vi.c; vk_opt_ids.h)
+               id == HL_OPT_FPS_LIMIT ? menu_fps_limit() : id == HL_OPT_FRAMEGEN_MULT ? (framegen_on() && framegen_now() >= 2 ? framegen_now() : 1) : id == HL_OPT_VRR_CAP ? vrr_fps_cap() : 0;   // (HeyListen: the frame rate limit, the multiplier it is shared with and the VRR row's cap, host/nn_vi.c; vk_opt_ids.h)
     };
     t.option_set = menu_option_set;
     t.nvn_register_sampler = register_sampler_queued;

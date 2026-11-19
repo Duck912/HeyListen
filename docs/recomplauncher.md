@@ -83,8 +83,8 @@ in [USER_GUIDE.md](USER_GUIDE.md#install-with-recomplauncher).
 ## When you add or rename a menu row
 
 Add it to `settings` (or leave it out on purpose) with the row's ini key and values. `test_recomplauncher_json.py` fails when a
-key is not a row, so a rename in `vk_menu.cpp` cannot leave the file behind. The Presentation row on `feat/present-mode`
-(`presentation`, three values) is not in the file until that branch is on `main`.
+key is not a row, so a rename in `vk_menu.cpp` cannot leave the file behind. The V-Sync (`vsync`) and VRR (`vrr`) rows are in
+the file, both Off by default.
 
 ## When players must build again: `prepare.version`
 

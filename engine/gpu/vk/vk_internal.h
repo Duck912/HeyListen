@@ -12,6 +12,7 @@
 #include "vk_loader.h"
 #include "vk_api.h"
 #include "split_count.h"   // (TICK-052)
+#include "present_mode.h"
 
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
 #include <intrin.h>
@@ -35,10 +36,25 @@ void queue_flush();          // (the same, taking dev.present_mu)
 // (hookshot) held submits out, then vkDeviceWaitIdle with the present queue's lock taken too (dev.present_mu held): the device's
 // every queue is synchronized by the host around it
 void device_wait_idle_locked();
+/// The display's refresh in mHz, 0 unknown (vk_main.cpp)
+int display_refresh_mhz();
+/// (VRR row) What it comes to now: the row, the fullscreen row, the display's refresh range, RX_VK_FIFO / RX_VK_IMMEDIATE. Cached a
+/// fraction of a second; log says one line for each change (why, mode, cap) and the window's style follows (host/display.c)
+present_mode::VrrState vrr_resolved(bool log);
+/// A number that changes when the V-Sync or VRR rows change what the swapchain should be (present_image makes it again)
+int present_choice_key();
+/// The most the game's frame rate limit may be under VRR (host/nn_vi.c, HL_OPT_VRR_CAP): the refresh - 3; 0 when VRR is off, or
+/// the refresh is not known, or the cap would be under 60
+int vrr_fps_cap();
+/// The gap the display thread keeps between frame generation's presents under VRR (ns), 0: none
+int64_t vrr_min_gap_ns();
 
 struct Device {
     VkInstance instance = VK_NULL_HANDLE;
     const char* present_mode_name = nullptr;   // (the swapchain's: the overlay shows it)
+    unsigned present_modes_offered = 0;        // (present_mode.h Offered bits of the surface; the Presentation row reads them)
+    bool present_modes_known = false;          // (create_swapchain has asked the surface)
+    bool vrr_active = false;                   // (present_mode.h vrr_resolve: the VRR row's effect as the swapchain was made)
     VkPhysicalDevice physical = VK_NULL_HANDLE;
     VkPhysicalDeviceProperties props{};
     VkPhysicalDeviceMemoryProperties memory{};
