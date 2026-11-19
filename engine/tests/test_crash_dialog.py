@@ -1178,6 +1178,27 @@ esac
     assert " (" in report["cpu"] and " threads)" in report["cpu"] and not report["cpu"].endswith(report["os"]), report
     assert report["os"] and report["os"] not in report["cpu"] and ("threads)" not in report["os"]), ("os is the OS part only", report)
     print("PASS: a crash before the game's report lines: cpu and os split, the gpu from the log's adapters, no empty renderer")
+
+    # the resolved names (docs/crash-reports.md): the signature is the top host frame, not the build's raw offset; the
+    # frame lists carry every name; the lifted code's key travels with them; the crash lines keep the names too
+    names = home / "names"
+    names.mkdir()
+    (names / "hookshot_version.txt").write_text(stamp, encoding="utf-8")
+    named_log = ("[hos host] hookshot v0.4.3 (source 01234567)",
+                 "[hos host] object keys: lifted code 3f1a9c2b04",
+                 "[hos host] CRASH: exception 0xc0000005 (write 0x10, guest 0x10) at HeyListen.exe+0x12f44593 f_80580b38+0x1c4",
+                 "[hos host] CRASH: host frame 0: HeyListen.exe+0x12f44593 f_80580b38+0x1c4",
+                 "[hos host] CRASH: host frame 1: HeyListen.exe+0x1ad4cf5b hos_job_step+0x2d",
+                 "[hos host] CRASH: host frame 2: SDL3.dll+0x11c011",
+                 "[hos host] CRASH: guest frame 0: 0x80580b38 f_80580b38+0x0")
+    game("crash", *named_log, folder=names, buttons="0,1,0,0", extra={"CRASH_TEST_CURL": str(curl), "CURL_ANSWER": "sent"})
+    report = json.loads((names / "sent.json").read_text(encoding="utf-8"))
+    assert report["signature"] == "f_80580b38+0x1c4", report
+    assert report["frames"] == ["f_80580b38+0x1c4", "hos_job_step+0x2d"], report
+    assert report["guest_frames"] == ["f_80580b38+0x0"], report
+    assert report["lifted_code"] == "3f1a9c2b04", report
+    assert "CRASH: host frame 0: HeyListen.exe+0x12f44593 f_80580b38+0x1c4" in report["crash"], report["crash"]
+    print("PASS: the report's signature is the resolved top frame, with every frame and the lifted code's key")
     print("PASS: Report automatically: the game's own report shown, Show all of it, Send with curl, the answer, offered once")
 
     # Send crash reports automatically (the menu row, hookshot_options.ini send_crash_reports=1): the same report posted with no
