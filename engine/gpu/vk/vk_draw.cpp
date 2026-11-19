@@ -7280,10 +7280,19 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     // itself drew sampled the fade's transient words (white/cyan blowouts, green bands — the picture regression that
     // 9c42f5e7's render-instead-of-stall unmasked); the queue's depth is the churn's own clock, so the first presents
     // past the hold sample the state by then settled. The waits below still run, and still steal: it is what drains
-    // the queue at the pace the storm always had. RX_VK_STORM_HOLD=<jobs> (200; 0: off, drawn as before)
+    // the queue at the pace the storm always had. Engaged above RX_VK_STORM_HOLD jobs (200), released below half of
+    // that: the queue saws with each frame's pushes, and a hold that flickered with it drew the churn's transient
+    // frames anyway. 0: off, drawn as before
     static const int hold_deep = getenv("RX_VK_STORM_HOLD") ? atoi(getenv("RX_VK_STORM_HOLD")) : 200;
+    static const int64_t hold_off = (int64_t)std::max(1, hold_deep / 2);
+    thread_local bool hold_on = false;
+    const int64_t pending_jobs = jobs_pending();
+    if (hold_deep <= 0) hold_on = false;
+    else if (hold_on) {
+        if (pending_jobs < hold_off) hold_on = false;
+    } else if (pending_jobs >= (int64_t)hold_deep) hold_on = true;
     static std::atomic<int64_t> st_storm_holds{0};
-    if (hold_deep > 0 && cp->ready.load(std::memory_order_acquire) && jobs_pending() >= (int64_t)hold_deep) {
+    if (hold_on && cp->ready.load(std::memory_order_acquire)) {
         st_pending_skips++;
         st_storm_holds.fetch_add(1, std::memory_order_relaxed);
         if (st_storm_holds.load(std::memory_order_relaxed) < 8 ||
