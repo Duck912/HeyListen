@@ -682,6 +682,12 @@ PLAYER_USE = [
                       "translation, the first thing to try."),
     ("RX_VK_FORCE_MESH_FALLBACK", "The picture is missing on a card or driver whose mesh shaders do not work: "
                                   "`=1` draws with the fallback path."),
+    ("RX_VK_NO_PREDICT", "A start or a new area stalls or goes wrong while pipelines are predicted: `=1` skips the "
+                         "prediction and builds a pipeline when a draw first needs it."),
+    ("RX_VK_FIFO", "Tearing, or a present mode that misbehaves on the driver: set it to present in FIFO (V-Sync), as "
+                   "a card or driver with V-Sync forced does."),
+    ("RX_VK_KEEP_RETIRED", "Windows, a card that loses the device around area loads (issue 1057): `=0` gives "
+                           "retired memory pools back instead of keeping them."),
     ("RX_VK_NO_F16", "GTX 10xx, RX 400/500 or another card without 16-bit float shaders: `=1` lowers the f16 math "
                      "to 32 bits."),
     ("RX_VK_HANDLE_TABLES", "Dark or green blocks where shadow maps should be read (issue 52): `=0` is the earlier "

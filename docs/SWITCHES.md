@@ -10,7 +10,7 @@ python -I engine/scripts/list_switches.py
 
 and commit both files. A test (`engine/tests/test_switches_documented.py`) fails when a switch read in the source is missing here or the data file is out of date.
 
-1245 switches: 46 players may be told to use, 338 diagnostic, 861 developer-only; 1043 have a real explanation and 202 are marked `undocumented`.
+1245 switches: 49 players may be told to use, 338 diagnostic, 858 developer-only; 1043 have a real explanation and 202 are marked `undocumented`.
 
 ## How to set a switch
 
@@ -64,7 +64,7 @@ The entries below say what each one does, its values and default, and when it is
 
 | Area | Switches | Player | Diagnostic | Developer |
 |---|---:|---:|---:|---:|
-| [Renderer](#renderer-upscaling-frame-generation-hdr-v-sync-and-presentation) | 382 | 16 | 13 | 353 |
+| [Renderer](#renderer-upscaling-frame-generation-hdr-v-sync-and-presentation) | 382 | 19 | 13 | 350 |
 | [Shaders and pipelines](#shaders-and-pipelines) | 114 | 6 | 0 | 108 |
 | [Memory and textures](#memory-and-textures) | 172 | 9 | 0 | 163 |
 | [Audio](#audio) | 13 | 5 | 8 | 0 |
@@ -2087,13 +2087,13 @@ The graphics card listed as `vk: device <n>` in the log, over the menu's GPU dev
 
 **Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `gpu/vk/vk_replay.cpp:225` and 1 more place.
 
-#### `RX_VK_FIFO` - developer
+#### `RX_VK_FIFO` - player
 
 undocumented: gpu/vk/vk_main.cpp:788 (in `create_swapchain()`) reads it as an on/off switch: `const bool force_fifo = getenv("RX_VK_FIFO") != nullptr;`. No comment in the source says what it changes.
 
 **Values:** on or off (0, false, off, no and empty are off). **Default:** off (unset).
 
-**When a player would use it:** Not for players: an internal experiment or A/B switch, changed only by a developer.
+**When a player would use it:** Tearing, or a present mode that misbehaves on the driver: set it to present in FIFO (V-Sync), as a card or driver with V-Sync forced does.
 
 **Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `gpu/vk/vk_main.cpp:788`.
 
@@ -2467,13 +2467,13 @@ Kept, up to RX_VK_KEEP_FINALIZED_MB (512 by default; 0: evicted as before), the 
 
 **Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `gpu/vk/vk_texture.cpp:5530`.
 
-#### `RX_VK_KEEP_RETIRED` - developer
+#### `RX_VK_KEEP_RETIRED` - player
 
 (Pools_mu held) (hookshot) Kept by default on Windows: giving them back is for the Linux amdgpu submit above, and on Windows an Intel Arc B390 lost the device entering Kokiri every time with it and 1 run in 5 without (issue 17, fuxau); the AMD device losses on the Ally X (309) and RX 6600 (571) came right after retired pools went back. RX_VK_KEEP_RETIRED=0 or 1 chooses (pools_mu held) (hookshot) Kept by default on Windows: giving them back is for the Linux amdgpu submit above, and on Windows an Intel Arc B390 lost the device entering Kokiri every time with it and 1 run in 5 without (issue 17, fuxau); the AMD device losses on the Ally X (309) and RX 6600 (571) came right after retired pools went back. RX_VK_KEEP_RETIRED=0 or 1 chooses.
 
 **Values:** text (`0` named). **Default:** unset.
 
-**When a player would use it:** Not for players: an internal experiment or A/B switch, changed only by a developer.
+**When a player would use it:** Windows, a card that loses the device around area loads (issue 1057): `=0` gives retired memory pools back instead of keeping them.
 
 **Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `gpu/vk/vk_memory.cpp:5985` and 1 more place.
 
@@ -2817,13 +2817,13 @@ A draw that samples a target this pass already wrote, or writes a target an earl
 
 **Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `gpu/vk/vk_draw.cpp:5041`.
 
-#### `RX_VK_NO_PREDICT` - developer
+#### `RX_VK_NO_PREDICT` - player
 
 undocumented: gpu/vk/vk_draw.cpp:9439 reads it as a text value: `if (shared->notes.empty() || (!noted && getenv("RX_VK_NO_PREDICT"))) return;`. No comment in the source says what it changes.
 
 **Values:** text. **Default:** unset.
 
-**When a player would use it:** Not for players: an internal experiment or A/B switch, changed only by a developer.
+**When a player would use it:** A start or a new area stalls or goes wrong while pipelines are predicted: `=1` skips the prediction and builds a pipeline when a draw first needs it.
 
 **Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `gpu/vk/vk_draw.cpp:9439`.
 

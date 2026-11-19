@@ -16862,7 +16862,7 @@
    "name": "RX_VK_FIFO",
    "area": "renderer",
    "group": "Rendering and GPU",
-   "audience": "developer",
+   "audience": "player",
    "files": [
     {
      "path": "gpu/vk/vk_main.cpp",
@@ -16877,7 +16877,7 @@
    "source": "undocumented",
    "documented": false,
    "set_via": "In `hookshot_env.txt`, or in the environment.",
-   "use": null
+   "use": "Tearing, or a present mode that misbehaves on the driver: set it to present in FIFO (V-Sync), as a card or driver with V-Sync forced does."
   },
   {
    "name": "RX_VK_FINE_SEGMENTS",
@@ -18472,7 +18472,7 @@
    "name": "RX_VK_KEEP_RETIRED",
    "area": "renderer",
    "group": "Rendering and GPU",
-   "audience": "developer",
+   "audience": "player",
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
@@ -18491,7 +18491,7 @@
    "source": "comment at gpu/vk/vk_memory.cpp",
    "documented": true,
    "set_via": "In `hookshot_env.txt`, or in the environment.",
-   "use": null
+   "use": "Windows, a card that loses the device around area loads (issue 1057): `=0` gives retired memory pools back instead of keeping them."
   },
   {
    "name": "RX_VK_LAG_LOG",
@@ -21301,7 +21301,7 @@
    "name": "RX_VK_NO_PREDICT",
    "area": "renderer",
    "group": "Rendering and GPU",
-   "audience": "developer",
+   "audience": "player",
    "files": [
     {
      "path": "gpu/vk/vk_draw.cpp",
@@ -21316,7 +21316,7 @@
    "source": "undocumented",
    "documented": false,
    "set_via": "In `hookshot_env.txt`, or in the environment.",
-   "use": null
+   "use": "A start or a new area stalls or goes wrong while pipelines are predicted: `=1` skips the prediction and builds a pipeline when a draw first needs it."
   },
   {
    "name": "RX_VK_NO_PRESYNC",
