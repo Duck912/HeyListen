@@ -7274,6 +7274,24 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         if (shader) st_shader_wait_ms += ms;
         return fresh;
     };
+    // (hookshot) The storm hold: while the translation queue is still hundreds deep — a cold area's arrival, its fade
+    // rewriting the texture handles every game frame, each frame's state its own variant — this thread's draws are
+    // left out, and the frames show the area's earlier picture, as a draw left out always does. The frames the storm
+    // itself drew sampled the fade's transient words (white/cyan blowouts, green bands — the picture regression that
+    // 9c42f5e7's render-instead-of-stall unmasked); the queue's depth is the churn's own clock, so the first presents
+    // past the hold sample the state by then settled. The waits below still run, and still steal: it is what drains
+    // the queue at the pace the storm always had. RX_VK_STORM_HOLD=<jobs> (200; 0: off, drawn as before)
+    static const int hold_deep = getenv("RX_VK_STORM_HOLD") ? atoi(getenv("RX_VK_STORM_HOLD")) : 200;
+    static std::atomic<int64_t> st_storm_holds{0};
+    if (hold_deep > 0 && cp->ready.load(std::memory_order_acquire) && jobs_pending() >= (int64_t)hold_deep) {
+        st_pending_skips++;
+        st_storm_holds.fetch_add(1, std::memory_order_relaxed);
+        if (st_storm_holds.load(std::memory_order_relaxed) < 8 ||
+            st_storm_holds.load(std::memory_order_relaxed) % 2000 == 0)
+            logf("vk: a translation storm: %d jobs queued, the frame's draws left out until it drains",
+                 jobs_pending());
+        return;
+    }
     if (!cp->ready.load(std::memory_order_acquire)) {
         if (may_skip) return void(st_pending_skips++);
         // (hookshot) The translation finished in this draw's own wait: stolen to run here (9c42f5e7) or a worker seen
