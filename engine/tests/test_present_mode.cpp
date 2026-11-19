@@ -1,4 +1,5 @@
-// gpu/vk/present_mode.h: which present mode the swapchain gets from the V-Sync row, VRR, the switches and the surface
+// gpu/vk/present_mode.h: which present mode the swapchain gets from the V-Sync and V-Sync mode rows, VRR, the switches and
+// the surface; and the images each choice asks for, with the surface's clamp
 #include <cstdio>
 
 #include "../gpu/vk/present_mode.h"
@@ -11,14 +12,21 @@ static int bad;
         if (!(cond)) { std::printf("FAIL line %d: %s\n", __LINE__, #cond); bad++; } \
     } while (0)
 
-static Mode pick_with(int row, unsigned offered, bool windows, bool fifo = false, bool imm = false, bool vrr = false) {
+static Mode pick_with(int row, unsigned offered, bool windows, bool fifo = false, bool imm = false, bool vrr = false,
+                      int buffering = kFifoTriple) {
     Input in;
-    in.row = row, in.offered = offered, in.windows = windows, in.env_fifo = fifo, in.env_immediate = imm, in.vrr = vrr;
+    in.row = row, in.buffering = buffering, in.offered = offered, in.windows = windows, in.env_fifo = fifo, in.env_immediate = imm,
+    in.vrr = vrr;
     return pick(in);
+}
+static Images plan_with(int row, int buffering, Mode picked, bool framegen, unsigned min_count = 0, unsigned max_count = 0) {
+    Input in;
+    in.row = row, in.buffering = buffering;
+    return image_plan(in, picked, framegen, min_count, max_count);
 }
 
 int main() {
-    const unsigned all = kHasMailbox | kHasImmediate | kHasRelaxed;
+    const unsigned all = kHasMailbox | kHasImmediate;
     // (Off, the default: as it always was)
     EXPECT(pick_with(kOff, all, true) == kMailboxMode);
     EXPECT(pick_with(kOff, all, false) == kMailboxMode);
@@ -26,36 +34,60 @@ int main() {
     EXPECT(pick_with(kOff, kHasImmediate, true) == kImmediateMode);   // AMD on Windows: no mailbox, immediate
     EXPECT(pick_with(kOff, kHasImmediate, false) == kFifo);           // Linux: FIFO
     EXPECT(pick_with(kOff, 0, true) == kFifo);
-    EXPECT(pick_with(kOff, kHasRelaxed, true) == kFifo);
-    // (On)
-    EXPECT(pick_with(kOn, all, true) == kFifo);
-    EXPECT(pick_with(kOn, all, false) == kFifo);
-    EXPECT(pick_with(kOn, 0, true) == kFifo);
-    // (Adaptive: relaxed where offered, else plain FIFO)
-    EXPECT(pick_with(kAdaptive, all, true) == kFifoRelaxedMode);
-    EXPECT(pick_with(kAdaptive, kHasMailbox | kHasImmediate, true) == kFifo);
-    EXPECT(pick_with(kAdaptive, 0, false) == kFifo);
-    // (the switches win over the row; RX_VK_FIFO over RX_VK_IMMEDIATE)
+    // (On: FIFO, or Mailbox when the mode row asks for it and the surface lists it)
+    EXPECT(pick_with(kOn, all, true, false, false, false, kFifoDouble) == kFifo);
+    EXPECT(pick_with(kOn, all, true, false, false, false, kFifoTriple) == kFifo);
+    EXPECT(pick_with(kOn, all, true, false, false, false, kMailbox) == kMailboxMode);
+    EXPECT(pick_with(kOn, kHasImmediate, true, false, false, false, kMailbox) == kFifo);   // no Mailbox here: FIFO (triple)
+    EXPECT(pick_with(kOn, 0, true, false, false, false, kMailbox) == kFifo);
+    // (the switches win over the rows; RX_VK_FIFO over RX_VK_IMMEDIATE)
     EXPECT(pick_with(kOff, all, true, true) == kFifo);
-    EXPECT(pick_with(kAdaptive, all, true, true) == kFifo);
+    EXPECT(pick_with(kOn, all, true, true, false, false, kMailbox) == kFifo);
     EXPECT(pick_with(kOff, all, true, false, true) == kImmediateMode);
     EXPECT(pick_with(kOn, all, false, false, true) == kImmediateMode);
     EXPECT(pick_with(kOff, all, true, true, true) == kFifo);
     EXPECT(pick_with(kOff, kHasMailbox, false, false, true) == kMailboxMode);   // asked, not offered
-    // (VRR: FIFO whatever the row says, relaxed only when the row asks for it; the switches still win)
+    // (VRR: FIFO whatever the rows say; the switches still win)
     EXPECT(pick_with(kOff, all, true, false, false, true) == kFifo);
     EXPECT(pick_with(kOn, all, true, false, false, true) == kFifo);
-    EXPECT(pick_with(kAdaptive, all, true, false, false, true) == kFifoRelaxedMode);
-    EXPECT(pick_with(kAdaptive, 0, true, false, false, true) == kFifo);
+    EXPECT(pick_with(kOn, all, true, false, false, true, kMailbox) == kFifo);
+    EXPECT(pick_with(kOn, all, true, false, false, true, kFifoDouble) == kFifo);
     EXPECT(pick_with(kOff, all, true, false, true, true) == kImmediateMode);
     // (an unknown row value is Off)
     EXPECT(pick_with(7, all, true) == kMailboxMode);
-    // (the row's exactness)
-    EXPECT(row_exact(kOff, 0) && row_exact(kAdaptive, 0));   // (surface not asked yet)
-    EXPECT(row_exact(kOn, 0));
-    EXPECT(!row_exact(kAdaptive, kHasMailbox));
-    EXPECT(row_exact(kAdaptive, kHasRelaxed));
-    EXPECT(!row_exact(kOff, kHasRelaxed));
+    // (what the surface can give: Mailbox only where it is listed, Off needs mailbox or immediate; 0 offered: not asked)
+    EXPECT(buffering_offered(kFifoDouble, 0) && buffering_offered(kMailbox, 0));   // (surface not asked yet)
+    EXPECT(buffering_offered(kMailbox, all) && !buffering_offered(kMailbox, kHasImmediate));
+    EXPECT(off_offered(0) && off_offered(kHasMailbox) && off_offered(kHasImmediate));
+
+    // (the images each choice asks for)
+    EXPECT(plan_with(kOn, kFifoDouble, kFifo, false).count == 2);    // FIFO (double buffering)
+    EXPECT(plan_with(kOn, kFifoTriple, kFifo, false).count == 3);    // FIFO (triple buffering), today's On
+    EXPECT(plan_with(kOn, kMailbox, kMailboxMode, false).count == 3);   // Mailbox is triple buffered by nature
+    EXPECT(plan_with(kOn, kMailbox, kFifo, false).count == 3);          // (not offered: FIFO (triple buffering))
+    EXPECT(plan_with(kOn, kMailbox, kFifo, false).want == 3);
+    EXPECT(plan_with(kOff, kFifoTriple, kMailboxMode, false).count == 4);   // (Off, as before: the spare image)
+    EXPECT(plan_with(kOff, kFifoTriple, kImmediateMode, false).count == 4);
+    EXPECT(plan_with(kOff, kFifoTriple, kFifo, false).count == 3);
+    // (frame generation keeps the images it needs: the row cannot lower it)
+    Images p = plan_with(kOn, kFifoDouble, kFifo, true);
+    EXPECT(p.count == 3 && p.framegen_raised && p.want == 2 && !p.min_raised);
+    p = plan_with(kOn, kFifoTriple, kFifo, true);
+    EXPECT(p.count == 3 && !p.framegen_raised);
+    p = plan_with(kOn, kMailbox, kMailboxMode, true);
+    EXPECT(p.count == 4 && p.framegen_raised && p.want == 3);
+    // (the surface's minImageCount / maxImageCount clamp it)
+    p = plan_with(kOn, kFifoDouble, kFifo, false, 3, 0);
+    EXPECT(p.count == 3 && p.min_raised && p.want == 2);       // min 3: FIFO double is not possible
+    p = plan_with(kOn, kFifoTriple, kFifo, false, 0, 2);
+    EXPECT(p.count == 2 && p.max_capped);
+    p = plan_with(kOn, kMailbox, kMailboxMode, true, 0, 3);
+    EXPECT(p.count == 3 && p.max_capped && p.framegen_raised);
+    p = plan_with(kOff, kFifoTriple, kMailboxMode, false, 5, 0);
+    EXPECT(p.count == 5 && p.min_raised);
+    p = plan_with(kOn, kFifoDouble, kFifo, true, 2, 4);
+    EXPECT(p.count == 3 && p.framegen_raised && !p.min_raised && !p.max_capped);
+
     // (VRR: Off changes nothing at all)
     {
         VrrInput v;

@@ -203,7 +203,7 @@ on CachyOS with a Radeon RX 9070 XT (Mesa's RADV driver). Expect problems and re
 
 ## V-Sync and G-Sync / FreeSync (VRR)
 
-Two rows on the Insert menu's Graphics tab (Insert or F1), both applied at once, no restart.
+Three rows on the Insert menu's Graphics tab (Insert or F1), all applied at once, no restart.
 
 **V-Sync** says whether frames wait for the screen's refresh.
 
@@ -211,13 +211,30 @@ Two rows on the Insert menu's Graphics tab (Insert or F1), both applied at once,
   where the game's frame rate and the screen's do not match.
 - **On**: frames wait for the refresh: no tearing, a little more delay, and the frame rate cannot pass the refresh rate. With
   frame generation, a multiplier the refresh has no room for shows fewer made frames per game frame (the game keeps its own rate).
-- **Adaptive**: as On, but a frame that misses its refresh is shown at once instead of waiting a whole refresh, so one slow
-  moment does not drop the frame rate to half. Where the driver has no relaxed V-Sync it is the same as On.
+  **V-Sync mode**, just below, chooses how many images the swapchain keeps.
+
+**V-Sync mode** is greyed while V-Sync is Off; it says so in its hint there.
+
+- **FIFO (double buffering)**: two images. The least delay with V-Sync, but a frame that misses its refresh waits a whole one:
+  below 60 fps at 60 Hz the game falls to 30. A display or driver that asks for at least three images cannot do it (the row's
+  hint and the log say so).
+- **FIFO (triple buffering)** (the default, and what V-Sync On always was): three images, one kept free, so a slow frame costs
+  a refresh rather than half the frame rate.
+- **Mailbox (triple buffering)**: the Mailbox present mode with three images (four with frame generation). No tearing, the game
+  can render past the refresh instead of waiting for it, and the newest frame is shown. Mailbox needs a spare image, so it is
+  triple buffered by nature: there is no "Mailbox double". It is offered only where the display lists Mailbox; AMD's Windows
+  driver does not, so the row there says "not offered" and a saved Mailbox falls back to FIFO (triple buffering), said in the log.
+
+With frame generation on, the game keeps the images frame generation needs whatever the row says: FIFO (double buffering) uses
+three (the row's hint says so), and Mailbox uses four.
+
+The game's log (`logs/`) has one `vk: swapchain` line with V-Sync on or off, the mode, the present mode and the image count
+actually used; the F10 overlay's Presentation line shows the present mode. Both are useful in a report.
 
 **VRR (G-Sync / FreeSync)** is **new**, for a screen with a variable refresh rate. **Off** by default: nothing changes until
 you turn it on. **On** gives the screen what it needs to follow the game's frame rate:
 
-1. V-Sync On's present mode (no tearing); the V-Sync row is overridden while VRR is On.
+1. V-Sync On's present mode (no tearing); VRR uses FIFO whatever the V-Sync rows say while it is On.
 2. In fullscreen, the game's window is made as a borderless popup window covering the screen, which Windows can show directly
    (independent flip) instead of through its desktop compositor. G-Sync and FreeSync only work on that path.
 3. The Frame rate limit, when above 60, is held 3 fps under the screen's refresh rate (NVIDIA's advice), a lower limit of

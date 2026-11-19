@@ -37,7 +37,7 @@ HOST = r"""
 #include <string.h>
 #define HL_OPT_FPS_LIMIT 90
 #define HL_OPT_FRAMEGEN_MULT 91
-#define HL_OPT_VRR_CAP 92
+#define HL_OPT_VRR_CAP 93
 static int option_limit = 60, option_mult = 1, option_realtime = 1, option_vrr_cap = 0;
 int rx_option(int id, int otherwise) {
     if (id == 0) return option_realtime;
@@ -135,9 +135,9 @@ def check_runtime():
         "the renderer does not answer the multiplier that runs (1 when frame generation does not run)"
     ids = (VK / "vk_opt_ids.h").read_text(encoding="utf-8")
     assert re.search(r"#define HL_OPT_FRAMEGEN_MULT 91\b", ids), "HL_OPT_FRAMEGEN_MULT is not 91"
-    assert re.search(r"#define HL_OPT_VRR_CAP 92\b", ids), "HL_OPT_VRR_CAP is not 92"
-    assert not re.search(r"#define HL_OPT_\w+ 92\b", ids.replace("#define HL_OPT_VRR_CAP 92", "", 1)), \
-        "another option id is 92 (HL_OPT_VRR_CAP's)"
+    assert re.search(r"#define HL_OPT_VRR_CAP 93\b", ids), "HL_OPT_VRR_CAP is not 93"
+    assert not re.search(r"#define HL_OPT_\w+ 93\b", ids.replace("#define HL_OPT_VRR_CAP 93", "", 1)), \
+        "another option id is 93 (HL_OPT_VRR_CAP's)"
     host = (ROOT / "host" / "nn_vi.c").read_text(encoding="utf-8")
     assert "rx_option(HL_OPT_FRAMEGEN_MULT, 1)" in host, "the host does not ask the multiplier"
     assert "rx_option(HL_OPT_VRR_CAP, 0)" in host, "the host does not ask the VRR row's cap"

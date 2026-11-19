@@ -14,8 +14,8 @@
 
 /* The VRR row's cap (host/nn_vi.c asks, gpu/vk/vk_replay.cpp answers in frames a second): the display's refresh - 3 while VRR is
    on, 0 when it is off or the refresh is not known. A limit above 60 is held to it, whether it comes from the row or HOS_FPS_LIMIT.
-   91 is the frame generation multiplier's on this tree, so 92: free here (90 the Frame rate limit's) */
-#define HL_OPT_VRR_CAP 92
+   90 is the Frame rate limit's and 91 the frame generation multiplier's on this tree, 92 the V-Sync mode row's, so 93: free here */
+#define HL_OPT_VRR_CAP 93
 
 /* The Skip title screen row (host/oot_autoload.c asks, gpu/vk/vk_replay.cpp answers 0 or 1). 44 is the id Longshot's change
    of the same row uses in vk_api.h (free in this tree: the ids there run 32 to 35, 40 to 43), so the two agree. */
@@ -26,3 +26,7 @@
    host/hos_wide_ui.c (on a narrower screen fitted to its width, as the menus). HOS_WIDE_UI, when set, stands over it. 71 is
    Longshot's id for it; free here (90 is the Frame rate limit's). */
 #define HL_OPT_HUD_LAYOUT 71
+
+/* The V-Sync mode row (gpu/vk/vk_replay.cpp answers): 0 FIFO (double buffering), 1 FIFO (triple buffering), 2 Mailbox. A new
+   id, after the VRR row's (on feat/vsync-buffering's base: 90, 91; here 93, the VRR cap moved past it); nothing renumbered. */
+#define HL_OPT_VSYNC_MODE 92

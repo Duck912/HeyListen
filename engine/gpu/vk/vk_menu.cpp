@@ -40,6 +40,7 @@
 #include "vk_menu_keys.h"   // (which gamepad buttons confirm and go back: those A and B are bound to)         // (how it looks: Dear ImGui, vk_imgui.h)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 #include "vk_dlss.h"
+#include "vk_framegen.h"   // (framegen_on: the V-Sync mode row's hint when frame generation needs more images)
 #include "vk_fsr3.h"      // (the Upscaler row: whether AMD FSR 3.1 runs on this GPU)
 #include "vk_fsr3fi.h"    // (the Frame generation row: whether FSR 3.1 makes the frame)
 #include "vk_framegen.h"  // (the Frame generation row: the multiplier as it runs, who makes the frames)
@@ -375,9 +376,13 @@ const char* hn_resolution(int v, int variant) {
     if (p == 100) return "The 3D at the output's full size: the sharpest, and the slowest.";
     return "A steady size: lower is faster, and softer.";
 }
+/// (the V-Sync mode row with V-Sync Off: greyed, with a hint saying so, and Left and Right leave it alone)
+bool row_inactive(const int* value) {
+    return value == &opts.vsync_mode && opts.vsync == 0;
+}
 /// A row with nothing else to choose here: shown without its arrows, Left and Right leave it (and the saved value) alone
 bool row_fixed(const int* value) {
-    return ((value == &opts.send_perf || value == &opts.send_crash) && !telemetry_available()) || (value == &opts.reflex && !reflex_available()) ||
+    return row_inactive(value) || ((value == &opts.send_perf || value == &opts.send_crash) && !telemetry_available()) || (value == &opts.reflex && !reflex_available()) ||
            (value == &opts.upscale && !filter_needed()) ||
            (value == &opts.hud_layout && getenv("HOS_WIDE_UI") && *getenv("HOS_WIDE_UI")) ||   // (host/hos_wide_ui.c's, first)
            (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr));
@@ -430,21 +435,55 @@ const char* tx_gpu(int v) {
     // (the whole name shows: the selected row slides through it, see marquee_pos)
     return buf;
 }
-/// V-Sync: Off is the game's own way (mailbox, else immediate: no waiting for the refresh), On is FIFO, Adaptive FIFO_RELAXED
-const char* tx_vsync(int v) {
-    static const char* const t[] = {"Off", "On", "Adaptive"};
-    return t[std::clamp(v, 0, 2)];
-}
+/// V-Sync: Off is the game's own way (mailbox, else immediate: no waiting for the refresh), On is FIFO with the mode row's images
+const char* tx_vsync(int v) { return v ? "On" : "Off"; }
 const char* hn_vsync(int v, int variant) {
-    static const char* const t[] = {"No waiting for the screen's refresh: the latest frame is shown at once, for the least delay. The picture can tear where the display does not match.",
-                                    "Frames wait for the screen's refresh: no tearing, a little more delay, and the frame rate cannot pass the refresh rate.",
-                                    "As On, but a frame that misses its refresh is shown at once (it can tear) instead of waiting a whole refresh, so a slow moment does not halve the frame rate."};
-    static const char* const relaxed_gone = "This display or driver has no relaxed V-Sync: On is used instead.";
+    static const char* const off = "No waiting for the screen's refresh: the latest frame is shown at once, for the least delay. The picture can tear where the display does not match.";
+    static const char* const on = "Frames wait for the screen's refresh: no tearing, a little more delay, and the frame rate cannot pass the refresh rate. The V-Sync mode row below chooses how many images it keeps.";
+    static const char* const env = "RX_VK_FIFO or RX_VK_IMMEDIATE in the environment decide the mode: this row does nothing.";
+    if (variant < 0) return getenv("RX_VK_FIFO") || getenv("RX_VK_IMMEDIATE") ? env : v ? on : off;
+    return variant == 0 ? (v ? on : off) : variant == 1 ? env : nullptr;
+}
+/// The V-Sync mode row: FIFO double (2 images, the least delay; a missed refresh waits a whole one), FIFO triple (the default,
+/// today's On), Mailbox (3+ images, the newest frame shown; only where the surface lists it)
+const char* tx_vsync_mode(int v) {
+    static const char* const t[] = {"FIFO (double buffering)", "FIFO (triple buffering)", "Mailbox (triple buffering)"};
+    const int i = std::clamp(v, 0, 2);
+    if (i == present_mode::kMailbox && dev.present_modes_known && !present_mode::buffering_offered(i, dev.present_modes_offered))
+        return "Mailbox (not offered)";
+    if (i == present_mode::kFifoDouble && dev.present_modes_known && dev.swap_min_images >= 3) return "FIFO (double: not possible)";
+    return t[i];
+}
+const char* hn_vsync_mode(int v, int variant) {
+    static const char* const t[] = {
+        "Two images: the least delay with V-Sync. A missed refresh waits a whole one, so below 60 fps at 60 Hz the frame rate falls to 30.",
+        "Three images, the default: one is kept free, so a slow frame costs a refresh rather than half the frame rate.",
+        "No tearing, and the newest frame is shown: the game can render past the refresh instead of waiting for it. Triple buffered by nature (it needs a spare image), so no double version."};
+    static const char* const off = "V-Sync is Off: this row does nothing. Turn V-Sync On to choose how many images it keeps.";
+    static const char* const no_mailbox = "This display or driver offers no Mailbox (AMD's Windows driver has none): FIFO (triple buffering) is used.";
+    static const char* const no_double = "This surface asks for at least 3 images: FIFO (double buffering) is not possible here.";
+    static const char* const fg = "Frame generation needs three images: the row cannot go lower, so FIFO (triple buffering) is used.";
+    static const char* const fg_mailbox = "Frame generation needs a spare image: four are used with Mailbox.";
+    static const char* const vrr = "VRR is on: FIFO is used while it is on.";
     static const char* const env = "RX_VK_FIFO or RX_VK_IMMEDIATE in the environment decide the mode: this row does nothing.";
     const int i = std::clamp(v, 0, 2);
-    const bool gone = dev.present_modes_known && !present_mode::row_exact(i, dev.present_modes_offered);
-    if (variant < 0) return getenv("RX_VK_FIFO") || getenv("RX_VK_IMMEDIATE") ? env : gone && i == 2 ? relaxed_gone : t[i];
-    return variant == 0 ? t[i] : variant == 1 ? (i == 2 ? relaxed_gone : nullptr) : variant == 2 ? env : nullptr;
+    const bool known = dev.present_modes_known;
+    const bool no_mb = known && !present_mode::buffering_offered(i, dev.present_modes_offered);
+    const bool min3 = known && dev.swap_min_images >= 3;
+    const bool frame_gen = framegen_on();
+    const bool forced = getenv("RX_VK_FIFO") || getenv("RX_VK_IMMEDIATE");
+    if (variant < 0) {
+        if (forced) return env;
+        if (opts.vsync == 0) return off;
+        return i == present_mode::kMailbox && no_mb ? no_mailbox : t[i];
+    }
+    if (variant == 0) return forced ? env : opts.vsync == 0 ? off : t[i];
+    if (variant == 1) return i == present_mode::kMailbox && no_mb ? no_mailbox : nullptr;
+    if (variant == 2) return i == present_mode::kFifoDouble && frame_gen ? fg : nullptr;
+    if (variant == 3) return i == present_mode::kFifoDouble && min3 ? no_double : nullptr;
+    if (variant == 4) return i == present_mode::kMailbox && frame_gen ? fg_mailbox : nullptr;
+    if (variant == 5) return i == present_mode::kMailbox && dev.vrr_active ? vrr : nullptr;
+    return nullptr;
 }
 const char* tx_vrr(int v) {
     static const char* const t[] = {"Off", "On", "Auto"};
@@ -736,9 +775,13 @@ Row rows[] = {
      "Fills the whole screen with the game, without the window's border. The same as F11.", nullptr, false, true},
     {TAB_GRAPHICS, "GPU device", &opts.gpu_device, 0, 8, 1, tx_gpu,
      "Which graphics card the game runs on. Applies after a restart.", hn_gpu, true, true},
-    {TAB_GRAPHICS, "V-Sync", &opts.vsync, 0, 2, 1, tx_vsync,
+    {TAB_GRAPHICS, "V-Sync", &opts.vsync, 0, 1, 1, tx_vsync,
      "Whether frames wait for the screen's refresh. Applies at once, when the swapchain is made again; RX_VK_FIFO and RX_VK_IMMEDIATE in the "
-     "environment win over it. The overlay's Presentation line shows the mode in use.", hn_vsync, false, true},
+     "environment win over it. The V-Sync mode row chooses how many images it keeps. The overlay's Presentation line shows the mode in use.",
+     hn_vsync, false, true},
+    {TAB_GRAPHICS, "V-Sync mode", &opts.vsync_mode, 0, 2, 1, tx_vsync_mode,   // (opts.vsync_mode, present_mode.h; off while V-Sync is Off)
+     "With V-Sync On: FIFO double buffering, FIFO triple buffering or Mailbox. Applies at once, when the swapchain is made again.",
+     hn_vsync_mode, false, true},
     {TAB_GRAPHICS, "VRR (G-Sync / FreeSync)", &opts.vrr, 0, 2, 1, tx_vrr,
      "For a variable refresh rate screen, in fullscreen: the game is shown without tearing and without V-Sync's wait. "
      "Needs G-Sync or FreeSync on in the driver. Linux: the compositor's job.", hn_vrr, false, true},
@@ -1150,6 +1193,7 @@ const char* ini_key(const Row& r) {
     if (r.value == &opts.send_perf) return "send_performance_stats";   // (host/hos_telemetry.h reads both of these)
     if (r.value == &opts.send_crash) return "send_crash_reports";
     if (r.value == &opts.vsync) return "vsync";
+    if (r.value == &opts.vsync_mode) return "vsync_mode";
     if (r.value == &opts.vrr) return "vrr";
     if (r.value == &opts.update_check) return "update_check";   // (host/hos_update.c reads it, and writes it for "Never ask again")
     static char k[32];
@@ -1643,7 +1687,7 @@ void column(ui::Ctx& c, float x0, float x1, float top) {
 /// A row's name cell, selected or not, its tag (After restart) at its right end
 /// A row's name cell, selected or not; pending: a change that applies after a restart, a small gold diamond at its right end
 /// (the help says it in words)
-void name_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const char* name, bool sel, bool pending = false, float px = 18.5f) {
+void name_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const char* name, bool sel, bool pending = false, float px = 18.5f, bool dim = false) {
     const float s = c.s, mid = (a.y + b.y) * 0.5f;
     c.d->AddRectFilled(a, b, sel ? ui::kCellNameSel : ui::kCellName);
     c.d->AddRect(a, b, ui::kEdge, 0, std::max(1.0f, s));
@@ -1655,7 +1699,7 @@ void name_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const char* name, bool sel, bool 
     }
     ImFont* f = sel ? c.f.strong : c.f.body;
     const std::string shown = fit(c, f, px * s, room, name, false);
-    ui::text_mid(c, f, px * s, a.x + 20 * s, mid, sel ? ui::kInkBright : ui::kInk, shown.c_str());
+    ui::text_mid(c, f, px * s, a.x + 20 * s, mid, dim ? ui::kDim : sel ? ui::kInkBright : ui::kInk, shown.c_str());
 }
 /// A value cell: a choice with arrows at its ends (left, right: whether it can go that way), gold when selected
 void choice_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const std::string& value, bool sel, bool left, bool right, bool fixed = false) {
@@ -1812,7 +1856,7 @@ void draw_options(ui::Ctx& c) {
             continue;
         }
         const bool selected = i == sel;
-        name_cell(c, ImVec2(rx0, y), ImVec2(split, y + rh), r.name, selected, restart_changed(r));
+        name_cell(c, ImVec2(rx0, y), ImVec2(split, y + rh), r.name, selected, restart_changed(r), 18.5f, row_inactive(r.value));
         const ImVec2 va(split, y), vb(rx1, y + rh);
         float t0 = 0, t1 = 0;
         const std::string tool = r.cheat >= 0 ? cheat_value(r.cheat) : "";
@@ -2239,6 +2283,8 @@ void menu_init() {
         bool has_resolution = false;
         bool v2 = false;
         int old_dynres = -1;   // (the row before Resolution: 0, the full scale, is its 100%; 1 is Auto)
+        int saved_vsync = -1;  // (the last vsync= line: 2 was the old Adaptive, now On with FIFO (triple buffering))
+        bool has_vsync_mode = false;
         while (fgets(line, sizeof line, f)) {
             char* eq = strchr(line, '=');
             if (!eq) continue;
@@ -2252,12 +2298,17 @@ void menu_init() {
             has_resolution |= !strcmp(line, "resolution");
             v2 |= !strcmp(line, "options_version");
             if (!strcmp(line, "dynamic_resolution")) old_dynres = atoi(eq + 1);
+            if (!strcmp(line, "vsync")) saved_vsync = atoi(eq + 1);
+            if (!strcmp(line, "vsync_mode")) has_vsync_mode = true;
             if (!strcmp(line, "microphone_device")) {   // (hookshot: the microphone, by its name)
                 mic_want = mic_key(eq + 1);
                 while (!mic_want.empty() && (mic_want.back() == '\n' || mic_want.back() == '\r')) mic_want.pop_back();
             }
         }
         fclose(f);
+        // (an options file from the branch that had Adaptive (vsync=2): V-Sync On with FIFO (triple buffering), today's On. The
+        // V-Sync mode row is new, so nothing else can contradict it; a saved mode of its own wins)
+        if (saved_vsync >= 2 && !has_vsync_mode) opts.vsync_mode = present_mode::kFifoTriple;
         // (the saved microphone by its name, not its place; the host told the row's choice. Off or the default: no list, no SDL
         // audio at the start)
         if (!mic_want.empty()) refresh_mics();

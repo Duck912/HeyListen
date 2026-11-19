@@ -444,7 +444,7 @@ void display_main() {
         const bool pace = opts.pace != 0;
         const bool timed = j.set->shown >= 0;   // (Auto: each frame at its own refresh's time)
         int shown = timed ? j.set->shown : j.set->made + 1;
-        // (V-Sync On / Adaptive / VRR: a FIFO swapchain shows one frame a refresh at most, and a set with more frames than the
+        // (V-Sync On / VRR: a FIFO swapchain shows one frame a refresh at most, and a set with more frames than the
         // refreshes in a game frame queued and held the game back. Fixed multipliers then leave out the made frames the refresh
         // has no room for, spread evenly over the set; the game's own frame, the last, always stays. Auto already counts refreshes)
         int keep[kMaxMult];

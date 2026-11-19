@@ -39,7 +39,8 @@ struct Options {
     int menu_size = 0;   // (hookshot) the overlays' size: 0 Auto, 1 Small, 2 Medium, 3 Large (gpu/vk/vk_ui.h unit)
     int fullscreen = 0;   // borderless, at the monitor's size: F11 is the same setting
     int gpu_device = 0;   // graphics card index: 0 Auto, 1..N device 0..N-1 (gpu/vk/vk_main.cpp; RX_VK_DEVICE)
-    int vsync = 0;   // V-Sync (present_mode.h): 0 Off (mailbox, else immediate: as before), 1 On (FIFO), 2 Adaptive (FIFO_RELAXED, else FIFO); the swapchain made again at once (RX_VK_FIFO, RX_VK_IMMEDIATE over it)
+    int vsync = 0;   // V-Sync (present_mode.h): 0 Off (mailbox, else immediate: as before), 1 On (FIFO, the count below); the swapchain made again at once (RX_VK_FIFO, RX_VK_IMMEDIATE over it)
+    int vsync_mode = 1;   // V-Sync mode (present_mode.h), with V-Sync On: 0 FIFO (double buffering) (2 images: less delay, a missed refresh waits a whole one), 1 FIFO (triple buffering) (3: the default, today's On), 2 Mailbox (triple buffering) (MAILBOX, 3 or 4 with frame generation, where the surface lists it); saved as vsync_mode
     int vrr = 0;   // VRR (G-Sync / FreeSync): 0 Off (the default: nothing changes), 1 On, 2 Auto (On in fullscreen when the display lists a variable refresh range): FIFO, a borderless popup window that can flip, the frame rate limit at the refresh - 3 (present_mode.h vrr_resolve)
     int pad_background = 0;   // the controllers count while another window has the focus (host/nn_hid.c; HOS_INPUT_BACKGROUND)
     int mouse_native = 0; // the mouse turns the camera's own angles (host/mouse_native.c); 0: as the right stick
