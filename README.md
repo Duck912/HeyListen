@@ -10,7 +10,6 @@
 </p>
 
 <p align="center">
-  <a href="https://recomplauncher.com/game/heylisten"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/launcher/badge-light.svg"><img alt="Get it on RecompLauncher" src="https://recomplauncher.com/assets/press/launcher/badge-dark.svg" height="48"></picture></a>
   <a href="https://github.com/Sacrappy/HeyListen/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/Sacrappy/HeyListen?label=release&color=3b82f6"></a>
   <a href="https://github.com/Sacrappy/HeyListen/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/Sacrappy/HeyListen/total?color=3b82f6"></a>
   <a href="https://github.com/Sacrappy/HeyListen/actions/workflows/linux.yml"><img alt="Linux checks" src="https://github.com/Sacrappy/HeyListen/actions/workflows/linux.yml/badge.svg?branch=main"></a>
@@ -24,6 +23,10 @@
   <a href="https://github.com/Sacrappy/HeyListen/issues"><b>Report a problem</b></a> ·
   <a href="CONTRIBUTING.md"><b>Contributing</b></a> ·
   <a href="https://discord.gg/34GV5hdC3Q"><b>Discord</b></a>
+</p>
+
+<p align="center">
+  <a href="https://recomplauncher.com/game/heylisten"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/launcher/badge-light.svg"><img alt="Get it on RecompLauncher" src="https://recomplauncher.com/assets/press/launcher/badge-dark.svg" height="48"></picture></a>
 </p>
 
 HeyListen statically recompiles **your own** copy of the game (title `0400486024DEC000`) into a native program with a
