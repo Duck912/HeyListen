@@ -309,9 +309,9 @@ def python_check(rel, tools, timeout):
 
 
 def cpp_checks(tools, timeout):
-    """gpu/vk/tests: the presentation rectangle (all of it), the lowering harness built and run over no programs
-    (the programs it reads are dumped from the game, so here it only shows the lowering still compiles), and the
-    lowering's register-marker regression"""
+    """gpu/vk/tests: the presentation rectangle (all of it), the mesh fallback's push constant offset rewrite, the lowering
+    harness built and run over no programs (the programs it reads are dumped from the game, so here it only shows the
+    lowering still compiles), and the lowering's register-marker regression"""
     cxx = tools["cxx"]
     out = []
 
@@ -328,6 +328,8 @@ def cpp_checks(tools, timeout):
         return run
     rect = "gpu/vk/tests/present_rect_test.cpp"
     out.append((rect, build_and_run(rect, ["-Wall", "-Wextra", "-Werror"], [])))
+    push = "gpu/vk/tests/push_fix_test.cpp"   # (the mesh fallback's push constant access chains: offset given as member index)
+    out.append((push, build_and_run(push, ["-O1", "-Wall", "-Wextra", "-Werror"], [])))
     lower = "gpu/vk/tests/lower_test.cpp"
     eden, compat = os.path.join(ROOT, "gpu", "vk", "eden"), os.path.join(ROOT, "gpu", "vk", "compat")
     out.append((lower, build_and_run(lower, ["-O1", "-Wno-everything", "-I" + eden, "-I" + compat], ["{tmp}"])))
