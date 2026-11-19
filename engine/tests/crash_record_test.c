@@ -12,6 +12,7 @@
 #include <string.h>
 #include <wchar.h>
 #include "hos_report_prefixes.h"
+#include "hos_crash_names.h"
 #include <windows.h>
 #ifndef _WIN32
 #include <signal.h>
@@ -24,6 +25,7 @@
 
 static _Thread_local int poison_alloc;
 static int fail_storage, io_mode, fail_prune;
+void hos_log(const char *fmt, ...);
 #ifndef _WIN32
 static int interruptions;
 #endif
@@ -134,10 +136,31 @@ static LONG WINAPI report_crash(EXCEPTION_POINTERS *info) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 /* REPORT_FATAL */
+#ifdef _WIN32
+/* CRASH_WALK */
+/* The log's walker and stack line, real, on a jump into code with no unwind data (an int3 in a page nothing registered, as in
+   SDL3's padding: 0x80000003): the caller must still show */
+static LONG WINAPI walk_filter(EXCEPTION_POINTERS *info) {
+    char backtrace[1024], stack[320];
+    crash_backtrace(*info->ContextRecord, backtrace, sizeof backtrace);
+    crash_stack(info->ContextRecord, stack, sizeof stack);
+    printf("%s\n%s\n", backtrace, stack);
+    fflush(stdout);
+    hos_crash_clean_end();
+    ExitProcess(0);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+static __attribute__((noinline)) void walk_call(void (*code)(void)) {
+    code();
+    __asm__ volatile("");
+}
+#endif
 static int log_queue(const char *line) { (void)line; return 0; }
 volatile int hos_control_on;
 void hos_control_log(const char *line) { (void)line; }
 void hos_log_flush(void) {}
+const char *hos_version(void) { return "fixture-v1-g1234"; }
+const char *hos_lift_key(void) { return "testlift01"; }
 static void log_flush(void) {}
 void hos_backtrace(void) {}
 void hl_trace_on_crash(Ctx *c, uint64_t a) { (void)c; (void)a; }
@@ -274,6 +297,16 @@ int main(int argc, char **argv) {
         /* Deliberately imitate termination between the durable record and cleanup. */
         ExitProcess(3);
     }
+#ifdef _WIN32
+    if (!strcmp(mode, "leaf-walk")) {
+        unsigned char *page = VirtualAlloc(NULL, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        assert(page);
+        memset(page, 0xCC, 64);
+        SetUnhandledExceptionFilter(walk_filter);
+        walk_call((void (*)(void))page);
+        return 91;
+    }
+#endif
     if (!strcmp(mode, "crash") || !strcmp(mode, "signal") || !strcmp(mode, "abort") || !strcmp(mode, "heap")) {
         SetUnhandledExceptionFilter(report_crash);
         AddVectoredExceptionHandler(0, report_fatal);

@@ -1236,7 +1236,8 @@ static void put_settings(Buf *b, const Shown *s, char *mic, size_t mic_cap) {
     free(j), free(o.s), free(dtext), free(ctext);
 }
 /* The run's log again, from its file, for the crash's lines as they are (the ring of read_log is cut to fit the menu's
-   report): the 150 lines before the crash's first and its own (at most 80). 0 when the log has no crash */
+   report): the 150 lines before the crash's first and its own (at most 80). 0 when the log has no crash.
+   lifted: the build's lifted code key, from the log's "object keys: lifted code <key>" line ("" when it is not there) */
 typedef struct Lines { char **at; int n, cap; } Lines;
 static void lines_add(Lines *l, const char *line) {
     if (l->n == l->cap) {
@@ -1252,15 +1253,23 @@ static void lines_free(Lines *l) {
     free(l->at);
     memset(l, 0, sizeof *l);
 }
-static int crash_lines(const Shown *s, Lines *tail, Lines *crash) {
+static int crash_lines(const Shown *s, Lines *tail, Lines *crash, char *lifted, size_t lifted_cap) {
     FILE *f = s->log->path[0] ? open_utf8(s->log->path, "rb") : NULL;
     if (!f) return 0;
     char line[4096], one[4096];
     Lines ring = {0};
     int found = 0;
+    if (lifted_cap) lifted[0] = 0;
     for (uint64_t taken = 0; taken < (256ull << 20) && fgets(line, sizeof line, f);) {
         taken += strlen(line);
         line[strcspn(line, "\r\n")] = 0;
+        if (lifted_cap && !lifted[0]) {
+            const char *key = strstr(line, "object keys: lifted code ");
+            if (key) {
+                snprintf(lifted, lifted_cap, "%s", key + 25);
+                lifted[strcspn(lifted, " \t")] = 0;
+            }
+        }
         if (!found && hos_crash_starts(line)) found = 1;
         if (!found) {   /* (the lines before it: the last 150, a ring) */
             if (ring.n < HOS_CRASH_TAIL_LINES) lines_add(&ring, line);
@@ -1278,15 +1287,37 @@ static int crash_lines(const Shown *s, Lines *tail, Lines *crash) {
     *tail = ring;
     return found;
 }
+/* The crash's resolved frames, as JSON string array members (frame lines only, in the crash's order): host frames
+   or guest frames. 0 when the game named none (an older log, or a crash in a system DLL) */
+static int put_frame_array(Buf *json, const Lines *crash, const char *kind, const Shown *s,
+                           const char *const *devices, int nd) {
+    char want[24];
+    snprintf(want, sizeof want, "%s frame ", kind);
+    int taken = 0;
+    for (int i = 0; i < crash->n; i++) {
+        char function[200];
+        if (!strstr(crash->at[i], want)) continue;
+        hos_crash_frame_name(crash->at[i], function, sizeof function);
+        if (!function[0]) continue;
+        put_field(json, taken ? ",\n    " : "\n    ", NULL, function, 160, s, devices, nd);
+        taken++;
+    }
+    return taken;
+}
 /* The report: its JSON (the payload) and what the page shows of it; 0 with *why when there is none to send */
 static int build_report(const Shown *s, Buf *json, Buf *shown, const char **why) {
     Lines tail = {0}, crash = {0};
-    if (!crash_lines(s, &tail, &crash) || !crash.n) {
+    char lifted[64] = "";
+    if (!crash_lines(s, &tail, &crash, lifted, sizeof lifted) || !crash.n) {
         *why = s->log->path[0] ? "The log of the run that crashed has no crash in it, so there is no report to send."
                                : "The log of the run that crashed is gone (four runs since), so there is no report to send.";
         lines_free(&tail), lines_free(&crash);
         return 0;
     }
+    /* (the signature the server groups on: the resolved top frame, the same in every build of these sources) */
+    char signature[200] = "";
+    const char *const *crash_at = (const char *const *)crash.at;
+    hos_crash_signature(signature, sizeof signature, crash_at, crash.n);
     static Report in;
     report_facts(s, &in);
     const HosCrashLog *f = &s->log->facts;
@@ -1313,18 +1344,38 @@ static int build_report(const Shown *s, Buf *json, Buf *shown, const char **why)
     put_field(json, ",\n  ", "map", place, HOS_CRASH_MAX_MAP, s, devices, nd);
     put(json, ",\n  \"crash\": [");
     for (int i = 0; i < crash.n; i++) put_field(json, i ? ",\n    " : "\n    ", NULL, crash.at[i], HOS_CRASH_LINE_LIMIT, s, devices, nd);
-    put(json, "\n  ],\n  \"log_tail\": [");
+    if (signature[0]) {
+        char *j = (char *)malloc(strlen(signature) * 2 + 8);
+        if (j) hos_crash_json(j, strlen(signature) * 2 + 8, signature), putf(json, ",\n  \"signature\": %s", j);
+        free(j);
+    }
+    if (lifted[0]) put_field(json, ",\n  ", "lifted_code", lifted, 40, s, devices, nd);
+    {   /* (the resolved frames, when the game named them: absent from an older log or a system DLL's crash) */
+        const size_t mark = json->n;
+        put(json, ",\n  \"frames\": [");
+        const int host_frames = put_frame_array(json, &crash, "host", s, devices, nd);
+        if (host_frames) put(json, "\n  ]");
+        else json->n = mark, json->s[mark] = 0;
+        const size_t mark2 = json->n;
+        put(json, ",\n  \"guest_frames\": [");
+        const int guest_frames = put_frame_array(json, &crash, "guest", s, devices, nd);
+        if (guest_frames) put(json, "\n  ]");
+        else json->n = mark2, json->s[mark2] = 0;
+    }
+    put(json, ",\n  \"log_tail\": [");
     for (int i = 0; i < tail.n; i++) put_field(json, i ? ",\n    " : "\n    ", NULL, tail.at[i], HOS_CRASH_LINE_LIMIT, s, devices, nd);
     put(json, tail.n ? "\n  ]" : "]");
     put(json, settings.s);
     put(json, "\n}\n");
     /* (the page: the card's rows, the crash's first lines, what else goes; the whole of it is the file Show all of it opens.
        The first line says where it goes: players are not told anywhere else on this page that it becomes public) */
-    putf(shown, "%s\n\nVersion: %s\nRelease build: %s\nOperating system: %s\nRenderer: %s\nGraphics card: %s\nCPU and RAM: %s\nMap: %s\n"
-                "Settings: %d (%d changed from the defaults)\n\nThe crash:\n",
+    putf(shown, "%s\n\nVersion: %s\nRelease build: %s\nOperating system: %s\nRenderer: %s\nGraphics card: %s\nCPU and RAM: %s\nMap: %s\n",
          HOS_CRASH_PUBLIC_TEXT,
          version, in.release ? "Yes" : "No (a local or modified build)", os, f->renderer[0] ? f->renderer : "not known",
-         gpu_text[0] ? gpu_text : "not known", cpu_text[0] ? cpu_text : "not known", place, in.settings, in.changed);
+         gpu_text[0] ? gpu_text : "not known", cpu_text[0] ? cpu_text : "not known", place);
+    if (lifted[0]) putf(shown, "Lifted code: %s\n", lifted);
+    if (signature[0]) putf(shown, "Signature: %s\n", signature);
+    putf(shown, "Settings: %d (%d changed from the defaults)\n\nThe crash:\n", in.settings, in.changed);
     for (int i = 0; i < crash.n && i < 12; i++) {
         char line[HOS_CRASH_LINE_LIMIT * 4 + 8];
         snprintf(line, sizeof line, "%s", crash.at[i]);
@@ -1887,7 +1938,8 @@ void hos_crash_watch_start(int argc, char **argv) {
 }
 
 /* ---- HOS_CRASH_TEST: a crash on purpose, to see the window ---- */
-static void crash_now(void) {
+/* (noinline: the deliberate crash keeps a frame of its own, so the report names it, as any named function is) */
+static __attribute__((noinline)) void crash_now(void) {
     void hos_log(const char *fmt, ...);
     void hos_log_flush(void);
     hos_log("crash test: crashing now (HOS_CRASH_TEST)");

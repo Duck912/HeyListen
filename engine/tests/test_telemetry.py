@@ -69,6 +69,8 @@ int hos_perf_send_run(const char *dir);
 int hos_pipes_send_run(const char *dir);
 void hos_log(const char *fmt, ...) { (void)fmt; }
 void hos_log_flush(void) {}
+const char *hos_version(void) { return "vtest-1"; }
+const char *hos_lift_key(void) { return "testlift01"; }
 int hos_crash_test_box(const char *t, const char *x, const char *const *b, int n) { (void)t, (void)x, (void)b; return n - 1; }
 int hos_crash_test_clipboard(const char *t) { (void)t; return 1; }
 int hos_crash_test_open(const char *w) { (void)w; return 1; }
@@ -135,7 +137,8 @@ def build(cc, tmp):
     libs = ["-lole32", "-lshell32", "-luser32", "-ladvapi32", "-ldbghelp"] if os.name == "nt" else ["-pthread", "-ldl"]
     subprocess.run([cc, "-std=gnu11", "-O1", "-DHOS_CRASH_DIALOG_TEST", "-I", str(ROOT / "host"),
                     str(tmp / "sender.c"), str(ROOT / "host/hos_crash_dialog.c"), str(ROOT / "host/hos_crash_record.c"),
-                    str(ROOT / "host/hos_report_run.c"), "-o", str(tmp / ("sender" + EXE)), *libs], check=True, timeout=300)
+                    str(ROOT / "host/hos_crash_names.c"), str(ROOT / "host/hos_report_run.c"), "-o", str(tmp / ("sender" + EXE)),
+                    *libs], check=True, timeout=300)
 
 
 def pure(tmp, *args):

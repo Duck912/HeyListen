@@ -361,10 +361,11 @@ in-game menu (Insert) control it:
 - **Send crash reports automatically**: off by default. After a crash a window says what happened and asks. **Report
   manually** copies a report to your clipboard and opens a new issue on GitHub for you to paste it into; **Report
   automatically** shows you the exact report and sends it only when you press Send. With this row on, the report is sent at
-  once and the window shows only if that fails. The report has the crash's error line, the game version, your GPU, CPU,
-  RAM and operating system, the map, the last 150 lines of the game's log and its settings. Your home folder, user name,
-  every folder path and the names of your audio devices are taken out first. It never has your saves, the game's files or
-  keys.
+  once and the window shows only if that fails. The report has the crash's error line with the code of each step named
+  (`f_80580b38+0x1c4`, a function name, or a system file and offset), the game version and which lifted code it ran,
+  your GPU, CPU, RAM and operating system, the map, the last 150 lines of the game's log and its settings. Your home
+  folder, user name, every folder path and the names of your audio devices are taken out first. It never has your saves,
+  the game's files or keys. See [crash reports](crash-reports.md).
 - **Crash reports are published, not kept private**: a report becomes a comment on the project's GitHub issue #55 and a
   message in the project's Discord server, with the detailed report as a .txt file. The server keeps a crash report until
   it is removed on request. To get one deleted, open an issue or ask on Discord with the report's time and we remove it.

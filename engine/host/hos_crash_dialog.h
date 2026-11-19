@@ -201,6 +201,59 @@ static inline void hos_crash_summary(char *out, size_t cap, const char *line) {
         if (*p == '/' || *p == '\\') name = p + 1;
     snprintf(out, cap, "%.*s (%s) at %.*s", (int)nc, code, kind, (int)(place + np - name), name);
 }
+/* The function the game resolved for a frame of the crash, "" when it named none:
+   "CRASH: host frame 0: HeyListen.exe+0x12f44593 f_80580b38+0x1c4" -> "f_80580b38+0x1c4";
+   "CRASH: guest frame 1: 0x80580b38 f_80580b38+0x1c4" -> "f_80580b38+0x1c4". A system DLL's frame has one token
+   (module+offset) and so names none. The signature and the report's frame lists are made from these. */
+static inline void hos_crash_frame_name(const char *line, char *out, size_t cap) {
+    if (cap) out[0] = 0;
+    const char *c = !strncmp(line, "CRASH: ", 7) ? line : strstr(line, "] CRASH: ");
+    if (!c || !cap) return;
+    const char *at = strstr(c, "host frame ");
+    if (!at) at = strstr(c, "guest frame ");
+    if (!at) return;
+    const char *colon = strchr(at, ':');
+    if (!colon) return;
+    const char *p = colon + 1;
+    while (*p == ' ') p++;
+    while (*p && *p != ' ') p++;   /* (the address, or module+offset) */
+    while (*p == ' ') p++;
+    if (!*p) return;
+    size_t n = 0;
+    while (p[n] && p[n] != ' ' && p[n] != '\r' && p[n] != '\n' && n + 1 < cap) {
+        out[n] = p[n];
+        n++;
+    }
+    out[n] = 0;
+    for (size_t i = 0; out[i]; i++) if (out[i] == ' ') out[i] = '_';
+}
+/* The crash's grouping signature from its own lines: the top host frame's resolved function ("f_80580b38+0x1c4",
+   "hos_crash_helper_main+0x10"), the same on every PC that built the same sources; else the exception's module+offset
+   (what the relay reads today). 0 and "" when neither is there. */
+static inline int hos_crash_signature(char *out, size_t cap, const char *const *lines, int n) {
+    if (cap) out[0] = 0;
+    char frame[200];
+    for (int i = 0; i < n; i++) {
+        if (!lines[i] || !strstr(lines[i], "host frame 0:")) continue;
+        hos_crash_frame_name(lines[i], frame, sizeof frame);
+        if (frame[0]) {
+            snprintf(out, cap, "%s", frame);
+            return 1;
+        }
+    }
+    for (int i = 0; i < n; i++) {   /* (no resolved frame: the place the exception line gives, as before) */
+        char summary[240];
+        if (!lines[i]) continue;
+        hos_crash_summary(summary, sizeof summary, lines[i]);
+        if (!summary[0]) continue;
+        const char *at = strstr(summary, " at ");
+        if (at) {
+            snprintf(out, cap, "%s", at + 4);
+            return 1;
+        }
+    }
+    return 0;
+}
 /* The log's first line's version, "v3.0.0 (source 47395392)": the version alone into version, its source fingerprint into source
    ("" for none) */
 static inline void hos_crash_version_split(const char *line, char *version, size_t vcap, char *source, size_t scap) {

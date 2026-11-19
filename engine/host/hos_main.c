@@ -21,7 +21,11 @@
 #ifndef HOOKSHOT_VERSION   /* (nx2/build.py gives it: the release and a fingerprint of the sources, nx2/version.py) */
 #define HOOKSHOT_VERSION "unknown"
 #endif
+#ifndef HOOKSHOT_LIFT_KEY   /* (nx2/build.py gives it: the lifted code's key, its "object keys: ... lifted code ...") */
+#define HOOKSHOT_LIFT_KEY "unknown"
+#endif
 const char *hos_version(void) { return HOOKSHOT_VERSION; }   /* (discord_rpc.c's status) */
+const char *hos_lift_key(void) { return HOOKSHOT_LIFT_KEY; } /* (the crash record: which game code ran) */
 #if defined(_WIN32) || defined(__EMSCRIPTEN__)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -1582,6 +1586,7 @@ static int game_main(int argc, char **argv) {
     hos_log("hookshot %s", HOOKSHOT_VERSION);   /* (the log's first line: which build a report comes from) */
     const char *hos_report_run_id(void);
     hos_log("run_id: %s", hos_report_run_id());
+    hos_log("object keys: lifted code %s", HOOKSHOT_LIFT_KEY);   /* (which game code ran, as the build said it) */
     void hos_crash_record_log_notes(void);
     hos_crash_record_log_notes();
 #ifdef __linux__
