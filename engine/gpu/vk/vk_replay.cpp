@@ -4620,7 +4620,8 @@ RbScope::~RbScope() {
 std::atomic<int64_t> st_rb_wait_ns{0};
 void invalidate(uint64_t gpu, uint64_t size) {
     static const bool rb_prof = getenv("RX_VK_RB_PROF") != nullptr || getenv("RX_VK_TL") != nullptr || getenv("RX_VK_TL_S") != nullptr;
-    RbScope rbs(rb_prof, gpu, size);    // (HeyListen, TICK-059) RX_VK_READBACK_TICKET=1: the fast fence poll (wait_inner) no longer waits for the sync_order_mu
+    RbScope rbs(rb_prof, gpu, size);
+    // (HeyListen, TICK-059) RX_VK_READBACK_TICKET=1: the fast fence poll (wait_inner) no longer waits for the sync_order_mu
     // section in progress (a submit_q / present replay); it notes that section's number t (order_ticket_take) and the CPU's
     // readback here waits until section t has left, before anything else it does. Why that is all the locked path gave it:
     // - The locked poll took sync_order_mu after every section that held it when the poll came; the readback after the poll then
