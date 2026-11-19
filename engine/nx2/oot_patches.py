@@ -63,8 +63,12 @@ def patch_life(source):
     start = source.find(LIFE_HEAD)
     if start < 0:
         return None
-    end = source.find("\n}", start)
-    if end < 0 or source[start:end].count(LIFE_CAS) != 2:
+    # (the function's end: the next head, not the first '}' alone on a line — the block lift's FPX regions (A64_FPX_BLOCK,
+    #  mkg.ps1 -Block) close with one inside the function, as patch_view below found the hard way)
+    end = source.find("\nvoid f_", start + len(LIFE_HEAD))
+    if end < 0:
+        end = len(source)
+    if source[start:end].count(LIFE_CAS) != 2:
         return None
     # x19 is the actor. Confirm its type and life pointer before protecting this write.
     guard = ("    if ((uint32_t)c->x[12] < (uint32_t)c->x[11] && hos_oot_hearts_enabled() &&\n"
@@ -81,8 +85,10 @@ def patch_movement(source):
     start = source.find(MOVE_HEAD)
     if start < 0:
         return None
-    end = source.find("\n}", start)
-    if end < 0 or source[start:end].count(MOVE_ANCHOR) != 1 or source[start:end].count(MOVE_MATRIX) != 1:
+    end = source.find("\nvoid f_", start + len(MOVE_HEAD))   # (the function's end: as in patch_life)
+    if end < 0:
+        end = len(source)
+    if source[start:end].count(MOVE_ANCHOR) != 1 or source[start:end].count(MOVE_MATRIX) != 1:
         return None
     bypass = ("    hos_oot_lift_player(c, c->x[19]);\n"
               + MOVE_ANCHOR)
@@ -98,9 +104,11 @@ def patch_flight_rotation(source):
     start = source.find(WARP_HEAD)
     if start < 0:
         return None
-    end = source.find("\n}", start)
+    end = source.find("\nvoid f_", start + len(WARP_HEAD))   # (the function's end: as in patch_life)
+    if end < 0:
+        end = len(source)
     body = source[start:end]
-    if end < 0 or body.count(WARP_ANCHOR) != 1:
+    if body.count(WARP_ANCHOR) != 1:
         return None
     body = body.replace(WARP_ANCHOR, "    hos_oot_flight_rotation(c, c->x[0], c->x[1]);\n" + WARP_ANCHOR)
     return (source[:start] + body + source[end:]).replace(
@@ -112,10 +120,12 @@ def patch_view(source):
     start = source.find(VIEW_HEAD)
     if start < 0:
         return None
-    end = source.find("\n}", start)
-    body = source[start:end]
+    # (the loop's head sits deep in the function, past whole FPX regions; the function's end is the next head — the first '}'
+    #  alone on a line is one of their closers, and the anchor lay beyond it, so the free camera was found 0 times on -Block lifts)
+    end = source.find("\nvoid f_", start + len(VIEW_HEAD))
     if end < 0:
-        return None
+        end = len(source)
+    body = source[start:end]
     for anchor in VIEW_ANCHORS:
         if body.count(anchor) == 1:
             break
