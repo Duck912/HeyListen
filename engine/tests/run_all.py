@@ -37,6 +37,7 @@ ARGS = {
     "tests/test_settings_atomic.py": ["--cc", "gcc"],
     "tests/test_host_alloc_wait.py": ["--cc", "gcc"],
     "tests/test_audio_speaker_layout.py": ["--cxx", "{cxx}"],
+    "tests/test_audio_centre_spread.py": ["--cxx", "{cxx}"],
     "tests/test_mma_software.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "tests/test_native_float_atomic_add.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "tests/test_compute_local_memory.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
