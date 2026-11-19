@@ -94,7 +94,7 @@
       {
         "id": "send_crash_reports",
         "label": "Send crash reports automatically",
-        "note": "If the game crashes, its report (what failed, the PC's parts, the log) is sent without asking. Off, the crash window asks each time. Change it later in Settings, Privacy.",
+        "note": "If the game crashes, its report (what failed, the PC's parts, the log) is sent without asking. Off, the crash window asks each time. Change it later in Settings, Privacy. Your report is published on the project's GitHub (issue #55) and Discord, without your user name or folders.",
         "args": [
           "--send-crash-reports"
         ],
@@ -844,7 +844,7 @@
     {
       "id": "send_crash",
       "label": "Send crash reports automatically",
-      "help": "Sends a crash's report without asking. Off, the crash window asks first. Off by default.",
+      "help": "Sends a crash's report without asking. Off, the crash window asks first. Off by default. Your report is published on the project's GitHub (issue #55) and Discord, without your user name or folders.",
       "group": "Privacy",
       "choices": [
         {

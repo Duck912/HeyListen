@@ -495,6 +495,18 @@ def source_checks():
         assert word in (ROOT / "docs/development.md").read_text(encoding="utf-8"), word + " is documented"
     form = re.search(r'#define HOS_CRASH_ISSUE_FORM "([^"]+)"', (ROOT / "host/hos_crash_dialog.h").read_text(encoding="utf-8")).group(1)
     assert form == "https://github.com/Sacrappy/HeyListen/issues/new", "the manual report opens HeyListen's new-issue page"
+    header = (ROOT / "host/hos_crash_dialog.h").read_text(encoding="utf-8")
+    public = re.search(r'#define HOS_CRASH_PUBLIC_TEXT "([^"]+)"', header).group(1)
+    assert public == "Your report is published on the project's GitHub (issue #55) and Discord, without your user name or " \
+                     "folders.", "the sentence players are told"
+    build = dialog[dialog.index("static int build_report("):]
+    assert "HOS_CRASH_PUBLIC_TEXT" in build[:build.index("\n}\n")], "Report automatically's page says the report is published"
+    menu = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
+    assert "Your report is published on the project's GitHub (issue #55) and " in menu and \
+        "\"Discord, without your user name or folders.\"" in menu, "the auto-send row says it too"
+    launcher = (ROOT.parent / "recomplauncher.json").read_text(encoding="utf-8")
+    assert launcher.count("published on the project's GitHub (issue #55) and Discord") == 2, \
+        "the RecompLauncher's crash tick says it in both places it describes the report"
     print("PASS: the wiring: helper first in main, started after the record and before the game, quit noted first, no console")
     return form
 
@@ -616,7 +628,7 @@ def logic_checks(exe, menu, tmp, form):
         assert run(exe, "crashline", line).rstrip("\n") == want, (line, run(exe, "crashline", line))
     cleaned = run(exe, "clean", "  audio: output on Jane's AirPods (3 devices) /home/alice/x Alice's PC C:\\Users\\Bob\\y "
                   "Z:\\home\\bob\\z deck My Mic\x01 ", 300, "/home/alice", "alice", 0, "My Mic").rstrip("\n")
-    assert cleaned == "audio: output on <device> (3 devices) ~/x <user>'s PC %USERPROFILE%\\y ~\\z deck <device>", cleaned
+    assert cleaned == "audio: output on <device> (3 devices) <path>/x <user>'s PC <path>\\y <path>\\z deck <device>", cleaned
     assert run(exe, "clean", "é" * 10, 4, "/h", "u", 0).rstrip("\n") == "éééé", "a character is never cut in two"
     # (a device name inside <device> itself is found once, never again in what it became; a name that grows the text
     # past its buffer cuts the end off, never a character in two, and writes nothing past it)
@@ -823,14 +835,14 @@ def logic_checks(exe, menu, tmp, form):
     assert verdict(crash, log("[hos host] [error] vk: FATAL: x: VK_ERROR_DEVICE_LOST"))[1] == DRIVER
     print("PASS: crash, unclean end, quit, clean end, restart and failed starts; causes from the record and the log")
 
-    # redaction: the home folder, the user's name; the expected text, line for line
+    # redaction: every absolute folder path, the home folder, the user's name; the expected text, line for line
     home_l, user_l = "/home/private-user", "private-user"
     lines = [home_l + "/Games/HeyListen/logs/hookshot_log.txt", "[hos host] vk: pipeline cache " + home_l + "/x.bin (1 KB)",
              "/run/media/private-user/Disk/HeyListen", "/home/private-user2/other", "x/home/private-user/y", "/home/private-user",
              "/media/Private-User/x", "a private-user b", "/mnt/private-user.d/x", "ü/home/private-user/ü", "	" + home_l + "	"]
-    want_l = ["~/Games/HeyListen/logs/hookshot_log.txt", "[hos host] vk: pipeline cache ~/x.bin (1 KB)",
-              "/run/media/<user>/Disk/HeyListen", "/home/private-user2/other", "x/home/<user>/y", "~",
-              "/media/Private-User/x", "a private-user b", "/mnt/private-user.d/x", "ü/home/<user>/ü", "	~	"]
+    want_l = ["<path>/hookshot_log.txt", "[hos host] vk: pipeline cache <path>/x.bin (1 KB)",
+              "<path>/HeyListen", "<path>/other", "x/home/<user>/y", "~",
+              "<path>/x", "a private-user b", "<path>/x", "ü/home/<user>/ü", "	~	"]
     win_home, win_user = "C:\\Users\\Private User", "Private User"
     wlines = ["C:\\Users\\Private User\\Games\\x", "c:/users/private user/Games/x", "D:\\Users\\Private User\\Lib",
               "C:\\Users\\Private Users\\x", "[hos host] vk: pipeline cache C:\\USERS\\PRIVATE USER\\AppData\\x.bin"]
@@ -838,7 +850,7 @@ def logic_checks(exe, menu, tmp, form):
         path = tmp / "redact.txt"
         path.write_text("".join(l + "\n" for l in sample), encoding="utf-8")
         ours = run(exe, "redact", home, user, windows, path)
-        assert "<user>" in ours or "%USERPROFILE%" in ours or "~" in ours, ours
+        assert "<path>" in ours or "<user>" in ours or "%USERPROFILE%" in ours or "~" in ours, ours
         if windows:
             assert "private user" not in ours.replace("Private Users", "").lower(), ours   # (another user, "Private Users", stays)
         else:
@@ -846,6 +858,23 @@ def logic_checks(exe, menu, tmp, form):
         if home == home_l:
             assert [l for l in ours.splitlines() if l] == want_l, (ours.splitlines(), want_l)
     print("PASS: the log's redaction takes out the home folder and the user's name, line for line")
+    # any absolute folder path, not only the home folder: Windows and POSIX, the file name kept; a URL's //, a ratio's 60/120 and
+    # module+offset stay (the server's rule, applied before the home and user rules)
+    path_cases = [
+        ("D:\\Filipe\\Jeux\\HeyListen\\hookshot_log.txt", "<path>\\hookshot_log.txt"),
+        ("C:\\Users\\Bob\\Downloads\\x.dll", "<path>\\x.dll"),
+        ("/mnt/data/alice/games/bin/hookshot", "<path>/hookshot"),
+        ("/home/alice/Games/x", "<path>/x"),
+        ("https://github.com/Sacrappy/HeyListen/issues/55", "https://github.com/Sacrappy/HeyListen/issues/55"),
+        ("60/120 fps", "60/120 fps"),
+        ("HeyListen.exe+0x12f44593", "HeyListen.exe+0x12f44593"),
+        ("igvk64.dll+0x14d102", "igvk64.dll+0x14d102"),
+    ]
+    path_file = tmp / "paths.txt"
+    path_file.write_text("".join(line + "\n" for line, _ in path_cases), encoding="utf-8")
+    got_paths = [line for line in run(exe, "redact", "/nonexistent", "nobody", "0", path_file).splitlines() if line]
+    assert got_paths == [want for _, want in path_cases], (got_paths, [want for _, want in path_cases])
+    print("PASS: every absolute folder path becomes <path>, keeping the file name; URLs, ratios and module offsets stay")
     shown = {("-", "1"): 1, ("-", "-1"): 1, ("-", "1.5"): 1, ("-", "1920x1080"): 1, ("-", "on"): 1, ("-", "OFF"): 1,
              ("-", ""): 1, ("-", "123456789012"): 1, ("-", "1234567890123"): 0, ("-", "-1x2"): 0, ("-", "Private Mic"): 0,
              ("-", "/home/x"): 0, ("-", "1.5.3"): 0, ("-", "0x10"): 1, ("RX_VK_PACE", "1"): 1, ("HOS_SECRET_TOKEN", "1"): 0,
@@ -1132,7 +1161,7 @@ esac
         assert (report["version"], report["release"], report["os"], report["map"]) == ("vtest-1", False, "Arch Linux", "Kokiri Forest")
         assert report["crash"] == ["CRASH: exception 0xc0000005 (read 0x8, guest 0x8) at hookshot+0x1a2b",
                                    "CRASH: host backtrace: hookshot+0x1a2b libc.so.6+0x10"], report["crash"]
-        assert "[hos Main] reading ~/secret.txt" in report["log_tail"] and "private-user" not in json.dumps(report), report
+        assert "[hos Main] reading <path>/secret.txt" in report["log_tail"] and "private-user" not in json.dumps(report), report
         assert report["options"] == "ultrawide=1", "the settings, a value only as the menu's rules allow: %r" % report["options"]
         assert got[0][1].split("\n")[-1].startswith("Report automatically|Report manually|Open the log folder|Close"), got[0]
         assert got[1][1].startswith("HeyListen: send to the team\n") and "Version: vtest-1" in got[1][1] and \
@@ -1229,7 +1258,7 @@ esac
                     "### The end of hookshot_log.txt", "### Not in this report", "vtest-1", "NVIDIA GeForce RTX 3090, NVIDIA 580.95.05",
                     "HeyListen crash record 1", "run_id: ", "ultrawide=1", "output_res=1920x1080",
                     "microphone_device=(value left out)", "RX_VK_PACE=1", "HOS_SECRET_TOKEN=(value left out)",
-                    "~/HeyListen report/cache/hookshot_vk_pipelines.bin", "while you were playing"):
+                    "pipeline cache <path>/hookshot_vk_pipelines.bin (1 KB)", "while you were playing"):
         assert section in clip, section
     for secret in ("SAVEDATA", "GAMEBYTES", "KEYSECRET", "private-user", str(home), "Private Mic", "abc-secret", "key_a"):
         assert secret not in clip, secret
@@ -1239,7 +1268,7 @@ esac
     assert link.startswith(source_form() + "?title=") and len(link) <= 7500 and "vtest-1" in unquote(link)
     assert "private-user" not in link and str(home) not in unquote(link), "no user name, no home folder in the link"
     link_body = parse_qs(urlsplit(link).query)["body"][0]
-    assert "saved on my PC at `~/HeyListen report/bug-reports/pending/report-" in link_body, link_body
+    assert "saved on my PC at `<path>/report-" in link_body, link_body
     assert "**Crash record**" in link_body and "HeyListen crash record 1" in link_body and "ultrawide=1" in link_body, link_body
     assert "Private Mic" not in link_body and "abc-secret" not in link_body and "SAVEDATA" not in link_body, link_body
     assert "paste" not in link_body.lower(), link_body
