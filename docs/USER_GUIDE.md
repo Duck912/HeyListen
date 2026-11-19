@@ -109,8 +109,10 @@ not replace the builder: it runs it for you, with no window.
    the same space; the screen shows the progress.
 4. Press **Play**. Video and gameplay settings (fullscreen, resolution, upscaler, frame generation, frame rate, text speed and
    more) are on the game's page in RecompLauncher; they change `hookshot_options.ini` in the game folder, the same file the
-   in-game menu (Insert or F1) saves. Your saves are in the game folder's `user\save` (Windows) or
-   `~/.local/share/heylisten/save` (Linux), and the launcher backs them up.
+   in-game menu (Insert or F1) saves. On a screen that is not 16:9 (an ultrawide, 4:3, 16:10), set **Ultrawide** to the
+   screen's shape: the HUD keeps its 16:9 size, its corners at the screen's edges, and the in-game menu's **HUD layout** row
+   (Graphics) puts it back in the middle 16:9, either in RecompLauncher or in the game. Your saves are in the game folder's
+   `user\save` (Windows) or `~/.local/share/heylisten/save` (Linux), and the launcher backs them up.
 
 The game is made in the `HeyListen` folder inside the folder RecompLauncher installed HeyListen in (the install folder is
 RecompLauncher's own setting: HeyListen's profile cannot choose it; ask for it in the launcher). To build it again (after

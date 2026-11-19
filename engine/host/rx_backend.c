@@ -468,6 +468,8 @@ void rx_nvn_finish(void) { vk ? vk->nvn_finish() : wgr_nvn_finish(); }
 static volatile LONG presents;   /* (the frames shown, for the camera jitter below) */
 void rx_nvn_present(const nvn_tex *t, const int crop[4]) {
     InterlockedIncrement(&presents);
+    void hos_wide_ui_tick(void);   /* (host/hos_wide_ui.c: the HUD's layout for the picture's shape, each present) */
+    hos_wide_ui_tick();
     vk ? vk->nvn_present(t, crop) : wgr_nvn_present(t, crop);
 }
 /* (hookshot, nx2/oot_jitter.py) the temporal upscaler's camera jitter (NVIDIA DLSS, AMD FSR 4: gpu/vk/vk_temporal.cpp): this frame's sub-pixel offset of the scene's projection, in clip

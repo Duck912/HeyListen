@@ -32,6 +32,7 @@ struct Options {
     int realtime = 1;     // game time follows the clock (host/nn_vi.c); 0: per frame (slower frames, slower game)
     int handheld = 0;     // the game's handheld profile: ~4 fps, softer; read once, at the start (host/nn_applet.c)
     int ultrawide = 0;    // the camera at the monitor's shape when it is wider than 16:9; read once, at the start (host/hos_main.c)
+    int hud_layout = 0;   // on a screen that is not 16:9: 0 the HUD's corners at the screen's edges (the default), 1 in the middle 16:9 (HL_OPT_HUD_LAYOUT; host/hos_wide_ui.c)
     int show_fps = 0;
     int menu_shortcut = 0;   // 0 Insert or F1, 1 Insert only, 2 F1 only
     int menu_size = 0;   // (hookshot) the overlays' size: 0 Auto, 1 Small, 2 Medium, 3 Large (gpu/vk/vk_ui.h unit)
