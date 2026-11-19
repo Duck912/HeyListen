@@ -41,7 +41,8 @@ def menu_rows():
     renamed = {  # (rows whose key is not their name)
         "Output resolution": "output_res", "Render resolution": "resolution", "Window scaling filter": "upscaling", "Upscaler": "dlss",
         "Send performance statistics": "send_performance_stats", "Send crash reports automatically": "send_crash_reports",
-        "Check for updates": "update_check", "V-Sync": "vsync", "VRR (G-Sync / FreeSync)": "vrr"}
+        "Check for updates": "update_check", "V-Sync": "vsync", "V-Sync mode": "vsync_mode",
+        "VRR (G-Sync / FreeSync)": "vrr"}
     for key in re.findall(r'return "([a-z_0-9]+)";', ini_key):
         assert key in renamed.values(), key   # (a new special case: add it above)
     rows = {}

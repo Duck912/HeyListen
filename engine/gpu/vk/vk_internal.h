@@ -52,8 +52,9 @@ int64_t vrr_min_gap_ns();
 struct Device {
     VkInstance instance = VK_NULL_HANDLE;
     const char* present_mode_name = nullptr;   // (the swapchain's: the overlay shows it)
-    unsigned present_modes_offered = 0;        // (present_mode.h Offered bits of the surface; the Presentation row reads them)
+    unsigned present_modes_offered = 0;        // (present_mode.h Offered bits of the surface; the V-Sync mode row reads them)
     bool present_modes_known = false;          // (create_swapchain has asked the surface)
+    uint32_t swap_min_images = 0, swap_max_images = 0;   // (its minImageCount/maxImageCount: the V-Sync mode row's clamp)
     bool vrr_active = false;                   // (present_mode.h vrr_resolve: the VRR row's effect as the swapchain was made)
     VkPhysicalDevice physical = VK_NULL_HANDLE;
     VkPhysicalDeviceProperties props{};

@@ -312,7 +312,7 @@
     {
       "id": "vsync",
       "label": "V-Sync",
-      "help": "Whether frames wait for the screen's refresh. Off is the game's own way (the latest frame at once, the least delay, can tear); On waits for the refresh; Adaptive shows a late frame at once instead of waiting.",
+      "help": "Whether frames wait for the screen's refresh. Off is the game's own way (the latest frame at once, the least delay, can tear); On waits for the refresh. V-Sync mode, below, chooses how many images it keeps.",
       "group": "Video",
       "choices": [
         {
@@ -326,16 +326,39 @@
           "set": {
             "vsync": "1"
           }
-        },
-        {
-          "label": "Adaptive",
-          "set": {
-            "vsync": "2"
-          }
         }
       ],
       "defaults": {
         "vsync": "0"
+      }
+    },
+    {
+      "id": "vsync_mode",
+      "label": "V-Sync mode",
+      "help": "With V-Sync On: FIFO (double buffering) keeps 2 images, the least delay, but a missed refresh waits a whole one (below 60 fps at 60 Hz the frame rate falls to 30); FIFO (triple buffering) keeps 3, the default; Mailbox keeps 3 or more and shows the newest frame without waiting, where the display lists it (AMD's Windows driver does not: FIFO (triple buffering) is used).",
+      "group": "Video",
+      "choices": [
+        {
+          "label": "FIFO (double buffering)",
+          "set": {
+            "vsync_mode": "0"
+          }
+        },
+        {
+          "label": "FIFO (triple buffering)",
+          "set": {
+            "vsync_mode": "1"
+          }
+        },
+        {
+          "label": "Mailbox (triple buffering)",
+          "set": {
+            "vsync_mode": "2"
+          }
+        }
+      ],
+      "defaults": {
+        "vsync_mode": "1"
       }
     },
     {

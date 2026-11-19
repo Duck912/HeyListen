@@ -34,9 +34,16 @@ def check_source():
     sc = body(main, "bool create_swapchain(")
     need("present_mode::pick(" in sc, "create_swapchain: the mode from present_mode::pick")
     need("pin.row = opts.vsync;" in sc, "create_swapchain: the V-Sync row is the choice")
+    need("pin.buffering = opts.vsync_mode;" in sc, "create_swapchain: the V-Sync mode row is the choice")
     need("pin.vrr = vrr.active;" in sc and "vrr_resolved(true)" in sc, "create_swapchain: VRR from vrr_resolved")
     need('getenv("RX_VK_FIFO")' in sc and 'getenv("RX_VK_IMMEDIATE")' in sc, "create_swapchain: both switches kept")
-    need("VK_PRESENT_MODE_FIFO_RELAXED_KHR" in sc, "create_swapchain: FIFO_RELAXED for Adaptive")
+    need("FIFO_RELAXED" not in sc, "create_swapchain: FIFO_RELAXED is gone with Adaptive")
+    need("present_mode::image_plan(" in sc, "create_swapchain: the images from present_mode::image_plan")
+    need("framegen_on()" in sc, "create_swapchain: frame generation keeps the images it needs")
+    need("dev.swap_min_images = caps.minImageCount;" in sc and "dev.swap_max_images = caps.maxImageCount;" in sc,
+         "create_swapchain: the surface's image limits kept for the row's hint")
+    need('logf("vk: swapchain' in sc and "buffering_name(opts.vsync_mode)" in sc,
+         "create_swapchain: one line with V-Sync, the mode, present mode and image count")
     need("dev.present_modes_offered = offered;" in sc, "create_swapchain: the offered modes kept for the row")
     vr = body(main, "present_mode::VrrState vrr_resolved(bool fresh) {")
     need("if (opts.vrr == present_mode::kVrrOff && !vrr_touched" in vr or
@@ -47,14 +54,25 @@ def check_source():
     need("return 0;" in cap, "vrr_fps_cap: Off answers 0: no cap")
 
     menu = read("gpu/vk/vk_menu.cpp")
-    for name, field in (('"V-Sync"', "&opts.vsync,"), ('"VRR (G-Sync / FreeSync)"', "&opts.vrr,")):
+    for name, field in (('"V-Sync"', "&opts.vsync,"), ('"V-Sync mode"', "&opts.vsync_mode,"),
+                        ('"VRR (G-Sync / FreeSync)"', "&opts.vrr,")):
         start = menu.index(field, menu.index("Row rows[] = {"))
         row = menu[start:menu.index("},", menu.index("hn_", start))]
         need(name in menu[start - 60:start], "vk_menu.cpp: a %s row" % name)
         need("TAB_GRAPHICS" in menu[start - 80:start], "vk_menu.cpp: %s on the Graphics tab" % name)
         need(row.rstrip().endswith(", true"), "vk_menu.cpp: %s leaves the quality preset alone" % name)
-    need('r.value == &opts.vsync) return "vsync"' in menu and 'r.value == &opts.vrr) return "vrr"' in menu,
-         "vk_menu.cpp: the ini keys vsync and vrr")
+    start = menu.index("&opts.vsync,", menu.index("Row rows[] = {"))
+    need("0, 1, 1" in menu[start:menu.index("tx_vsync", start)], "vk_menu.cpp: V-Sync is Off or On")
+    need("row_inactive" in menu and "opts.vsync == 0" in menu, "vk_menu.cpp: V-Sync mode is greyed while V-Sync is Off")
+    need('r.value == &opts.vsync) return "vsync"' in menu and 'r.value == &opts.vsync_mode) return "vsync_mode"' in menu and
+         'r.value == &opts.vrr) return "vrr"' in menu, "vk_menu.cpp: the ini keys vsync, vsync_mode and vrr")
+    init = body(menu, "void menu_init() {")
+    need("saved_vsync >= 2" in init and "kFifoTriple" in init and "has_vsync_mode" in init,
+         "menu_init: an old saved Adaptive (vsync=2) loads as On + FIFO (triple buffering)")
+    need("FIFO (double buffering)" in menu and "FIFO (triple buffering)" in menu and "Mailbox (triple buffering)" in menu,
+         "vk_menu.cpp: the V-Sync mode row's three values")
+    need("Frame generation needs three images" in menu and "at least 3 images" in menu and "no Mailbox" in menu,
+         "vk_menu.cpp: the hints for frame generation, the surface's minimum and no Mailbox")
 
     replay = read("gpu/vk/vk_replay.cpp")
     pi = body(replay, "void present_image(")
@@ -62,11 +80,14 @@ def check_source():
          "present_image: the swapchain made again when the rows change")
     need("present_was = present_now;" in pi, "present_image: the rows' state noted once the swapchain is made")
     need("id == HL_OPT_VRR_CAP ? vrr_fps_cap()" in replay, "vk_replay.cpp: the VRR cap is answered")
+    need("id == HL_OPT_VSYNC_MODE) return opts.vsync_mode;" in replay, "vk_replay.cpp: the V-Sync mode row is answered")
+    need("#define HL_OPT_VSYNC_MODE" in read("gpu/vk/vk_opt_ids.h"), "vk_opt_ids.h: a new id for the V-Sync mode row")
     nn_vi = read("host/nn_vi.c")
     need("rx_option(HL_OPT_VRR_CAP, 0)" in nn_vi, "nn_vi.c: a limit above 60 is held to the VRR cap (0: none)")
 
     menu_h = read("gpu/vk/vk_menu.h")
     need("int vsync = 0;" in menu_h, "vk_menu.h: V-Sync Off by default")
+    need("int vsync_mode = 1;" in menu_h, "vk_menu.h: FIFO (triple buffering) by default")
     need("int vrr = 0;" in menu_h, "vk_menu.h: VRR Off by default")
 
     disp = read("host/display.c")

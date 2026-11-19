@@ -769,17 +769,19 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     }
     if (result != VK_SUCCESS || modes.empty())
         logf("vk: querying present modes failed (VkResult %d, count %u); trying mandatory FIFO mode", (int)result, n);
-    // (the Insert menu's Presentation row, RX_VK_FIFO and RX_VK_IMMEDIATE over it: present_mode.h)
+    // (the Insert menu's V-Sync and V-Sync mode rows, RX_VK_FIFO and RX_VK_IMMEDIATE over them: present_mode.h)
     unsigned offered = 0;
     for (auto m : modes) {
         if (m == VK_PRESENT_MODE_MAILBOX_KHR) offered |= present_mode::kHasMailbox;
         if (m == VK_PRESENT_MODE_IMMEDIATE_KHR) offered |= present_mode::kHasImmediate;
-        if (m == VK_PRESENT_MODE_FIFO_RELAXED_KHR) offered |= present_mode::kHasRelaxed;
     }
     dev.present_modes_offered = offered;
-    dev.present_modes_known = true;   // (the V-Sync row says when it cannot have what it asks)
+    dev.present_modes_known = true;   // (the V-Sync rows say when they cannot have what they ask)
+    dev.swap_min_images = caps.minImageCount;
+    dev.swap_max_images = caps.maxImageCount;
     present_mode::Input pin;
     pin.row = opts.vsync;
+    pin.buffering = opts.vsync_mode;
     const present_mode::VrrState vrr = vrr_resolved(true);   // (logs its choice and why, once for each change)
     pin.vrr = vrr.active;
     pin.env_fifo = getenv("RX_VK_FIFO") != nullptr;   // (as on a card or driver with vsync forced)
@@ -793,17 +795,35 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     const present_mode::Mode picked = present_mode::pick(pin);
     const VkPresentModeKHR mode = picked == present_mode::kMailboxMode ? VK_PRESENT_MODE_MAILBOX_KHR
                                   : picked == present_mode::kImmediateMode ? VK_PRESENT_MODE_IMMEDIATE_KHR
-                                  : picked == present_mode::kFifoRelaxedMode ? VK_PRESENT_MODE_FIFO_RELAXED_KHR
                                                                             : VK_PRESENT_MODE_FIFO_KHR;
     dev.vrr_active = vrr.active && !pin.env_fifo && !pin.env_immediate;
-    if (vrr.active && picked != present_mode::kFifo && picked != present_mode::kFifoRelaxedMode)
+    if (vrr.active && picked != present_mode::kFifo)
         logf("vk: VRR: %s is used, the environment's choice: no FIFO", present_mode::mode_name(picked));
+    // (the V-Sync mode row's Mailbox, where there is none: AMD's Windows driver lists no MAILBOX. Said once, and the row's
+    // hint says it while it is chosen)
+    const bool want_mailbox = opts.vsync == present_mode::kOn && opts.vsync_mode == present_mode::kMailbox;
+    if (want_mailbox && picked != present_mode::kMailboxMode) {
+        if (pin.env_fifo || pin.env_immediate)
+            logf("vk: V-Sync: RX_VK_FIFO / RX_VK_IMMEDIATE decide the present mode: %s, not Mailbox", present_mode::mode_name(picked));
+        else if (!(offered & present_mode::kHasMailbox))
+            logf("vk: V-Sync: this surface offers no Mailbox: FIFO (triple buffering) is used");
+        else
+            logf("vk: V-Sync: VRR is on: FIFO, not Mailbox");
+    }
+    // (the image count: FIFO double 2, FIFO triple 3, Mailbox 3 (4 with frame generation); frame generation's images kept
+    // whatever the row says, then the surface's minImageCount/maxImageCount)
+    const present_mode::Images plan = present_mode::image_plan(pin, picked, framegen_on(), caps.minImageCount, caps.maxImageCount);
+    if (plan.framegen_raised)
+        logf("vk: V-Sync: frame generation needs %d images: %s asks for %d, %d used", plan.count,
+             present_mode::buffering_name(opts.vsync_mode), plan.want, plan.count);
+    if (plan.min_raised)
+        logf("vk: V-Sync: the surface asks for at least %u images%s: %d used", caps.minImageCount,
+             opts.vsync == present_mode::kOn && opts.vsync_mode == present_mode::kFifoDouble ? " (FIFO double buffering is not possible here)" : "",
+             plan.count);
+    if (plan.max_capped) logf("vk: V-Sync: the surface allows at most %u images: %d used", caps.maxImageCount, plan.count);
     VkSwapchainCreateInfoKHR ci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     ci.surface = dev.surface;
-    ci.minImageCount = std::max(caps.minImageCount, 4u);   // (hookshot: mailbox with frame interpolation: an image always free)
-    if (mode == VK_PRESENT_MODE_FIFO_KHR || mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR)
-        ci.minImageCount = std::max(caps.minImageCount, 3u);   // (V-Sync: each image queued is a refresh more of delay; three keep one free)
-    if (caps.maxImageCount) ci.minImageCount = std::min(ci.minImageCount, caps.maxImageCount);
+    ci.minImageCount = (uint32_t)plan.count;
     ci.imageFormat = fmt.format;
     ci.imageColorSpace = fmt.colorSpace;
     ci.imageExtent = {width, height};
@@ -889,12 +909,12 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     dev.swap_format = fmt.format;
     dev.swap_extent = {width, height};
     dev.present_mode_name = mode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate"
-                            : mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR ? "fifo_relaxed" : dev.vrr_active ? "fifo (VRR)" : "fifo";
+                                                                                                                      : dev.vrr_active ? "fifo (VRR)" : "fifo";
     dev.swap_images = std::move(images);
-    logf("vk: swapchain %ux%u, %u images, %s (V-Sync %s%s)", width, height, n,
-         mode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate"
-         : mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR ? "fifo_relaxed" : "fifo",
-         opts.vsync == present_mode::kOn ? "On" : opts.vsync == present_mode::kAdaptive ? "Adaptive" : "Off",
+    // (one line: V-Sync On or Off, the mode the row asks for, the present mode and the images the swapchain has)
+    logf("vk: swapchain %ux%u, %u images, %s (V-Sync %s, %s%s)", width, height, n, present_mode::mode_name(picked),
+         opts.vsync == present_mode::kOn ? "On" : "Off",
+         opts.vsync == present_mode::kOn ? present_mode::buffering_name(opts.vsync_mode) : "no mode",
          dev.vrr_active ? ", VRR" : "");
     swap_views_make(ci.imageUsage, mutable_view ? view_formats[1] : fmt.format);
     reflex_swapchain_created(sc);   // (NVIDIA Reflex: its sleep mode on the new swapchain)
@@ -1439,7 +1459,7 @@ present_mode::VrrState vrr_resolved(bool fresh) {
             if (st.cap_below > 0) snprintf(cap, sizeof cap, "a frame rate limit above 60 held at %d fps (refresh %d Hz - %d)", hz - st.cap_below, hz, st.cap_below);
             else snprintf(cap, sizeof cap, "refresh rate unknown: no frame limit cap");
             logf("vk: VRR: %s; FIFO present mode (V-Sync row: %s), %s, %s; %s%s", why,
-                 opts.vsync == kOn ? "On" : opts.vsync == kAdaptive ? "Adaptive" : "Off, overridden",
+                 opts.vsync == kOn ? "On" : "Off, overridden",
                  in.fullscreen ? "borderless popup window (can flip)" : "windowed: the window cannot flip, G-Sync for windowed mode must be on in the driver", cap,
                  reflex_available() ? (opts.reflex ? "NVIDIA Reflex on" : "NVIDIA Reflex off (turn it on for the lowest delay)") : "no NVIDIA Reflex here",
                  framegen_on() ? "; frame generation presents are spaced to the same limit" : "");
@@ -1452,7 +1472,8 @@ present_mode::VrrState vrr_resolved(bool fresh) {
 
 int present_choice_key() {
     const present_mode::VrrState s = vrr_resolved(false);
-    return opts.vsync * 4 + (s.active ? 1 : 0) + (s.popup ? 2 : 0);
+    // (the V-Sync row, the V-Sync mode row and the VRR row as one number: a change makes the swapchain again)
+    return (opts.vsync * 8 + opts.vsync_mode) * 4 + (s.active ? 1 : 0) + (s.popup ? 2 : 0);
 }
 
 int vrr_fps_cap() {

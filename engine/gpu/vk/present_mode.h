@@ -1,18 +1,23 @@
-/* Which present mode the swapchain uses (vk_main.cpp create_swapchain): the Insert menu's V-Sync row, the VRR row, RX_VK_FIFO and
-   RX_VK_IMMEDIATE, and the modes the surface offers. Plain ints, no Vulkan header: tests/test_present_mode.cpp compiles it. */
+/* Which present mode the swapchain uses (vk_main.cpp create_swapchain): the Insert menu's V-Sync and V-Sync mode rows, the
+   VRR row, RX_VK_FIFO and RX_VK_IMMEDIATE, and the modes the surface offers. Plain ints, no Vulkan header:
+   tests/test_present_mode.cpp compiles it. */
 #pragma once
 
 namespace mkwvk::present_mode {
 
 /// The V-Sync row's values (opts.vsync, saved as vsync). Off is what the game always did: mailbox where offered
-enum Row { kOff = 0, kOn = 1, kAdaptive = 2 };
+enum Row { kOff = 0, kOn = 1 };
+/// The V-Sync mode row's values (opts.vsync_mode, saved as vsync_mode), with the V-Sync row On. There is no Mailbox double:
+/// Mailbox needs a spare image, so it is triple buffered by nature (with two it would behave like FIFO)
+enum Buffering { kFifoDouble = 0, kFifoTriple = 1, kMailbox = 2 };
 /// What is used
-enum Mode { kFifo = 0, kMailboxMode = 1, kImmediateMode = 2, kFifoRelaxedMode = 3 };
+enum Mode { kFifo = 0, kMailboxMode = 1, kImmediateMode = 2 };
 /// The modes a surface offers, as bits (FIFO is always there: the spec makes it mandatory)
-enum Offered : unsigned { kHasMailbox = 1u, kHasImmediate = 2u, kHasRelaxed = 4u };
+enum Offered : unsigned { kHasMailbox = 1u, kHasImmediate = 2u };
 
 struct Input {
     int row = kOff;              // opts.vsync
+    int buffering = kFifoTriple; // opts.vsync_mode (only read with the row On)
     bool vrr = false;            // the VRR row resolved to On (vrr_resolve below): FIFO, whatever the V-Sync row says
     bool env_fifo = false;       // RX_VK_FIFO set
     bool env_immediate = false;  // RX_VK_IMMEDIATE set
@@ -20,33 +25,75 @@ struct Input {
     bool windows = false;
 };
 
-/// The mode to create the swapchain with. RX_VK_FIFO wins over everything, then RX_VK_IMMEDIATE, then VRR (FIFO, or the
-/// relaxed FIFO when the V-Sync row asks for it), then the row. Off is what it always was: mailbox when offered; with none,
-/// immediate on Windows (AMD has no mailbox, and FIFO held anything under 60 fps at 30), FIFO elsewhere. On is FIFO;
-/// Adaptive is FIFO_RELAXED where offered (a late frame tears instead of waiting a whole refresh), else FIFO.
+/// The mode to create the swapchain with. RX_VK_FIFO wins over everything, then RX_VK_IMMEDIATE, then VRR (FIFO, whatever
+/// the rows say), then the rows. Off is what it always was: mailbox when offered; with none, immediate on Windows (AMD has
+/// no mailbox, and FIFO held anything under 60 fps at 30), FIFO elsewhere. On is FIFO, or Mailbox when the V-Sync mode row
+/// asks for it and the surface lists it (else FIFO: the caller logs the fallback).
 inline Mode pick(const Input& in) {
     if (in.env_fifo) return kFifo;
     const bool imm = (in.offered & kHasImmediate) != 0;
     if (in.env_immediate && imm) return kImmediateMode;
-    if (in.vrr) return in.row == kAdaptive && (in.offered & kHasRelaxed) ? kFifoRelaxedMode : kFifo;
-    if (in.row == kOn) return kFifo;
-    if (in.row == kAdaptive) return (in.offered & kHasRelaxed) ? kFifoRelaxedMode : kFifo;
+    if (in.vrr) return kFifo;
+    if (in.row == kOn) return in.buffering == kMailbox && (in.offered & kHasMailbox) ? kMailboxMode : kFifo;
     if (in.offered & kHasMailbox) return kMailboxMode;
     return in.windows && imm ? kImmediateMode : kFifo;
 }
 
-/// The row's value in words for the overlay and the log
+/// A mode's name for the log and the overlay
 inline const char* mode_name(Mode m) {
-    return m == kMailboxMode ? "mailbox" : m == kImmediateMode ? "immediate" : m == kFifoRelaxedMode ? "fifo_relaxed" : "fifo";
+    return m == kMailboxMode ? "mailbox" : m == kImmediateMode ? "immediate" : "fifo";
 }
 
-/// Whether the V-Sync row's value can be had here as it says: Adaptive needs FIFO_RELAXED (else it is plain FIFO), Off needs
-/// mailbox or immediate. 0 offered: not asked yet
-inline bool row_exact(int row, unsigned offered) {
-    if (!offered) return true;
-    if (row == kAdaptive) return (offered & kHasRelaxed) != 0;
-    if (row == kOff) return (offered & (kHasMailbox | kHasImmediate)) != 0;
-    return true;
+/// The V-Sync mode row's value in words for the log
+inline const char* buffering_name(int b) {
+    return b == kFifoDouble ? "FIFO (double buffering)" : b == kMailbox ? "Mailbox (triple buffering)" : "FIFO (triple buffering)";
+}
+
+/// Whether a surface that offers `offered` can give the V-Sync mode row's value (0 offered: not asked yet)
+inline bool buffering_offered(int b, unsigned offered) {
+    return !offered || b != kMailbox || (offered & kHasMailbox) != 0;
+}
+/// Whether the V-Sync row's Off can be had here as it says: mailbox or immediate (else FIFO)
+inline bool off_offered(unsigned offered) {
+    return !offered || (offered & (kHasMailbox | kHasImmediate)) != 0;
+}
+
+// ---- the swapchain's images ----
+
+/// What the V-Sync mode row comes to in swapchain images: the row's wish, backed up for frame generation or the surface's
+/// minimum, held down to the surface's maximum
+struct Images {
+    int want = 0;                  // the row's wish
+    int count = 0;                 // what to ask the driver for
+    bool framegen_raised = false;  // frame generation needs more than the row asks (FIFO 3, Mailbox 4)
+    bool min_raised = false;       // the surface asks for at least that many
+    bool max_capped = false;       // the surface allows at most that many
+};
+
+/// The row's wish, before frame generation and the surface have their say: FIFO double 2, FIFO triple 3, Mailbox 3. Off is
+/// today's: 4 with mailbox or immediate (the spare image frame interpolation wants), 3 under FIFO ("three keep one free")
+inline int image_want(int row, int buffering, Mode picked) {
+    if (row == kOn) {
+        if (picked == kMailboxMode) return 3;
+        if (picked == kImmediateMode) return 4;   // (RX_VK_IMMEDIATE: the row On's count, the mode alone changes)
+        return buffering == kFifoDouble ? 2 : 3;
+    }
+    return picked == kFifo ? 3 : 4;
+}
+
+/// The image count to create the swapchain with. Frame generation keeps what it needs whatever the row says (a spare image
+/// always free: 4 with Mailbox, 3 under FIFO), then the surface's minImageCount/maxImageCount clamp it. min_count 0: the
+/// surface was not asked (a test); max_count 0: no maximum
+inline Images image_plan(const Input& in, Mode picked, bool framegen, unsigned min_count, unsigned max_count) {
+    Images im;
+    im.want = image_want(in.row, in.buffering, picked);
+    int n = im.want;
+    const int floor = framegen ? (picked == kFifo ? 3 : 4) : 0;
+    if (n < floor) im.framegen_raised = true, n = floor;
+    if (min_count && n < (int)min_count) im.min_raised = true, n = (int)min_count;
+    if (max_count && n > (int)max_count) im.max_capped = true, n = (int)max_count;
+    im.count = n;
+    return im;
 }
 
 // ---- VRR (G-Sync / FreeSync) ----
