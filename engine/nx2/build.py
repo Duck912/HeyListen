@@ -88,7 +88,8 @@ def write_symtab(map_path, binary_path, cc):
     try:
         out_path = os.path.splitext(binary_path)[0] + ".sym"
         n = symtab.write_map(map_path, binary_path, out_path, symtab.find_cxxfilt(cc))
-        print("crash names: %s (%d MB)" % (os.path.basename(out_path), n >> 20), flush=True)
+        if n:
+            print("crash names: %s (%d MB)" % (os.path.basename(out_path), n >> 20), flush=True)
     except (OSError, ValueError) as e:
         print("crash names: not written for %s: %s" % (os.path.basename(binary_path), e), flush=True)
 

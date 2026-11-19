@@ -149,8 +149,15 @@ def read_map(path, cxxfilt=None):
 
 
 def write_table(path, functions, preferred, identity):
-    """Writes the binary table; returns the bytes written"""
+    """Writes the binary table; returns the bytes written (0, and no file, when the map gave no names: an ELF map
+    another linker wrote, or a link that named nothing)"""
     rvas = sorted(functions)
+    if not rvas:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return 0
     pool = bytearray()
     offsets = {}
     for rva in rvas:

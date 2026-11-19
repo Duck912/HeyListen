@@ -37,6 +37,12 @@ folder's `bin/` with the exe and DLLs. A game folder that has neither (an update
 that was not written) is not a failure: the frames stay module+offset, and host frames in the lifted code are still
 named from `a64_fn_addr`/`a64_fn_ptr`, the table every executable already carries.
 
+The tables are a Windows build product: the PE linker's map has the symbol form `nx2/symtab.py` reads. The Linux
+ELF linker writes another shape, so a Linux build writes no table and its frames stay module+offset (the compiled-in
+lifted table still names host frames in lifted code). The `bin/<name>` folder a developer's `build/s5/mkg.ps1`
+makes is not installed by the builder and holds no tables (it copies the exe and DLLs only); copy
+`HeyListen.sym` and `hookshot_vk.sym` beside the exe when running from one.
+
 ## When it is resolved
 
 `hos_crash_record_start` (normal start-up, before the crash handlers are installed) calls
