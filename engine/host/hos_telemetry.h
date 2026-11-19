@@ -19,12 +19,20 @@
 #define HOS_TELEMETRY_CRASH_PATH "/telemetry/crash"
 #define HOS_TELEMETRY_PERF_PATH "/telemetry/perf"
 #define HOS_TELEMETRY_PIPELINES_PATH "/telemetry/pipelines"
+#define HOS_TELEMETRY_ZONES_PATH "/telemetry/zones"
 /* HL_TELEMETRY_PIPELINES=0 turns the pipeline state records off by themselves (the performance summaries stay as the row says) */
 #define HOS_TELEMETRY_PIPELINES_ENV "HL_TELEMETRY_PIPELINES"
+/* HL_TELEMETRY_ZONES=0 turns the per-zone shader and pipeline usage off by itself (the performance summaries stay as the row says) */
+#define HOS_TELEMETRY_ZONES_ENV "HL_TELEMETRY_ZONES"
 enum { HOS_TELEMETRY_URL_MAX = 300 };
 
 /* Whether the pipeline state records may go, by HL_TELEMETRY_PIPELINES: on unless it is exactly "0" */
 static inline int hos_telemetry_pipelines_on(const char *env_value) {
+    return !(env_value && env_value[0] == '0' && env_value[1] == 0);
+}
+
+/* Whether the per-zone shader and pipeline usage may go, by HL_TELEMETRY_ZONES: on unless it is exactly "0" */
+static inline int hos_telemetry_zones_on(const char *env_value) {
     return !(env_value && env_value[0] == '0' && env_value[1] == 0);
 }
 

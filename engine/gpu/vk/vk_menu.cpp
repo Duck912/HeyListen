@@ -866,7 +866,9 @@ Row rows[] = {
      "and at exit it writes a summary to perf_pending in the game folder, and sends it at the next start; perf_sent keeps a copy "
      "of what was sent. At exit it also queues the graphics pipeline states your game made that the shipped list lacks (hashes "
       "and render state only, nothing of the game's code or data; pipelines_pending, pipelines_sent), unless HL_TELEMETRY_PIPELINES=0. "
-      "Turning it off deletes those folders. See docs/performance-statistics.md.", hn_telemetry, false, true},
+      "It also notes, per map, which shader programs and pipelines your game's draws used, by hash alone (zones_pending, "
+      "zones_sent), unless HL_TELEMETRY_ZONES=0. Turning it off deletes those folders. See docs/performance-statistics.md.",
+     hn_telemetry, false, true},
     {TAB_GAMEPLAY, "Send crash reports automatically", &opts.send_crash, 0, 1, 1, tx_telemetry,
      "Off by default: after a crash a window asks what to do. On: the crash report (the error, your PC's hardware, the end of the "
      "log, the settings, with your home folder, user name, every folder path and device names taken out) is sent at once, without "

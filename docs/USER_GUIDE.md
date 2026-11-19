@@ -358,6 +358,10 @@ in-game menu (Insert) control it:
   texture and vertex formats and a few render-state numbers, **nothing of the game's code or data**, plus the game version,
   the GPU's vendor and driver and two build stamps. No name, no ID, no path. At most 1,800 a session, each one once;
   `pipelines_sent` keeps a copy of what was sent. Set `HL_TELEMETRY_PIPELINES=0` to turn only this part off.
+  The same row also notes, **per map**, which shader programs and pipelines the game's draws used, as 64-bit hashes with a
+  use count and their order of first use — **hashes of shader programs and pipeline states only, no game code** — and sends
+  them at the next start, so a release can have the next zone's pipelines ready before you enter it; `zones_sent` keeps a
+  copy. Set `HL_TELEMETRY_ZONES=0` to turn only this part off.
 - **Send crash reports automatically**: off by default. After a crash a window says what happened and asks. **Report
   manually** copies a report to your clipboard and opens a new issue on GitHub for you to paste it into; **Report
   automatically** shows you the exact report and sends it only when you press Send. With this row on, the report is sent at
@@ -370,7 +374,8 @@ in-game menu (Insert) control it:
   message in the project's Discord server, with the detailed report as a .txt file. The server keeps a crash report until
   it is removed on request. To get one deleted, open an issue or ask on Discord with the report's time and we remove it.
 
-Turn either row off and what was waiting to be sent (`perf_pending`, `perf_sent`, `pipelines_pending`, `pipelines_sent`) is deleted. A build with no address
+Turn either row off and what was waiting to be sent (`perf_pending`, `perf_sent`, `pipelines_pending`, `pipelines_sent`,
+`zones_pending`, `zones_sent`) is deleted. A build with no address
 to send to shows both rows as *Not available in this build* and sends nothing. Details and the exact fields:
 [performance statistics](performance-statistics.md).
 

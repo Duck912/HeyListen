@@ -37,6 +37,7 @@
 #include "vk_paths.h"
 #include "vk_draw.h"
 #include "flat_map.h"
+#include "perf_report.h"   // (zone_note_program / zone_note_state: the per-zone key recorder, once a key per map)
 #include "dlss_actor.h"
 #include "vk_temporal.h"
 #include "vk_fsr3.h"          // (AMD FSR 3.1 in the gameplay upscale's place)
@@ -1682,6 +1683,7 @@ bool pipe_same(uint64_t prog, uint64_t variant, int topo, uint32_t samples, int 
 struct PipeFast {
     bool on = false;
     PipeEntry* pe = nullptr;
+    uint64_t key = 0;   // (the pipeline's key as it was recorded: the zone recorder's own note of the fast hit)
     uint64_t prog = 0, variant = 0;
     int topo = 0, n = 0, nvattr = 0;
     uint32_t samples = 0, depth = 0, blend_en = 0, chmask = 0, poly = 0, clamp = 0, a2c = 0;
@@ -1859,13 +1861,15 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
                       f.samples, f.n, f.depth, f.formats, f.nvattr, f.vattr, f.div, f.blend_en, f.blend, f.chmask, f.poly,
                       f.clamp, f.a2c)) {
             FINE_N(FC_PIPE_FAST, 1);
+            zone_note_state(f.key);   // (the fast hit keeps the key of its entry: the set lookup, as on the slow path)
             return f.pe;
         }
-    auto remember = [&](PipeEntry* e) {
+    auto remember = [&](PipeEntry* e, uint64_t pkey) {
         if (!e) return e;
+        zone_note_state(pkey);   // (every slow-path lookup notes the pipeline's key: the set lookup, once a key per map)
         if (!(pipe_fast[0].on && pipe_fast[0].pe == e)) pipe_fast[1] = pipe_fast[0];
         PipeFast& f = pipe_fast[0];
-        f.on = true, f.pe = e, f.prog = (uint64_t)(uintptr_t)&p, f.variant = p.variant, f.topo = topo_c;
+        f.on = true, f.pe = e, f.key = pkey, f.prog = (uint64_t)(uintptr_t)&p, f.variant = p.variant, f.topo = topo_c;
         f.samples = (uint32_t)at.samples, f.n = at.n, f.depth = (uint32_t)at.depth_format, f.nvattr = s.nvattr;
         f.blend_en = blend_en, f.chmask = chmask, f.poly = poly, f.clamp = clamp, f.a2c = a2c;
         std::memcpy(f.formats, formats, sizeof formats);
@@ -1881,11 +1885,12 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
     // lost near water). Another object with the same key gets a pipeline of its own, under a key of its own (not noted: it holds
     // an address); a thread's map is by key and object too. RX_VK_PIPE_BY_PROGRAM=0: shared by the key alone, as before
     static const bool by_program = [] { const char* e = getenv("RX_VK_PIPE_BY_PROGRAM"); return !(e && env_value_off(e)); }();
-    uint64_t key = pipeline_key(p, s, at, topo);
+    const uint64_t pkey = pipeline_key(p, s, at, topo);   // (the pipeline's key as the notes and the recorder know it)
+    uint64_t key = pkey;
     const uint64_t own = mix(key, (uint64_t)(uintptr_t)&p);
     const uint64_t mkey = by_program ? own : key;   // (a thread's map: by key and object)
     static thread_local FlatMap<uint64_t, PipeEntry*> mine;   // (entries live as long as the cache; hookshot: flat, flat_map.h)
-    if (auto m = mine.find(mkey); m != mine.end()) return FINE_X(FC_PIPE_MAP, 1), remember(m->second);
+    if (auto m = mine.find(mkey); m != mine.end()) return FINE_X(FC_PIPE_MAP, 1), remember(m->second, pkey);
     PROF_EXACT();   // (new to this thread, or new: rare, and a pipeline made can take milliseconds)
     ParLock lk;
     auto it = pipelines.find(key);
@@ -1901,7 +1906,7 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
             it = pipelines.find(key);
         }
     }
-    if (it != pipelines.end()) return remember(mine[mkey] = it->second.get());
+    if (it != pipelines.end()) return remember(mine[mkey] = it->second.get(), pkey);
     pcache_init();
     PipeEntry* e = pipelines.emplace(key, std::make_unique<PipeEntry>()).first->second.get();
     e->prog.store(&p, std::memory_order_release);
@@ -1910,7 +1915,7 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
         if (!own_key) pipeline_note(key, p, s, at, topo, color_types);   // (its own key holds an address: nothing to note)
         e->pipeline = build_graphics(p, s, at, topo);
         e->ready = true;
-        return remember(e);
+        return remember(e, pkey);
     }
     // (TICK-008) Nothing of the pipeline is done on this thread: a worker notes it, links it from the libraries when they are on
     // (RX_VK_GPL: the draw goes ahead on the linked pipeline) and builds it whole. A draw that finds it not ready is left out.
@@ -1952,7 +1957,7 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
             if (job->cold[i])
                 jobs_push([job, i] { gpl_build_cold(*job->p, job->s, job->at, job->topo, i + 1, job->cold[i]); });
     }, false, &e->ready);   // (a draw that waits for it runs it at once if it is still queued: jobs_wait)
-    return remember(e);
+    return remember(e, pkey);
 }
 
 /// part: -1 the whole pipeline, or the graphics pipeline library it stands for: 0 vertex input, 1 pre-rasterization, 2 fragment
@@ -7268,6 +7273,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         ParLock lk(d.mesh);   // (graphics programs: each thread's picks, program_pick's own lock)
         cp = program_for(s, d.mesh ? ProgramKind::Mesh : ProgramKind::Graphics, types);
     }
+    if (cp) zone_note_program(cp->key);   // (the zone recorder's set lookup: on the program pick's own path, once a key per map)
     {   // (hookshot, a test) RX_VK_NO_MESH=1: task / mesh draws left out, to see what they draw; =2: the others left out
         static const int no_mesh = getenv("RX_VK_NO_MESH") ? atoi(getenv("RX_VK_NO_MESH")) : 0;
         if ((no_mesh == 1 && d.mesh) || (no_mesh == 2 && !d.mesh)) return;

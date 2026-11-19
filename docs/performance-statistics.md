@@ -8,7 +8,7 @@ project's GitHub issue #55 and a message in the project's Discord server, and st
 
 | Row | What it does | Default |
 |---|---|---|
-| **Send performance statistics** | The game counts how its frames went and sends the counts, at the next start. The same row sends the new pipeline states the game made (hashes and render state, see *Pipeline states* below), unless `HL_TELEMETRY_PIPELINES=0` | Off |
+| **Send performance statistics** | The game counts how its frames went and sends the counts, at the next start. The same row sends the new pipeline states the game made (hashes and render state, see *Pipeline states* below) and, per map, which shader programs and pipelines it drew with (see *Zone usage* below), unless `HL_TELEMETRY_PIPELINES=0` and `HL_TELEMETRY_ZONES=0` | Off |
 | **Send crash reports automatically** | After a crash, the crash report is sent at once, without the crash window asking | Off (the window asks) |
 
 Ported from Longshot's pull request #983 (Gabriel Moisan Matte), which builds on its crash window (#593, HumanBean) and its
@@ -22,7 +22,8 @@ tables.
 - `perf_pending/` in the game folder: the summaries waiting to be sent. `perf_sent/`: each summary the server took,
   exactly as it was sent (the 48 sent last), for a player to open and read. Turning **Send performance statistics** off
   deletes both folders' summaries at once. `pipelines_pending/` and `pipelines_sent/` are the same for the pipeline state
-  records (see below), deleted together with them.
+  records (see below), and `zones_pending/` and `zones_sent/` the same for the per-zone shader and pipeline usage
+  (the 3 sent last), deleted together with them.
 - After a crash, the crash window (the game's own, drawn like the Insert menu) says what happened, and offers **Report
   automatically** (shows the report that would be sent, every line of it, and sends it only when Send is pressed),
   **Report manually** (copies a redacted report to the clipboard and opens a new issue on GitHub with a title and a short
@@ -42,6 +43,7 @@ until it is removed on request.
 | `POST /telemetry/crash` | The player presses Send in the crash window, or after a crash with **Send crash reports automatically** on | The player's click or the row | A comment on the project's GitHub issue #55 and a message in its Discord server, kept until removed on request |
 | `POST /telemetry/perf` | Every 5 minutes of play and at exit, sent at the next start | **Send performance statistics** on | Totals for all players; never published per player |
 | `POST /telemetry/pipelines` | At exit the game queues the pipeline states it made that the shipped list lacks; sent at the next start | **Send performance statistics** on, and `HL_TELEMETRY_PIPELINES` not `0` | The records the next shipped pipeline state list is made from; nothing kept per player |
+| `POST /telemetry/zones` | At exit the game queues, per map, the shader program and pipeline state keys its draws first used; sent at the next start | **Send performance statistics** on, and `HL_TELEMETRY_ZONES` not `0` | Per map, version and GPU vendor, the keys to preload and unload; nothing kept per player |
 
 All bodies are `Content-Type: application/json`. The server answers 2xx for a taken report, 4xx with `{"error": ...}` for a
 refused one, 429 or 5xx when busy.
@@ -201,6 +203,59 @@ Never sent: the GPU's name or device id, the CPU, the OS, the PC's name or folde
 `pipelines_sent/` is the exact body of each batch sent (the last 3). `tests/test_state_report.py` checks the payload against
 this PC's own names and folders.
 
+### Zone usage (`/telemetry/zones`, at most 400 KiB a batch)
+
+While the row is on, the game notes, per map, which shader programs and which graphics pipelines its draws used: a program
+by its 64-bit program key (the hash the renderer knows a shader program by), a pipeline by its 64-bit pipeline key (the
+same identity the pipeline notes `hookshot_pipelines.bin` keep, and that the precompile makes of each state list record).
+Both are recorded where a draw looks them up, once per key per map, so nothing is measured beyond a set lookup on a path
+the draw takes anyway. A map's entry lists each key **in first-use order** (its index of first use within the visit it
+was first used in), a **use count bucketed** (0: once, 1: two to nine times, 2: ten or more) and an **arrival flag** (1
+when the key's first use on the map was within `arrival_s` seconds of entering it — the area's arrival, the moment a
+release wants the next zone's pipelines ready). At most 4,096 program keys and 8,192 state keys a map, 32 maps a session.
+At exit the maps not queued before for this version and these stamps are written as one or more JSON batches (at most
+400 KiB each, 4 waiting); their names and stamps are remembered in `hookshot_zones_sent.bin` beside the game, so a map is
+sent once per version per PC. With nothing new, nothing is queued.
+
+| Field | Type | Limits | What it is |
+|---|---|---|---|
+| `v` | integer | | The format's version: 1 |
+| `version` | string | ≤ 40 characters | The game's version, as the performance summary says it |
+| `release` | boolean | | A release's version built from the release's own sources |
+| `state_stamp` | string | 16 hex digits | `HOOKSHOT_STATE_STAMP`: the hash of the renderer's state headers (what the pipeline keys are laid out for) |
+| `shader_stamp` | string | 16 hex digits | The shader translation's stamp (`program_cache_stamp`: the translator, the depth mode, the GPU's mesh-shader mode, the C++ library) |
+| `vendor_id` | integer | | The GPU's PCI vendor id (4318 NVIDIA, 4098 AMD, 32902 Intel) |
+| `driver` | string | ≤ 60 characters | The GPU driver as the performance summary's `driver` says it; the server derives the class |
+| `maps` | array of MapUsage | ≤ 32 | The maps, in first-visit order |
+
+Per map (`MapUsage`):
+
+| Field | Type | What it is |
+|---|---|---|
+| `name` | string | The map as the performance summary names it (the scene and Link's age; "Preparing shaders" and "Title and intro" before one) |
+| `visits` | integer | How many times the session entered the map |
+| `arrival_s` | number | The arrival window the flag is against: seconds after entering the map (10) |
+| `programs` | array | The program keys, in first-use order: `[key, first index, count bucket, arrival flag]` |
+| `states` | array | The pipeline state keys, the same four each |
+
+Each key is `[` *key* (16 lowercase hex digits), *first index* (integer ≥ 0), *count* (0: once, 1: two to nine times,
+2: ten or more), *arrival* (0 or 1) `]`.
+
+Example (the keys cut short):
+
+```json
+{"v": 1, "version": "v0.4.0", "release": true, "state_stamp": "0123456789abcdef", "shader_stamp": "fedcba9876543210",
+ "vendor_id": 4318, "driver": "NVIDIA 566.36",
+ "maps": [{"name": "Kokiri Forest (child)", "visits": 1, "arrival_s": 10,
+           "programs": [["0011223344556677", 0, 2, 1], ["8899aabbccddeeff", 1, 1, 1]],
+           "states": [["0011223344556677", 0, 2, 1], ["deadbeefdeadbeef", 1, 0, 1]]}]}
+```
+
+Privacy: **hashes of shader programs and pipeline states only** — the program and pipeline keys, their first-use order,
+counts and arrival flags, the map names the performance summary already names, the game version, the GPU vendor id, the
+driver and the two build stamps. No shader code, no game code, no game data, no title id, no path, no name, no ID.
+`tests/test_zone_report.py` checks the payload against this PC's own names and folders.
+
 ## How the parts fit
 
 - **The game** (`gpu/vk/perf_report.cpp`, `perf_report.h`, `perf_parts.h`): while the row is on and the build has an address
@@ -233,6 +288,15 @@ this PC's own names and folders.
   log says `vk: pipeline states: N new records queued ...` or `... nothing queued to send: <why>`, and at the next start
   `perf: N pipeline state batches sent or refused`. Turning the row off deletes `pipelines_pending/`, `pipelines_sent/` and the
   sent hashes.
+- **The zone usage** (`gpu/vk/zone_report.h` the rules, `perf_report.cpp` the recorder and `zones_queue`): with the row on, an
+  address and `HL_TELEMETRY_ZONES` not `0`, each draw's program key and pipeline key are looked up in the current map's set
+  (once per key per map; off, one atomic load) and the maps the session toured are queued at the same moment the pipeline
+  states are: one or more whole batches into `zones_pending/<unix time>-<n>.json` (at most 4 wait, 400 KiB a batch), their
+  hashes into `hookshot_zones_sent.bin`. The sender (`hos_zones_send_run`, again the summaries' code with its own folders)
+  posts at most 2 a start to `/telemetry/zones`, keeps the last 3 sent in `zones_sent/` and has its own `.next` backoff. The
+  log says `vk: zones: N maps (...) queued ...` or `... nothing queued to send: <why>`, and at the next start
+  `perf: N zone usage batches sent or refused`. Turning the row off deletes `zones_pending/`, `zones_sent/` and the sent
+  hashes.
 - **The address** (`host/hos_telemetry.h`): `nx2/addresses.ini`'s `telemetry=`, stamped by `nx2/make_game.py` into the game
   folder's `hookshot_version.txt`. Empty (the default): nothing is stamped, nothing can be sent, and both rows say **Not
   available in this build**.
@@ -244,7 +308,9 @@ this PC's own names and folders.
 | `HL_TELEMETRY_URL` | the build's address | Where reports go, for a test against a local server. From the real environment only (`hookshot_env.txt` is refused it). https only |
 | `HL_TELEMETRY_TEST_HTTP=1` | off | With `HL_TELEMETRY_URL`, also takes a plain `http://` address on this PC itself (`127.0.0.1`, `localhost`, `[::1]`). For tests only |
 | `HL_TELEMETRY_PIPELINES=0` | on (with the row) | Turns off only the pipeline state records: none is queued or sent, the performance summaries go as the row says |
+| `HL_TELEMETRY_PIPELINES=0` | on (with the row) | Turns off only the pipeline state records: none is queued or sent, the performance summaries go as the row says |
 | `HOS_PERF_REPORT=1` | off | With **Send performance statistics** on, measure and write the summaries even in a build with no address: for this machine alone, into `perf_pending/`, never sent (the sender still needs an address). A run's breakdown without any server |
+| `HL_TELEMETRY_ZONES=0` | on (with the row) | Turns off only the per-zone shader and pipeline usage: nothing is recorded, queued or sent, the rest goes as the row says |
 | `RX_VK_PERF_INTERVAL` | `300` s | Seconds of play between two summaries (60 to 840) |
 | `HL_PERF_MAX_SENDS` | `12` | Summaries sent at one start (1 to 48) |
 | `HL_PERF_TIMEOUT` | `10` s | A request's time limit (2 to 60) |
