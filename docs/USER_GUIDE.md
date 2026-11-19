@@ -350,7 +350,8 @@ in-game menu (Insert) control it:
   they waited on, per map) and sends a summary of the counts at the next start. A summary holds the PC's GPU, driver, CPU,
   RAM, operating system, the upscaler (with its DLSS model and the render resolution), frame generation and its multiplier,
   the preset and frame rate cap, the game's version and the map names. It has no name, no
-  ID and no path, and what the team keeps is totals for all players, nothing per player. `perf_sent` in the game folder keeps
+  ID and no path. Performance statistics are never published per player: what the team keeps is totals for all players,
+  nothing per player. `perf_sent` in the game folder keeps
   a copy of everything that was sent, to read.
   The same row also lets the game send the **graphics pipeline states** it met that HeyListen's shipped list does not have
   yet, at the next start, so the list can grow from what players actually run: for each, hashes of the game's shaders,
@@ -361,8 +362,12 @@ in-game menu (Insert) control it:
   manually** copies a report to your clipboard and opens a new issue on GitHub for you to paste it into; **Report
   automatically** shows you the exact report and sends it only when you press Send. With this row on, the report is sent at
   once and the window shows only if that fails. The report has the crash's error line, the game version, your GPU, CPU,
-  RAM and operating system, the map, the last 150 lines of the game's log and its settings. Your home folder, user name and
-  the names of your audio devices are taken out first. It never has your saves, the game's files or keys.
+  RAM and operating system, the map, the last 150 lines of the game's log and its settings. Your home folder, user name,
+  every folder path and the names of your audio devices are taken out first. It never has your saves, the game's files or
+  keys.
+- **Crash reports are published, not kept private**: a report becomes a comment on the project's GitHub issue #55 and a
+  message in the project's Discord server, with the detailed report as a .txt file. The server keeps a crash report until
+  it is removed on request. To get one deleted, open an issue or ask on Discord with the report's time and we remove it.
 
 Turn either row off and what was waiting to be sent (`perf_pending`, `perf_sent`, `pipelines_pending`, `pipelines_sent`) is deleted. A build with no address
 to send to shows both rows as *Not available in this build* and sends nothing. Details and the exact fields:

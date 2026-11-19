@@ -869,8 +869,9 @@ Row rows[] = {
       "Turning it off deletes those folders. See docs/performance-statistics.md.", hn_telemetry, false, true},
     {TAB_GAMEPLAY, "Send crash reports automatically", &opts.send_crash, 0, 1, 1, tx_telemetry,
      "Off by default: after a crash a window asks what to do. On: the crash report (the error, your PC's hardware, the end of the "
-     "log, the settings, with your home folder, user name and device names taken out) is sent at once, without the window; if it "
-     "cannot be sent the window shows as usual.", hn_telemetry, false, true},
+     "log, the settings, with your home folder, user name, every folder path and device names taken out) is sent at once, without "
+     "the window; if it cannot be sent the window shows as usual. Your report is published on the project's GitHub (issue #55) and "
+     "Discord, without your user name or folders.", hn_telemetry, false, true},
     {TAB_GAMEPLAY, "Discord status", &opts.discord, 0, 1, 1, tx_onoff,
      "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},

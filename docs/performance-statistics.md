@@ -2,7 +2,9 @@
 
 HeyListen can send two things to the team, and only when the player turns them on in the game's menu (Insert menu,
 Gameplay tab). Both are **off by default**, and both say **Not available in this build** until the build has an address to
-send to (`nx2/addresses.ini`, `telemetry=`, which is empty as shipped).
+send to (`nx2/addresses.ini`, `telemetry=`, which is empty as shipped). Performance statistics are never published per
+player: only totals for all players are kept. Crash reports are published, not private: each one becomes a comment on the
+project's GitHub issue #55 and a message in the project's Discord server, and stays there until it is removed on request.
 
 | Row | What it does | Default |
 |---|---|---|
@@ -25,18 +27,20 @@ tables.
   automatically** (shows the report that would be sent, every line of it, and sends it only when Send is pressed),
   **Report manually** (copies a redacted report to the clipboard and opens a new issue on GitHub with a title and a short
   body, for the player to paste into), **Open the log folder** and **Close**. Report automatically is not offered when the
-  build has no address or the PC has no `curl` (Windows 10 and later ship `curl.exe`; Linux needs `curl`).
+  build has no address or the PC has no `curl` (Windows 10 and later ship `curl.exe`; Linux needs `curl`). The window says
+  that a sent report is published on GitHub (issue #55) and Discord without the player's user name or folders.
 - The log says `vk: performance statistics on (...)` when the row is on and the build has an address.
 
 ## What is sent
 
 Everything goes to `https://<the build's address>`, with no account, ID or path, with the system's `curl`, over https only,
-no redirect followed, and nothing is kept per player.
+no redirect followed. Performance summaries are kept as totals for all players, nothing per player. A crash report is kept
+until it is removed on request.
 
 | Endpoint | When | Needs | Becomes |
 |---|---|---|---|
-| `POST /telemetry/crash` | The player presses Send in the crash window, or after a crash with **Send crash reports automatically** on | The player's click or the row | A report per crash |
-| `POST /telemetry/perf` | Every 5 minutes of play and at exit, sent at the next start | **Send performance statistics** on | Totals for all players; nothing kept per player |
+| `POST /telemetry/crash` | The player presses Send in the crash window, or after a crash with **Send crash reports automatically** on | The player's click or the row | A comment on the project's GitHub issue #55 and a message in its Discord server, kept until removed on request |
+| `POST /telemetry/perf` | Every 5 minutes of play and at exit, sent at the next start | **Send performance statistics** on | Totals for all players; never published per player |
 | `POST /telemetry/pipelines` | At exit the game queues the pipeline states it made that the shipped list lacks; sent at the next start | **Send performance statistics** on, and `HL_TELEMETRY_PIPELINES` not `0` | The records the next shipped pipeline state list is made from; nothing kept per player |
 
 All bodies are `Content-Type: application/json`. The server answers 2xx for a taken report, 4xx with `{"error": ...}` for a
@@ -69,10 +73,17 @@ Example:
 
 A crash before the renderer has written its `report:` log lines (a crash at the very start) has no `os`, `cpu` or `gpu` from the log: the helper reads the CPU (with its threads and RAM) and the operating system itself and sends them as `cpu` and `os`, `gpu` is the adapters the log had listed, and `renderer`, which nothing says yet, is left out rather than sent empty.
 
-Privacy: every line is cleaned before it is shown or sent. The home folder is written `~` (or `%USERPROFILE%` on Windows), the
-user name `<user>` (also as a word of its own), the audio and microphone device names `<device>`, control characters are
-dropped, a line is cut at 300 characters, and a setting's value is sent only when it is a number, a size or on/off. The log
-tail is the game's own log (no save data, no game files, no keys, no memory dump). `tests/test_crash_dialog.py` checks it.
+Privacy: every line is cleaned before it is shown or sent. Every absolute folder path is written `<path>` with the file name
+kept (`D:\Games\HeyListen\logs\hookshot_log.txt` becomes `<path>\hookshot_log.txt`, `/home/alice/Games/x` becomes
+`<path>/x`); then the home folder is written `~` (or `%USERPROFILE%` on Windows), the user name `<user>` (also as a word of
+its own), the audio and microphone device names `<device>`, control characters are dropped, a line is cut at 300
+characters, and a setting's value is sent only when it is a number, a size or on/off. The log tail is the game's own log (no
+save data, no game files, no keys, no memory dump). `tests/test_crash_dialog.py` checks it.
+
+Published: a sent crash report is not private to the team. It becomes a comment on the project's GitHub issue #55 ("Crash
+reports (automatic)") and a message in the project's Discord server, with the detailed report as a .txt file. The server
+keeps a crash report until it is removed on request: to get one deleted, open an issue or ask on Discord with the report's
+time and it is removed. Performance summaries are never published per player: what is kept is totals for all players.
 
 ### Performance summary (`/telemetry/perf`, at most 60 KiB)
 
@@ -153,7 +164,8 @@ Example:
 ```
 
 Never sent: paths, the user name, settings beyond the graphics ones above (the upscaler, the preset, the frame rate cap, frame generation and its multiplier, the DLSS model and the render resolution), the log,
-saves, anything from the game files. A summary carries no ID, so two summaries can't be tied to one player.
+saves, anything from the game files. A summary cannot carry a path: every field is a name, a version or a number. It carries
+no ID, so two summaries can't be tied to one player.
 
 ### Pipeline states (`/telemetry/pipelines`, at most 1.5 MiB)
 

@@ -1318,9 +1318,11 @@ static int build_report(const Shown *s, Buf *json, Buf *shown, const char **why)
     put(json, tail.n ? "\n  ]" : "]");
     put(json, settings.s);
     put(json, "\n}\n");
-    /* (the page: the card's rows, the crash's first lines, what else goes; the whole of it is the file Show all of it opens) */
-    putf(shown, "Version: %s\nRelease build: %s\nOperating system: %s\nRenderer: %s\nGraphics card: %s\nCPU and RAM: %s\nMap: %s\n"
+    /* (the page: the card's rows, the crash's first lines, what else goes; the whole of it is the file Show all of it opens.
+       The first line says where it goes: players are not told anywhere else on this page that it becomes public) */
+    putf(shown, "%s\n\nVersion: %s\nRelease build: %s\nOperating system: %s\nRenderer: %s\nGraphics card: %s\nCPU and RAM: %s\nMap: %s\n"
                 "Settings: %d (%d changed from the defaults)\n\nThe crash:\n",
+         HOS_CRASH_PUBLIC_TEXT,
          version, in.release ? "Yes" : "No (a local or modified build)", os, f->renderer[0] ? f->renderer : "not known",
          gpu_text[0] ? gpu_text : "not known", cpu_text[0] ? cpu_text : "not known", place, in.settings, in.changed);
     for (int i = 0; i < crash.n && i < 12; i++) {
@@ -1454,8 +1456,8 @@ static int send_report(const Shown *s) {
     int sent = 0;
     for (;;) {
         const int hit = page_serving("HeyListen: send to the team",
-                                     "This is what goes to the HeyListen team, and nothing else. Show all of it opens the report as it "
-                                     "is sent, every line of it.",
+                                     "This is what is sent, and nothing else. Show all of it opens the report as it is sent, "
+                                     "every line of it.",
                                      shown.s ? shown.s : "", ask, 3);
         if (hit == 1) {
             open_thing(payload);
