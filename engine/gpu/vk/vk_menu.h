@@ -10,9 +10,10 @@ struct Options {
     int framegen = 0;     // made frames: 0 off, 1 Auto (to the display's refresh), or 2 to 8 times the game's frames
     int framegen_by = 0;  // who makes the frames at a fixed multiplier: 0 the renderer's own (AMD FSR 3.1 at 2x, else its block matching), 1 NVIDIA DLSS Frame Generation (vk_dlss.cpp; RTX 40 and newer, with its runtime; up to its runtime's most + 1), 2 AMD FSR 3.1's frame interpolation alone (2x); off by default. Saved as frame_generation_by (framegen_rows.h)
     int pace = 0;         // frames shown on an even line (vk_framegen.cpp)
-    int hdr = 0;          // (hookshot) HDR10 out (vk_framegen.cpp framegen_hdr): 0 off, 1 the SDR picture expanded, 2 the game's own (native) HDR; when the display has it (the swapchain made again at once)
+    int hdr = 0;          // (hookshot) HDR10 out (vk_framegen.cpp framegen_hdr): 0 off, 1 the SDR picture expanded, 2 the game's own (native) HDR, 3 the game's native HDR with the game's tone-mapping pass replaced by ours (vk_hdr_tonemap.cpp); when the display has it (the swapchain made again at once)
     int hdr_white = 200;  // HDR paper white, nits (the picture's white)
     int hdr_peak = 1000;  // HDR peak brightness, nits (its brightest highlights)
+    int hdr_saturation = 100;   // the colour's saturation with our tone mapper (hdr 3), percent: 100 as the scene has it
     int fps_cap = 0;      // (hookshot) Frame rate cap: 0 60 (the console's), 90, 120, 144, 165, 240 (host/nn_vi.c reads frame_rate_cap= at the start)
     int resolution = 0;   // the 3D's (Render resolution): 0 Auto (the game's dynamic resolution), else a share of the output,
                           // 1..6 = 100%, 75%, 67%, 50%, 58%, 33%, 7 = native: 100% with DLSS's (DLAA) or FSR 4's anti-aliasing

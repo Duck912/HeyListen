@@ -5156,6 +5156,15 @@ bool write_png(const char* path, const uint8_t* rgba, uint32_t w, uint32_t h) {
 // (do_present: the game's picture is already HDR10, Native HDR taken. Read by present_image, and by vk_fsr4.cpp, whose context is
 // made for HDR colour while it is)
 std::atomic<bool> present_native_pq{false};
+/// (RX_VK_HDR_FORCE=1, for a PC with no HDR display: the game is told its display is HDR10 although the swapchain is SDR, so its
+/// own HDR path runs and can be looked at in the dumps and the shots; what the window shows is then not meant to look right)
+bool hdr_forced() {
+    static const bool on = getenv("RX_VK_HDR_FORCE") && atoi(getenv("RX_VK_HDR_FORCE")) != 0;
+    return on;
+}
+/// Whether the game is told it has an HDR10 display and its PQ picture is taken as it is (the HDR row on Native, or on our
+/// tone mapper: vk_hdr_tonemap.cpp's extern of this is why it is out of the unnamed namespace)
+bool hdr_game_native() { return (dev.hdr || hdr_forced()) && opts.hdr >= 2; }
 
 namespace {
 
@@ -5515,7 +5524,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         if (tex) src = tex->image, sw = tex->width, sh = tex->height;
         // (the Insert menu's HDR set to Native: the game, told its display is HDR10, presents PQ codes in RGB10A2 (vk
         // A2B10G10R10); that picture goes to the HDR10 swapchain as it is, not through the SDR-to-HDR pass)
-        present_native_pq.store(tex && dev.hdr && opts.hdr == 2 && tex->format == VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+        present_native_pq.store(tex && hdr_game_native() && tex->format == VK_FORMAT_A2B10G10R10_UNORM_PACK32,
                                 std::memory_order_relaxed);
         if (tex && !dev.offscreen && (opts.upscale || opts.sharpness || dev.hdr)) {
             // Keep the sampled view with the same cached image as the direct present, before advancing its age.
@@ -5823,7 +5832,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         log_frame_stats();
     }
     if (dev.offscreen || interpolated) return;
-    present_image(src, sw, sh, crop, direct_view);
+    present_image(src, sw, sh, crop, direct_view, present_native_pq.load(std::memory_order_relaxed));
 }
 
 } // namespace
@@ -6017,11 +6026,13 @@ std::atomic<uint32_t> present_kind{0};   // (vk_framegen.cpp: 1 while a made fra
 // for the submit and the present. Held over vkAcquireNextImageKHR and the fence, it stopped the replay's submits for as long as
 // the swapchain had no image free, twice a frame with frame interpolation.
 std::mutex present_image_mu;
-void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view) {
+void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view, bool pq) {
     std::lock_guard lk(present_image_mu);
-    static int hdr_was = -1;   // (the Insert menu's HDR as the swapchain was made for it; -1: not yet looked at)
-    const bool hdr_changed = hdr_was >= 0 && hdr_was != opts.hdr;   // (turned on or off: the swapchain's format)
-    if (hdr_was < 0) hdr_was = opts.hdr;
+    static int hdr_was = -1;   // (the Insert menu's HDR, on or off, as the swapchain was made for it; -1: not yet looked at)
+    // (only on or off is the swapchain's format: Expanded to Native, or to our tone mapper, keeps it, and the picture does not go
+    // through a new swapchain for it)
+    const bool hdr_changed = hdr_was >= 0 && hdr_was != (opts.hdr != 0);
+    if (hdr_was < 0) hdr_was = opts.hdr != 0;
     static int present_was = -1;   // (the V-Sync and VRR rows as the swapchain was made for them: present_choice_key)
     const int present_now = present_choice_key();
     const bool present_changed = present_was >= 0 && present_was != present_now;
@@ -6041,7 +6052,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
                                                    std::memory_order_release, std::memory_order_relaxed);
             return;   // (the old swapchain may already be retired; do not acquire or reset a frame fence)
         }
-        hdr_was = opts.hdr;
+        hdr_was = opts.hdr != 0;
         present_was = present_now;
     }
     if (src) {   // (the Window scaling filter's row: whether the window is the picture's size. Only the game's frames and the
@@ -6163,7 +6174,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     }
     const VkImage scaled = src && view ? framegen_scale(f.cmd, view, src, sw, sh, crop, rect.w, rect.h) : VK_NULL_HANDLE;
     // (hookshot) the Insert menu's HDR: the picture (scaled, or the game's own with its crop) to HDR10, copied in as the SDR one is
-    const VkImage hdr_image = dev.hdr && src && view && !present_native_pq.load(std::memory_order_relaxed)
+    const VkImage hdr_image = dev.hdr && src && view && !pq
         ? (scaled ? framegen_hdr(f.cmd, framegen_scaled_view(), rect.w, rect.h, nullptr, rect.w, rect.h)
                   : framegen_hdr(f.cmd, view, sw, sh, crop, rect.w, rect.h))
         : VK_NULL_HANDLE;
@@ -6909,7 +6920,7 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_CHEAT_FLIGHT) return menu_player_flight();
         if (id == HOS_OPT_CHEAT_ACTION) return menu_take_cheat_action();
         if (id == HOS_OPT_CHEAT_CAMERA) return menu_free_camera();
-        if (id == HOS_OPT_HDR_NATIVE) return dev.hdr && opts.hdr == 2;
+        if (id == HOS_OPT_HDR_NATIVE) return hdr_game_native();
         if (id == HOS_OPT_HDR_PEAK) return std::clamp(opts.hdr_peak, 400, 10000);
         if (id == HOS_OPT_HDR_WHITE) return std::clamp(opts.hdr_white, 80, 500);
         if (id == HOS_OPT_DISCORD) return opts.discord != 0;
