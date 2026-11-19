@@ -702,6 +702,20 @@ static void oot_inventory_refresh(Ctx *c, int64_t now) {
                 ReleaseSRWLockExclusive(&map_lock);
             }
         }
+        {   /* (heylisten) whether the game is loading a map, for the performance summary's hitch rows (an area change):
+               Sequence_IsLoadingBanc, pushed to the renderer when it changes, as the inventory counts are
+               (gpu/vk/perf_parts.h's HOS_OPT_PERF_LOADING, vk_menu.cpp's) */
+            void rx_option_set(int id, int value);
+            static int was = -1;
+            int loading = 0;
+            if (oot_gamedata_bool(c, 0xef2b60c2u, &loading) && loading) {
+                if (was != 1) rx_option_set(91 /* HOS_OPT_PERF_LOADING */, 1);
+                was = 1;
+            } else if (was == 1) {
+                rx_option_set(91 /* HOS_OPT_PERF_LOADING */, 0);
+                was = 0;
+            }
+        }
     }
     for (unsigned i = 0; i < OOT_ITEM_COUNT; i++) rx_option_set(OOT_CHEAT_ITEM_BASE + (int)i, oot_item_count(c, oot_item_names[i]));
     if (!probed && oot_pouch_count(c, "Item_DekuSeed") >= 0) {

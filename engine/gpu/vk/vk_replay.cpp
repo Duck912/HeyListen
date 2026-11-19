@@ -61,6 +61,7 @@
 #include "vk_lag.h"   // (RX_VK_LAG_LOG)
 #include "readback_late.h"   // (RX_VK_READBACK_LATE)
 #include "exe_base.h"   // (RX_VK_RB_PROF's call sites: offsets in the exe)
+#include "perf_parts.h"   // (the frame's parts for the performance summary: submit/present scopes, the waits)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -967,7 +968,10 @@ Recording& begin_recording(uint64_t value) {
     if (r.value) {
         PROF(PROF_SLOTWAIT);
         const auto t0 = std::chrono::steady_clock::now();
-        recording_wait(r);
+        {   // (a wait for the GPU behind: the summary's gpu_wait part, on this thread)
+            perf_parts::Scope perf_wait(perf_parts::t_wait);
+            recording_wait(r);
+        }
         st_wait_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
         gpu_time_collect(r);
         gprof_collect(r.slot);
@@ -4610,10 +4614,13 @@ RbScope::~RbScope() {
     rb_prof_from = presents_now;
     rb_prof_next = presents_now + 300;
 }
+// (heylisten) the read-backs' waits for the GPU, all threads, since the game started (perf_report.cpp reads the delta a
+// frame: the summary's readback cause and its gpu_wait part). The wait the CPU pays for its reads of GPU results — the
+// exposure meter's page is the one a frame always waits for — was measured only into the log's counters before
+std::atomic<int64_t> st_rb_wait_ns{0};
 void invalidate(uint64_t gpu, uint64_t size) {
     static const bool rb_prof = getenv("RX_VK_RB_PROF") != nullptr || getenv("RX_VK_TL") != nullptr || getenv("RX_VK_TL_S") != nullptr;
-    RbScope rbs(rb_prof, gpu, size);
-    // (HeyListen, TICK-059) RX_VK_READBACK_TICKET=1: the fast fence poll (wait_inner) no longer waits for the sync_order_mu
+    RbScope rbs(rb_prof, gpu, size);    // (HeyListen, TICK-059) RX_VK_READBACK_TICKET=1: the fast fence poll (wait_inner) no longer waits for the sync_order_mu
     // section in progress (a submit_q / present replay); it notes that section's number t (order_ticket_take) and the CPU's
     // readback here waits until section t has left, before anything else it does. Why that is all the locked path gave it:
     // - The locked poll took sync_order_mu after every section that held it when the poll came; the readback after the poll then
@@ -4738,6 +4745,7 @@ void invalidate(uint64_t gpu, uint64_t size) {
                 waited++;
                 const int64_t d = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - w0).count();
                 ns += d;
+                st_rb_wait_ns.fetch_add(d, std::memory_order_relaxed);
                 static const bool log_each = getenv("RX_VK_LOG_READBACK_WAITS") != nullptr;
                 static std::atomic<int> logged{0};
                 if (log_each && presents_now > 4000 && logged++ < 300)
@@ -6044,7 +6052,10 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     Frame& f = frames[frame_index];
     const int log_slot = frame_index;
     frame_index = (frame_index + 1) % 3;
-    vkWaitForFences(dev.device, 1, &f.done, VK_TRUE, UINT64_MAX);
+    {   // (the previous present's blit, waited for: the swapchain's block, the summary's present cause)
+        perf_parts::Scope perf_wait(perf_parts::t_present);
+        vkWaitForFences(dev.device, 1, &f.done, VK_TRUE, UINT64_MAX);
+    }
     framelog_collect(log_slot);
     uint32_t index = 0;
 #ifdef _WIN32
@@ -6058,10 +6069,15 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     const uint64_t acquire_timeout = unseen ? 0 : 100000000ull;
 #endif
     const bool acq_fence = acquire_fence_on() && f.acq;
-    VkResult res = vkAcquireNextImageKHR(dev.device, dev.swapchain, acquire_timeout, acq_fence ? VK_NULL_HANDLE : f.acquired,
-                                         acq_fence ? f.acq : VK_NULL_HANDLE, &index);
+    VkResult res;
+    {   // (an image free from the swapchain: the display queue's wait, the summary's present cause)
+        perf_parts::Scope perf_wait(perf_parts::t_present);
+        res = vkAcquireNextImageKHR(dev.device, dev.swapchain, acquire_timeout, acq_fence ? VK_NULL_HANDLE : f.acquired,
+                                    acq_fence ? f.acq : VK_NULL_HANDLE, &index);
+    }
     if (acq_fence && (res == VK_SUCCESS || res == VK_SUBOPTIMAL_KHR)) {   // (the image free: waited for here, not on the queue)
         const auto t0 = std::chrono::steady_clock::now();
+        perf_parts::Scope perf_wait(perf_parts::t_present);
         vkWaitForFences(dev.device, 1, &f.acq, VK_TRUE, UINT64_MAX);
         vkResetFences(dev.device, 1, &f.acq);
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
@@ -6277,12 +6293,15 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     // ~15% to submit. With a queue of their own (dev.present_queue, a compute family's: vk_main.cpp create_device) the presents go
     // out with the submits' lock let go: the blit above signals swap_rendered on the replay's queue (submitted already, as a binary
     // semaphore's wait needs). (Waiting for the blit's fence before the present, with the lock let go, was worse.)
-    if (dev.present_queue) {
-        qk.unlock();
-        std::lock_guard pq(dev.present_queue_mu);
-        res = vkQueuePresentKHR(dev.present_queue, &pi);
-    } else {
-        res = vkQueuePresentKHR(dev.queue, &pi);
+    {   // (the present call itself, which can hold the presenting thread: the summary's present cause)
+        perf_parts::Scope perf_wait(perf_parts::t_present);
+        if (dev.present_queue) {
+            qk.unlock();
+            std::lock_guard pq(dev.present_queue_mu);
+            res = vkQueuePresentKHR(dev.present_queue, &pi);
+        } else {
+            res = vkQueuePresentKHR(dev.queue, &pi);
+        }
     }
     reflex_presented();
     if (res == VK_ERROR_DEVICE_LOST) device_lost();   // (on the presents' own queue this is the first place a lost device shows)
@@ -6483,12 +6502,15 @@ void replay_thread_main() {
         int64_t d0 = 0, x;
         if (timeline) draw_stats(&d0, &x, &x, &x);
         switch (j.kind) {
-        case JOB_SUBMIT: submit_job(j.handles, j.value, j.queue); break;
+        case JOB_SUBMIT:   // (RX_VK_ASYNC=1: the replay thread's work is its own render part)
+            { perf_parts::Scope perf_entry(perf_parts::t_render); submit_job(j.handles, j.value, j.queue); } break;
         case JOB_PRESENT:   // (the frame's work whole before it is shown)
+        {
+            perf_parts::Scope perf_entry(perf_parts::t_render);
             drain(0);
             present_value = j.value;
             do_present(j.has_tex ? &j.tex : nullptr, j.has_crop ? j.crop : nullptr);
-            break;
+        } break;
         case JOB_TEXTURE_RELEASED:   // (after the stopped work that may use it)
             drain(1);
             do_texture_released(&j.tex);
@@ -6598,6 +6620,7 @@ bool replay_behind() {
 
 std::mutex submit_order_mu;   // (captures and submits queued in the same order)
 void submit_q(const uint64_t* handles, int n, uint64_t queue) {
+    perf_parts::Scope perf_entry(perf_parts::t_render);   // (the renderer's entry on this thread: the summary's render part)
     tl_ev("submit+", queue, n);
     struct TlSub { ~TlSub() { tl_ev("submit-"); } } tl_sub;
     if (!async_on()) {
@@ -6652,6 +6675,7 @@ void submit(const uint64_t* handles, int n) {
     submit_q(handles, n, 0);
 }
 void present(const nvn_tex* t, const int crop[4]) {
+    perf_parts::Scope perf_entry(perf_parts::t_render);   // (the renderer's entry on this thread: the summary's render part)
     tl_at_present(presents_now);
     tl_ev("present+");
     struct TlPres { ~TlPres() { tl_ev("present-"); } } tl_pres;
@@ -7095,5 +7119,9 @@ bool replay_tex_storage_in(uint64_t gpu, uint64_t size) { return tex_pages_any(g
 
 /// (heylisten) the GPU's own time so far, ns (the performance summary's per-frame GPU time, perf_report.cpp)
 int64_t gpu_time_ns() { return st_gpu_ns; }
+
+/// (heylisten) the read-backs' waits for the GPU so far, ns (the summary's readback cause and its gpu_wait part,
+/// perf_report.cpp): the CPU reads of GPU results waiting for their write-back, invalidate above
+int64_t readback_wait_ns() { return st_rb_wait_ns.load(std::memory_order_relaxed); }
 
 } // namespace mkwvk
