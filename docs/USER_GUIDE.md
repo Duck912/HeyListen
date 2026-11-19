@@ -271,6 +271,10 @@ The builder's problem page has *Copy for a bug report*. Report issues at
 <https://github.com/Sacrappy/HeyListen/issues> with your GPU, driver and the log. Do not attach game files, keys or saves
 with personal data.
 
+A maintainer may ask you to try a switch, a line such as `RX_VK_ASTC_RGBA8=1` in `hookshot_env.txt` beside `image.bin`
+(in the game folder; on Linux `~/Games/HeyListen`, not `bin/`). [docs/SWITCHES.md](SWITCHES.md) lists every switch, what
+it does and which symptom it fixes, and says how to set one (also from Steam's launch options).
+
 ## Credits and license
 
 HeyListen is GPL-3.0-or-later. It is a fork of Hookshot by NotRexed and its contributors (GPL-3.0), whose recompiler,
