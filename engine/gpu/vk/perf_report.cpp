@@ -62,6 +62,7 @@ std::map<std::string, pr::MapTotals> maps;
 std::map<std::string, bool> seen_maps;   // (maps this session has sent: the server counts a session on a map once)
 pr::MapTotals* current = nullptr;
 std::string current_map;
+bool map_switched = false;   // (the map changed since the frame before: its load is the frame's, perf_frame_shown)
 pr::Machine machine;
 bool machine_read = false;
 fsys::path folder;
@@ -214,6 +215,7 @@ bool where_now() {
     const std::string name = map[0] ? map : shaders_preparing() ? pr::kPreparingShaders : pr::kTitleAndIntro;
     const bool full = current && name != current_map && !maps.count(name) && maps.size() >= (size_t)pr::kMaxMaps;
     if (!full && (!current || name != current_map)) {
+        if (current) map_switched = true;   // (an area change: the frame that spans its load carries it, perf_frame_shown)
         current_map = name;
         current = &maps[name];
         current->fresh = !seen_maps.count(name);
@@ -442,7 +444,14 @@ void perf_frame_shown() {
     const double usual = avg_ms ? avg_ms : f.ms;
     avg_ms = usual * 0.98 + f.ms * 0.02;
     const double target = 1000.0 / fps_cap_now();
-    pr::add_frame(*current, f, w, target, last_ms, usual, perf_parts::loading.load(std::memory_order_relaxed) != 0);
+    // (a map was loading, or the frame just after one: the stall a load makes is presented once the load has ended, so
+    // the flag is kept for that frame too: host/hos_main.c pushes Sequence_IsLoadingBanc's level, as it changes. A map
+    // change marks the frame as well: the load blocks the game thread, so the flag is never seen from its tick)
+    static bool load_last = false;
+    const bool load_now = perf_parts::loading.load(std::memory_order_relaxed) != 0;
+    const bool loading = load_now || load_last || map_switched;
+    load_last = load_now, map_switched = false;
+    pr::add_frame(*current, f, w, target, last_ms, usual, loading);
     last_ms = f.ms;
     since_map += f.ms / 1000.0, since_summary += f.ms / 1000.0;
     if (since_summary >= period) summarize(false), since_summary = 0;

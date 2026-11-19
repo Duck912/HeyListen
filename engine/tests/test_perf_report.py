@@ -95,6 +95,10 @@ def parts_wiring():
     check("perf_parts::pace_us.exchange(0" in report and "perf_parts::loading.load(" in report and
           "thread_cpu_ns()" in report,
           "the summary reads the pacing sleep, the loading flag and the presenting thread's CPU time per frame")
+    check("const bool loading = load_now || load_last || map_switched;" in report and "load_last = load_now, map_switched = false;" in report,
+          "a load's stall frame is the one presented once it has ended, or the frame its map changed on: the loading flag is kept for it")
+    check("if (current) map_switched = true;" in report,
+          "a map change is the area change's load (the game thread is inside the load, so its tick never sees the flag)")
     check("perf_parts::on.store(true" in report and "perf_parts::on.store(false" in report,
           "the parts' scopes are turned on and off with the row")
 
