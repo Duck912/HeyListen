@@ -8,23 +8,27 @@ namespace mkwvk {
 // (out of the box every feature is off: what the game does on its own. The ini beside the executable keeps a player's choices)
 struct Options {
     int framegen = 0;     // made frames: 0 off, 1 Auto (to the display's refresh), or 2 to 8 times the game's frames
+    int framegen_by = 0;  // who makes the frames at a fixed multiplier: 0 the renderer's own (AMD FSR 3.1 at 2x, else its block matching), 1 NVIDIA DLSS Frame Generation (vk_dlss.cpp; RTX 40 and newer, with its runtime; up to its runtime's most + 1), 2 AMD FSR 3.1's frame interpolation alone (2x); off by default. Saved as frame_generation_by (framegen_rows.h)
     int pace = 0;         // frames shown on an even line (vk_framegen.cpp)
     int hdr = 0;          // (hookshot) HDR10 out (vk_framegen.cpp framegen_hdr): 0 off, 1 the SDR picture expanded, 2 the game's own (native) HDR; when the display has it (the swapchain made again at once)
     int hdr_white = 200;  // HDR paper white, nits (the picture's white)
     int hdr_peak = 1000;  // HDR peak brightness, nits (its brightest highlights)
     int fps_cap = 0;      // (hookshot) Frame rate cap: 0 60 (the console's), 90, 120, 144, 165, 240 (host/nn_vi.c reads frame_rate_cap= at the start)
     int resolution = 0;   // the 3D's (Render resolution): 0 Auto (the game's dynamic resolution), else a share of the output,
-                          // 1..6 = 100%, 75%, 67%, 50%, 58%, 33% (upscaler_rows.h; nx2/oot_patches.py)
+                          // 1..6 = 100%, 75%, 67%, 50%, 58%, 33%, 7 = native: 100% with DLSS's (DLAA) or FSR 4's anti-aliasing
+                          // (upscaler_rows.h; nx2/oot_patches.py)
     int output_res = 0;   // the game's whole frame, docked: 0 its 2048x1152, 1 2560x1440, 2 3840x2160, 3 1920x1080, 4 5120x1440; read once, at the start (host/nn_applet.c)
     int upscale = 0;      // to the window (Window scaling filter, saved as upscaling): 0 off (the plain copy), 1 Catmull-Rom, 2 Lanczos
     int reflex = 0;       // NVIDIA Reflex: 0 off, 1 on, 2 on + boost (vk_reflex.cpp; NVIDIA GPUs with VK_NV_low_latency2)
     int dlss = 0;         // the Upscaler (its name from before FSR: options files and the tests' stand-ins keep it): 0 the game's
-                          // own network, 1 NVIDIA DLSS, 2 NVIDIA DLAA (a build with NVIDIA's SDK only), 3 AMD FSR 3.1 (vk_fsr3.cpp),
-                          // 4 AMD FSR 4, 5 its native AA (a build with FSR 4 only). upscaler_rows.h; vk_temporal.cpp. Saved as dlss
-    int dlss_model = 0;   // DLSS's network, by its preset: 0 K (transformer; E, the CNN, under 7 GB of video memory), 1 M, 2 L (second-generation transformer), 3 NVIDIA's
-                          // default (upscaler_rows.h model_preset; vk_dlss.cpp). RX_VK_DLSS_PRESET over it
+                          // own network, 1 NVIDIA DLSS, 2 NVIDIA DLAA (an options file from before: the load makes it 1 with the Render
+                          // resolution's native choice), 3 AMD FSR 3.1 (vk_fsr3.cpp), 4 AMD FSR 4, 5 its native AA (the same: 4 and
+                          // native), 6 Off. upscaler_rows.h; vk_temporal.cpp. Saved as dlss
+    int dlss_model = 0;   // DLSS's network for every mode, by its preset: 0 DLSS 4 (K), 1 DLSS 4.5 (M), 2 DLSS 4.5 (L), 3 NVIDIA's default, 4 DLSS 3 (CNN, E) (upscaler_rows.h
+                          // model_preset; vk_dlss.cpp). First run on an NVIDIA GPU: menu_first_run_model. RX_VK_DLSS_PRESET over it
     int sharpness = 0;    // 0 to 100
-    int fps_limit = 0;    // the game's frame rate above 60 (Real time only): 0 60, 1 90, 2 120, 3 144, 4 165, 5 240 (host/nn_vi.c; HOS_FPS_LIMIT)
+    int fps_limit = 0;    // the rate presented, the game's frames and the made ones (Real time only): 0 60, 1 90, 2 120, 3 144, 4 165, 5 240, 6 Unlimited
+                          // (framegen_rows.h; host/nn_vi.c; HOS_FPS_LIMIT)
     int realtime = 1;     // game time follows the clock (host/nn_vi.c); 0: per frame (slower frames, slower game)
     int handheld = 0;     // the game's handheld profile: ~4 fps, softer; read once, at the start (host/nn_applet.c)
     int ultrawide = 0;    // the camera at the monitor's shape when it is wider than 16:9; read once, at the start (host/hos_main.c)
@@ -74,6 +78,9 @@ extern Options opts;
 bool preset_caps_memory();
 /// The card's video memory: its largest device-local heap (vk_memory.cpp), 0 when not known
 uint64_t device_vram_bytes();
+/// A first run (no dlss_model in hookshot_options.ini): the DLSS model row starts at the GPU's default (upscaler_rows.h
+/// default_model) and is written to the ini at once. NVIDIA GPUs only; a saved value is never changed
+void menu_first_run_model(uint32_t vendor_id, uint32_t device_id);
 /// (a test: RX_VK_TEST_VRAM_MB=<n> takes the card's VRAM as at most n MB wherever the renderer sizes something by it: the
 /// mirrors' budget, the DLSS model row's small-card preset. With RX_VK_TEST_ALLOWED_MB a large card plays a small one's whole
 /// policy. Unset: the card's own)
@@ -83,6 +90,10 @@ void menu_init();             // (the options from the file, once)
 void menu_set_gpu_count(int count);
 void menu_tick();             // (each frame shown: the keys, while the game's window has the focus)
 bool menu_is_open();
+/// The Frame rate limit in frames a second as host/nn_vi.c paces: the rate presented (the game's frames and the made ones), 0 for
+/// Unlimited; the row (HOS_FPS_LIMIT over it). -1 in Game speed Per frame: the game's steps are whole frames of 1/60 s there,
+/// so the limit does not apply (it needs Real time)
+int menu_fps_limit();
 bool resolution_auto();       // (the game's dynamic resolution: Resolution Auto)
 int resolution_scale();       // (the fixed path's scale in 1/10000: the Resolution row's, as a twelfth of the output)
 void menu_option_set(int id, int value);   // (from the game's side: 7 the mouse's sensitivity, the - and = keys)

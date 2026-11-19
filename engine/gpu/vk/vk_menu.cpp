@@ -42,6 +42,8 @@
 #include "vk_dlss.h"
 #include "vk_fsr3.h"      // (the Upscaler row: whether AMD FSR 3.1 runs on this GPU)
 #include "vk_fsr3fi.h"    // (the Frame generation row: whether FSR 3.1 makes the frame)
+#include "vk_framegen.h"  // (the Frame generation row: the multiplier as it runs, who makes the frames)
+#include "framegen_rows.h"   // (what each Frame generation by offers; the Frame rate limit's share)
 #include "vk_fsr4.h"
 #include "vk_temporal.h"
 #include "vk_reflex.h"
@@ -69,6 +71,7 @@ enum MenuTab {
     TAB_PAGE = TAB_MOTION + 1   // (hookshot: the Controls page's rows, above its grid; no tab shows them)
 };
 
+namespace fgr = framegen_rows;   // (the Frame generation rows' modes, and the Frame rate limit's values)
 struct Row {
     MenuTab tab;
     const char* name;
@@ -95,19 +98,25 @@ const char* hint_in(const char* const* t, int n, int lo, int v, int variant) {
         static const char* const t[] = {__VA_ARGS__};                                                                        \
         return hint_in(t, (int)(sizeof t / sizeof t[0]), lo, v, variant);                                                    \
     }
+/// Frame generation: the value as the mode that makes the frames supports it (fgr::clamp): a saved 8x with NVIDIA DLSS FG on an
+/// RTX 50 shows 6x, and a saved Auto with AMD FSR 3.1 shows 2x. The Frame rate limit's lowering of it is in the row's line
 const char* tx_framegen(int v) {
     static const char* t[] = {"Off", "Auto", "2x", "3x", "4x", "5x", "6x", "7x", "8x"};
-    return t[v];
+    return t[std::clamp(fgr::clamp(framegen_by_now(), dlss_fg_most(), std::clamp(v, 0, 8)), 0, 8)];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
+const char* tx_framegen_by(int v) {
+    static const char* t[fgr::kBy] = {"Built-in / AMD FSR 3.1", "NVIDIA DLSS FG", "AMD FSR 3.1 FG"};
+    return t[std::clamp(v, 0, fgr::kBy - 1)];
+}
 const char* tx_intel_compiles(int v) { return v ? "Side by side" : "One at a time"; }
 MENU_HINTS(hn_intel_compiles, 0,
            "The safe choice, and the best on a CPU with 4 cores or fewer: a shader Intel's compiler faults on is left out instead of "
            "closing the game.",
            "Shaders are built faster on a CPU with many cores, but Intel's driver can crash the game while it builds them.")
 const char* tx_fps_limit(int v) {
-    static const char* t[] = {"60", "90", "120", "144", "165", "240"};
-    return t[v < 0 || v > 5 ? 0 : v];
+    static const char* t[fgr::kLimits] = {"60", "90", "120", "144", "165", "240", "Unlimited"};
+    return t[v < 0 || v >= fgr::kLimits ? 0 : v];
 }
 const char* tx_perf(int v) { return v == 2 ? "Full" : v ? "FPS" : "Off"; }
 const char* tx_menu_shortcut(int v) {
@@ -170,12 +179,16 @@ unsigned upscalers_available() {
     return ur::bit(ur::GAME) | ur::bit(ur::OFF) | ur::dlss_bits(dlss_why() == DLSS_OK) |
            (fsr3::supported() ? ur::bit(ur::FSR3) : 0u) | ur::fsr4_bits(fsr4_why() == FSR_OK);
 }
-/// (FSR 3.1 has inputs of its own; DLSS and FSR 4 run on the frame chain they share, temporal_mode; Off draws no network,
-/// vk_draw.cpp off_stand_in)
-int upscaler() { return upscaler_off() ? (int)ur::OFF : fsr3_wanted() ? (int)ur::FSR3 : temporal_mode(); }
+/// The Upscaler row's choice that runs (FSR 3.1 has inputs of its own; DLSS and FSR 4 run on the frame chain they share,
+/// temporal_mode; Off draws no network, vk_draw.cpp off_stand_in). DLAA and FSR 4's native AA are those engines at the Render
+/// resolution's native choice, so the row shows DLSS or FSR 4 for them (ur::engine); native_aa_now says which
+int upscaler() { return upscaler_off() ? (int)ur::OFF : fsr3_wanted() ? (int)ur::FSR3 : ur::engine(temporal_mode()); }
+/// Whether the chain runs DLAA or FSR 4's native AA now: the Render resolution's native choice, with DLSS or FSR 4 running
+bool native_aa_now() { return !upscaler_off() && !fsr3_wanted() && ur::full_scale(temporal_mode()); }
 const char* tx_upscaler(int) {
-    static const char* t[ur::kUpscalers] = {"Game's own", "NVIDIA DLSS", "NVIDIA DLAA", "AMD FSR 3.1", "AMD FSR 4",
-                                            "AMD FSR 4 Native AA", "Off"};
+    // (DLAA and FSR 4's native AA are not choices: the Render resolution's native choice, with DLSS or FSR 4)
+    static const char* t[ur::kUpscalers] = {"Game's own", "NVIDIA DLSS", "NVIDIA DLSS", "AMD FSR 3.1", "AMD FSR 4",
+                                            "AMD FSR 4", "Off"};
     return t[std::clamp(upscaler(), 0, ur::kUpscalers - 1)];
 }
 /// The Upscaler: the one shown (what runs, upscaler()), and with the game's own, why DLSS and FSR are not offered. Variants
@@ -183,15 +196,16 @@ const char* tx_upscaler(int) {
 const char* hn_upscaler(int v, int variant) {
     static const char* const t[ur::kUpscalers] = {
         "The game's own network.",
-        "NVIDIA's, from a smaller 3D. Softer than the game's own: set Sharpness to around 80%. Things that move by "
-        "themselves can trail for now.",
-        "NVIDIA's, the 3D at full size with its edges smoothed; the slowest. Softer than the game's own: set Sharpness to "
-        "around 80%. Things that move by themselves can trail for now.",
+        "NVIDIA's, from a smaller 3D, or at full size with its edges smoothed (DLAA, in Render resolution). Softer than the "
+        "game's own: set Sharpness to around 80%. Things that move by themselves can trail for now.",
+        "NVIDIA's, the 3D at full size with its edges smoothed (DLAA: choose DLSS, then DLAA in Render resolution). Softer than "
+        "the game's own: set Sharpness to around 80%. Things that move by themselves can trail for now.",
         "AMD's, from a smaller 3D, on any GPU: built from AMD's own shaders. Things that move by themselves can trail for "
         "now.",
-        "AMD's machine-learned upscaler, from a smaller 3D, with AMD's files beside the game. Things that move by themselves "
-        "can trail for now.",
-        "AMD's machine-learned upscaler, the 3D at full size with its edges smoothed; the slowest.",
+        "AMD's machine-learned upscaler, from a smaller 3D, or at full size with its edges smoothed (Native AA, in Render "
+        "resolution), with AMD's files beside the game. Things that move by themselves can trail for now.",
+        "AMD's machine-learned upscaler, the 3D at full size with its edges smoothed (Native AA: choose FSR 4, then Native AA "
+        "in Render resolution).",
         "No upscaling network: the 3D drawn at the Render resolution and stretched to the output, no anti-aliasing. For GPUs "
         "where the game's own network shows glitches.",
     };
@@ -237,7 +251,8 @@ const char* dlss_preset_env() {
     return ur::preset_env(e) ? e : nullptr;
 }
 const char* tx_dlss_model(int v) {
-    static const char* const t[] = {"Transformer (K)", "Transformer 2 (M)", "Transformer 2 (L)", "NVIDIA default"};
+    static const char* const t[] = {"DLSS 4 (Transformer, preset K)", "DLSS 4.5 (Transformer 2, preset M)",
+                                    "DLSS 4.5 (Transformer 2, preset L)", "NVIDIA default", "DLSS 3 (CNN, preset E)"};
     if (const char* e = dlss_preset_env()) {
         static char b[48];
         const unsigned p = ur::dlss_preset(v, e);
@@ -245,26 +260,24 @@ const char* tx_dlss_model(int v) {
         else snprintf(b, sizeof b, "NVIDIA default (RX_VK_DLSS_PRESET)");
         return b;
     }
-    if (ur::cnn_for_vram(v, device_vram_bytes())) return "CNN (E)";
     return t[std::clamp(v, 0, ur::kModels - 1)];
 }
-/// The DLSS model: the value chosen (the K row's on a card under 7 GB: why it is E); variant 1: the game's own upscales (the row waits for DLSS or DLAA); variant 2: set for
+/// The DLSS model: the value chosen; variant 1: the game's own upscales (the row waits for DLSS or DLAA); variant 2: set for
 /// this run by RX_VK_DLSS_PRESET
 const char* hn_dlss_model(int v, int variant) {
     static const char* const t[] = {
-        "NVIDIA's transformer model: the one tested most here.",
-        "NVIDIA's second-generation transformer, its pick for Performance: sharper, at a little more GPU time.",
-        "The second-generation transformer as NVIDIA tuned it for Ultra Performance, the smallest Render resolutions.",
+        "DLSS 4: NVIDIA's first transformer model, the lighter one. First-run default on RTX 20 and 30. Applies to every mode.",
+        "DLSS 4.5: NVIDIA's second-generation transformer, sharper. First-run default on RTX 40 and 50; on RTX 20 and 30 (no FP8) "
+        "it costs more GPU time, but you can use it.",
+        "DLSS 4.5, preset L: NVIDIA tuned it for Ultra Performance, but it works in every mode. Costs the most GPU time, more on RTX 20 and 30 (no FP8).",
         "Lets DLSS's runtime pick for each mode: what it picks can change with a runtime update.",
+        "DLSS 3: NVIDIA's older CNN model, lighter on video memory and GPU time. First-run default under 7 GB of video memory.",
     };
-    static const char* const unused = "Used by NVIDIA DLSS and DLAA: choose one in the Upscaler row.";
+    static const char* const unused = "Used by NVIDIA DLSS and DLAA: choose DLSS in the Upscaler row.";
     static const char* const env = "Set for this run by RX_VK_DLSS_PRESET.";
-    static const char* const cnn = "NVIDIA's CNN model, chosen for graphics cards with less than 7 GB of memory: less video "
-                                   "memory and GPU time than the transformer.";
     if (variant < 0) variant = dlss_preset_env() ? 2 : upscaler() == ur::GAME ? 1 : 0;
     if (variant == 1) return unused;
     if (variant == 2) return env;
-    if (variant == 0 && ur::cnn_for_vram(v, device_vram_bytes())) return cnn;
     return variant == 0 ? t[std::clamp(v, 0, ur::kModels - 1)] : nullptr;
 }
 const char* tx_percent(int v) {
@@ -315,8 +328,7 @@ const char* tx_resolution(int v) {
     static char b[48];
     const int up = upscaler();
     v = ur::snap(up, v);   // (the saved choice, as the Upscaler shown draws it: ur::snap)
-    if (up == ur::DLAA) return "Native (DLAA)";
-    if (up == ur::FSR4_AA) return "Native (FSR 4)";
+    if (v == ur::kNativeAa) return up == ur::FSR4 ? "Native AA (FSR 4)" : "DLAA (native)";
     if (!ur::percent(v)) return "Auto (dynamic)";
     if (const char* mode = ur::scales_by_mode(up) ? ur::dlss_mode_name(v) : nullptr) {
         snprintf(b, sizeof b, "%s (%d%%)", mode, ur::percent(v));
@@ -331,14 +343,11 @@ const char* tx_resolution(int v) {
 const char* hn_resolution(int v, int variant) {
     const int up = variant < 0 ? std::clamp(upscaler(), 0, ur::kUpscalers - 1) : variant;
     if (up >= ur::kUpscalers) return nullptr;
-    if (up == ur::DLAA)
-        return "DLAA draws the 3D at full size: nothing to set here. Choose DLSS or the game's own upscaler to draw it "
-               "smaller.";
-    if (up == ur::FSR4_AA)
-        return "FSR 4's native AA draws the 3D at full size: nothing to set here. Choose FSR 4 or the game's own upscaler "
-               "to draw it smaller.";
     if (variant < 0) v = ur::snap(up, v);
     const int p = ur::percent(v);
+    if (v == ur::kNativeAa && up == ur::DLSS)
+        return "DLAA: the 3D at full size with DLSS's anti-aliasing, the sharpest and the slowest. Set Sharpness to around 80%.";
+    if (v == ur::kNativeAa && up == ur::FSR4) return "Native AA: the 3D at full size with FSR 4's anti-aliasing, the slowest.";
     if (up == ur::DLSS) {
         switch (p) {
         case 0: return "The game lowers it when the GPU is busy, and DLSS follows. Set Sharpness to around 80%.";
@@ -366,7 +375,7 @@ const char* hn_resolution(int v, int variant) {
 /// A row with nothing else to choose here: shown without its arrows, Left and Right leave it (and the saved value) alone
 bool row_fixed(const int* value) {
     return ((value == &opts.send_perf || value == &opts.send_crash) && !telemetry_available()) || (value == &opts.reflex && !reflex_available()) ||
-           (value == &opts.resolution && ur::resolution_fixed(upscaler())) || (value == &opts.upscale && !filter_needed()) ||
+           (value == &opts.upscale && !filter_needed()) ||
            (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr));
 }
 /// (heylisten) The two telemetry rows: Off or On, and "Not available in this build" when the build has no address to send to
@@ -553,18 +562,81 @@ MENU_HINTS(hn_preset, 0, "Each row as you set it. Changing most rows yourself co
            "Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 40%.",
            "Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 50%.")
 MENU_HINTS(hn_gpu, 0, "The best dedicated GPU.")
-/// Frame generation: how many frames are made for each of the game's
+/// The line about the Frame rate limit under a fixed multiplier (v: the value shown): what the game runs at and what is shown,
+/// or that the multiplier runs lower to keep the game's 20 frames a second. worst: the longest it can be (for the help's height)
+const char* framegen_limit_note(int v, bool worst) {
+    static char b[200];
+    const int limit = worst ? fgr::limit_fps(fgr::kLimit60) : menu_fps_limit();
+    if (limit < 0) return "";
+    if (limit == 0) return " Unlimited: the game is not held back, and every frame of it gets its made frames.";
+    const int run = worst ? v : fgr::limited(limit, v);
+    if (run < v || worst)
+        snprintf(b, sizeof b, " At the Frame rate limit of %d it runs as %dx: the game keeps at least 20 frames a second, and %d are shown.",
+                 limit, run, limit);
+    else
+        snprintf(b, sizeof b, " At the Frame rate limit of %d the game runs at %d frames a second and %d are shown.", limit, limit / v, limit);
+    return b;
+}
+/// Frame generation: how many frames are made for each of the game's, by the mode that makes them (the value shown is as that
+/// mode supports it, tx_framegen). Variants (every one): the made frames' text; 2x by AMD FSR 3.1; the longest, with the limit's line
 const char* hn_framegen(int v, int variant) {
-    // (2x: by AMD FSR 3.1 where it runs, from the scene's depth and motion: vk_framegen.cpp. Variant 1 is that text)
-    if (v == 2 && (variant < 0 ? fsr3fi::frames_wanted() != 0 : variant == 1))
-        return "One made frame between each two of the game's, by AMD FSR 3.1 from the scene's depth and motion.";
-    if (variant > 0) return nullptr;
-    if (v <= 0) return "Only the game's own frames: no added delay.";
-    if (v == 1) return "A frame for each of the display's refreshes: none made when the game keeps up. Frame pacing does not apply.";
-    static char b[9][96];
-    snprintf(b[v], sizeof b[v], "%s between each two of the game's.", v == 2 ? "One made frame" : v == 3 ? "Two made frames" : v == 4 ? "Three made frames"
-             : v == 5 ? "Four made frames" : v == 6 ? "Five made frames" : v == 7 ? "Six made frames" : "Seven made frames");
-    return b[std::clamp(v, 2, 8)];
+    static char b[9][420];
+    int shown = v;
+    bool fsr = false, worst = false;
+    if (variant < 0) {
+        shown = fgr::clamp(framegen_by_now(), dlss_fg_most(), std::clamp(v, 0, 8));
+        // (2x: by AMD FSR 3.1 where it runs, from the scene's depth and motion: vk_framegen.cpp)
+        fsr = shown == 2 && (framegen_by_now() == fgr::BY_FSR3 || fsr3fi::frames_wanted() != 0);
+    } else if (v >= 2) {
+        // (every one: the text, then at 2x the same by AMD FSR 3.1, then the longest, with the limit's lowering)
+        if (variant > (v == 2 ? 2 : 1)) return nullptr;
+        fsr = v == 2 && variant >= 1, worst = variant == (v == 2 ? 2 : 1);
+    } else if (variant > 0) {
+        return nullptr;
+    }
+    if (shown <= 0) return "Only the game's own frames: no added delay.";
+    if (shown == 1)
+        return "A frame for each of the display's refreshes, up to the Frame rate limit: none made when the game keeps up. Frame "
+               "pacing does not apply.";
+    const char* made = shown == 2 ? "One made frame" : shown == 3 ? "Two made frames" : shown == 4 ? "Three made frames" : shown == 5 ? "Four made frames"
+                       : shown == 6 ? "Five made frames" : shown == 7 ? "Six made frames" : "Seven made frames";
+    char* out = b[std::clamp(shown, 2, 8)];
+    snprintf(out, sizeof b[0], "%s between each two of the game's%s.%s", made, fsr ? ", by AMD FSR 3.1 from the scene's depth and motion" : "",
+             variant < 0 || worst ? framegen_limit_note(shown, worst) : "");
+    return out;
+}
+/// Frame generation by: who makes the frames at 2x and up (Auto stays the renderer's own), and what the Frame generation row then
+/// offers. Variants of DLSS FG's value: it runs (0), no NVIDIA runtime (1), NGX said no (2), not in this build (3), not on this GPU
+/// (4), no temporal Upscaler (5)
+const char* hn_framegen_by(int v, int variant) {
+    static char b[260];
+    if (v == fgr::BY_FSR3)
+        return variant > 0 ? nullptr
+                           : "AMD FSR 3.1's frame interpolation, from the scene's depth and motion: one made frame between two of the "
+                             "game's, 2x only. Where it cannot run, the renderer's own makes that frame.";
+    if (v <= 0)
+        return variant > 0 ? nullptr
+                           : "The renderer's own: AMD FSR 3.1 at 2x where it runs, else its own block matching. Auto and 2x to 8x.";
+    if (variant > 5) return nullptr;
+    int k = variant;
+    if (k < 0) {
+        const DlssFgWhy why = dlss_fg_why();
+        k = why == FG_OK ? (temporal_wanted() ? 0 : 5) : why == FG_NO_RUNTIME ? 1 : why == FG_REFUSED ? 2 : why == FG_NOT_BUILT ? 3 : 4;
+    }
+    switch (k) {
+    case 1: return "Not available: DLSS is not there (no NVIDIA runtime found: scripts/ngx_sdk.py fetches nvngx_dlss.dll and nvngx_dlssg.dll). The renderer's own makes the frames.";
+    case 2: return "NVIDIA's runtime said no here (it needs an RTX 40 or newer and a current driver; the log has its answer). The renderer's own makes the frames.";
+    case 3: return "Not in this build (it needs NVIDIA's SDK at build time). The renderer's own makes the frames.";
+    case 4: return "Not available on this GPU. The renderer's own makes the frames.";
+    case 5: return "NVIDIA DLSS Frame Generation needs a temporal Upscaler (NVIDIA DLSS or AMD FSR 4 on the Upscaler row) for the scene's depth and motion. Until then the renderer's own makes the frames, at any multiplier.";
+    default: break;
+    }
+    const int most = dlss_fg_most();
+    if (most > 0)
+        snprintf(b, sizeof b, "NVIDIA DLSS Frame Generation makes the frames, from the scene's depth and motion: 2x up to %dx on this GPU, no Auto.", most + 1);
+    else
+        snprintf(b, sizeof b, "NVIDIA DLSS Frame Generation makes the frames, from the scene's depth and motion (RTX 40 and newer): 2x and up, no Auto.");
+    return b;
 }
 MENU_HINTS(hn_pace, 0, "As soon as it is ready.", "At an even interval: less stutter, at up to one frame of delay.")
 MENU_HINTS(hn_output_res, 0, "The game's own size.",
@@ -583,7 +655,7 @@ const char* hn_filter(int v, int variant) {
 /// Sharpness: with DLSS or DLAA, the amount that suits them
 const char* hn_sharpness(int v, int variant) {
     static const char* const dlss = "DLSS and DLAA look softer than the game's own upscaler: around 80% suits them.";
-    const bool with_dlss = variant < 0 ? upscaler() == ur::DLSS || upscaler() == ur::DLAA : variant == 1;
+    const bool with_dlss = variant < 0 ? upscaler() == ur::DLSS : variant == 1;
     if (variant > 1) return nullptr;
     return with_dlss ? dlss : v == 0 ? "Off: the picture as it is." : nullptr;
 }
@@ -623,9 +695,23 @@ Row rows[] = {
      "Fills the whole screen with the game, without the window's border. The same as F11.", nullptr, false, true},
     {TAB_GRAPHICS, "GPU device", &opts.gpu_device, 0, 8, 1, tx_gpu,
      "Which graphics card the game runs on. Applies after a restart.", hn_gpu, true, true},
+    // (the picture's scaling, then who makes the frames: the Upscaler and its Render resolution (DLSS's model with them), Frame generation by
+    // and its multiplier right under it, Frame pacing)
+    {TAB_GRAPHICS, "Upscaler", &opts.dlss, 0, ur::kUpscalers - 1, 1, tx_upscaler, "What scales the 3D up to the Output resolution. The Render resolution below it is the share of the output the 3D is drawn at.",
+     hn_upscaler},
+    {TAB_GRAPHICS, "Render resolution", &opts.resolution, 0, ur::kValues - 1, 1, tx_resolution,
+     "The share of the output the 3D is drawn at; the Upscaler fills in the rest.", hn_resolution},
+    {TAB_GRAPHICS, "DLSS model", &opts.dlss_model, 0, ur::kModels - 1, 1, tx_dlss_model,
+     "Which of NVIDIA's DLSS networks draws the picture.", hn_dlss_model, false, true},
+    {TAB_GRAPHICS, "Frame generation by", &opts.framegen_by, 0, fgr::kBy - 1, 1, tx_framegen_by,
+     "Who makes the made frames, and so how many the Frame generation row offers. NVIDIA DLSS Frame Generation (RTX 40 and newer, "
+     "with a temporal Upscaler) is off unless chosen here. Changing it keeps the multiplier within what the new mode makes.",
+     hn_framegen_by, false, true},
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
-     "show artifacts.", hn_framegen, false, true},
+     "show artifacts. What the mode in Frame generation by makes: NVIDIA DLSS FG up to what NVIDIA's runtime makes on this GPU "
+     "(6x on an RTX 50, 2x on an RTX 40), AMD FSR 3.1 2x, the built-in one Auto and 2x to 8x. The Frame rate limit is the rate shown: "
+     "the game runs at the limit over the multiplier.", hn_framegen, false, true},
     {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff, "When each frame is shown.", hn_pace},
     {TAB_GRAPHICS, "HDR", &opts.hdr, 0, 2, 1, tx_hdr,
      "HDR10 out on an HDR display (Windows: Use HDR on in the display settings). Expanded: the game's SDR picture, its white at "
@@ -637,19 +723,15 @@ Row rows[] = {
      "The brightest highlights with HDR on: set it to your display's peak brightness.", nullptr, false, true},
     {TAB_GRAPHICS, "NVIDIA Reflex", &opts.reflex, 0, 2, 1, tx_reflex,
      "NVIDIA GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.", hn_reflex},
-    {TAB_GRAPHICS, "Frame rate limit", &opts.fps_limit, 0, 5, 1, tx_fps_limit,   // (HeyListen: HL_OPT_FPS_LIMIT, vk_opt_ids.h, host/nn_vi.c)
-     "The game's own frame rate. Above 60 it needs Game speed on Real time (the game's time follows the clock, so it does not run "
-     "faster), and your display must run that fast to show every frame.", nullptr, false, true},
+    {TAB_GRAPHICS, "Frame rate limit", &opts.fps_limit, 0, fgr::kLimits - 1, 1, tx_fps_limit,   // (HeyListen: HL_OPT_FPS_LIMIT, vk_opt_ids.h, host/nn_vi.c)
+     "The most frames a second shown: the game's own and, with frame generation on, the frames made between them. With a fixed "
+     "Frame generation multiplier the game runs at the limit over it (120 at 3x: the game at 40). Unlimited holds nothing back. "
+     "Above 60 it needs Game speed on Real time (the game's time follows the clock, so it does not run faster), and your display "
+     "must run that fast to show every frame.", nullptr, false, true},
     // (the picture's way, top to bottom: the output's size, what fills it from the 3D, the 3D's size, then the window)
     {TAB_GRAPHICS, "Output resolution", &opts.output_res, 0, kLastOutput, 1, tx_output_res,
      "The game's whole frame, HUD included, before it is scaled to the window. Docked only. Applies after a restart.",
      hn_output_res, true},
-    {TAB_GRAPHICS, "Upscaler", &opts.dlss, 0, ur::kUpscalers - 1, 1, tx_upscaler, "What scales the 3D up to the Output resolution.",
-     hn_upscaler},
-    {TAB_GRAPHICS, "DLSS model", &opts.dlss_model, 0, ur::kModels - 1, 1, tx_dlss_model,
-     "Which of NVIDIA's DLSS networks draws the picture.", hn_dlss_model, false, true},
-    {TAB_GRAPHICS, "Render resolution", &opts.resolution, 0, ur::kValues - 1, 1, tx_resolution,
-     "The share of the output the 3D is drawn at; the Upscaler fills in the rest.", hn_resolution},
     {TAB_GRAPHICS, "Window scaling filter", &opts.upscale, 0, 2, 1, tx_filter,
      "How the finished picture is scaled to the window, when its size differs from the Output resolution.", hn_filter},
     {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
@@ -959,7 +1041,8 @@ bool row_shown(int i) {
 #endif
     }
     return (rows[i].cheat < 0 || cheats_on()) &&
-           (rows[i].value != &opts.dlss_model || ur::model_shown(dlss_built()));
+           (rows[i].value != &opts.dlss_model || ur::model_shown(dlss_built())) &&
+           (rows[i].value != &opts.framegen_by || dlss_built() || fsr3fi::capable());   // (a build with DLSS, or a GPU AMD FSR 3.1's frame interpolation runs on: the row has a choice)
 }
 int tab_row_count(int t) {
     int c = 0;
@@ -1161,6 +1244,18 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         v = step_output_choice(*r.value, dir);
         if (v == *r.value) return;
     }
+    // (Frame generation: the arrows step over what the mode that makes the frames offers (framegen_rows.h): Off, Auto where it has
+    // one, 2x to its top (NVIDIA DLSS FG: its runtime's most + 1, AMD FSR 3.1: 2x). A saved value past it shows as the top
+    // (tx_framegen), so an arrow steps from the value shown, up past the top to Off and down from Off to the top. A value set as
+    // it is (not an arrow's step from the saved one) is kept as the mode makes it)
+    if (r.value == &opts.framegen)
+        v = dir && v == *r.value + dir * r.step ? fgr::step(framegen_by_now(), dlss_fg_most(), *r.value, dir)
+                                                : fgr::clamp(framegen_by_now(), dlss_fg_most(), v);
+    // (Frame generation by: NVIDIA DLSS FG is not a stop where this build has none: the row is there for AMD FSR 3.1's)
+    if (r.value == &opts.framegen_by) {
+        v = (v % fgr::kBy + fgr::kBy) % fgr::kBy;
+        if (v == fgr::BY_DLSS && !dlss_built()) v = (v + (dir < 0 ? fgr::kBy - 1 : 1)) % fgr::kBy;
+    }
     if (stops_at_ends(r)) v = std::min(std::max(v, r.lo), r.hi);   // (a scale: it stops at its ends)
     if (r.value == &opts.pad_layout) {
         if (v > 2) v = dir > 0 ? 0 : 2;
@@ -1179,6 +1274,9 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
             sync_preset_budgets(0);
         }
     }
+    // (another mode makes the frames: the saved multiplier is kept within what it makes, never raised: DLSS FG at 8x on an RTX 50
+    // becomes 6x, AMD FSR 3.1 2x, Auto with either 2x)
+    if (r.value == &opts.framegen_by) opts.framegen = fgr::on_mode_change(framegen_by_now(), dlss_fg_most(), opts.framegen);
     if (r.value == &opts.mic && can_mic()) mic_chosen();   // (hookshot)
     {   // (a row that takes a restart, or a preset that sets one: asked again at the next close)
         int now[mr::kMax];
@@ -2054,6 +2152,16 @@ void startup_screen(const StartupView* view) {
     startup_on.store(true, std::memory_order_release);
 }
 
+static bool dlss_model_saved;   // (hookshot_options.ini has a dlss_model line)
+void menu_first_run_model(uint32_t vendor_id, uint32_t device_id) {
+    if (dlss_model_saved || vendor_id != 0x10de) return;   // (only NVIDIA GPUs run DLSS; a saved value is never changed)
+    dlss_model_saved = true;
+    opts.dlss_model = ur::default_model(vendor_id, device_id, device_vram_bytes());
+    save();   // (at once: the menu shows the real value, and the player's change is saved on top of it)
+    logf("vk: DLSS model: first run, started at %s for this GPU (%#x), saved to the options file",
+         opts.dlss_model == ur::MODEL_CNN ? "DLSS 3 (CNN, preset E)" : opts.dlss_model == ur::MODEL_M ? "DLSS 4.5 (preset M)" : "DLSS 4 (preset K)",
+         (unsigned)device_id);
+}
 void menu_init() {
     static bool done;
     if (done) return;
@@ -2080,6 +2188,7 @@ void menu_init() {
                 if (!r.value || strcmp(line, ini_key(r))) continue;
                 const int v = atoi(eq + 1);
                 *r.value = r.value == &opts.output_res ? output_choice_text(eq + 1) : std::min(std::max(v, r.lo), r.hi);
+                if (r.value == &opts.dlss_model) dlss_model_saved = true;   // (a saved model is the player's: menu_first_run_model)
             }
             has_resolution |= !strcmp(line, "resolution");
             v2 |= !strcmp(line, "options_version");
@@ -2098,6 +2207,11 @@ void menu_init() {
             mic_tell_host();
         }
         if (!has_resolution && old_dynres >= 0) opts.resolution = old_dynres ? 0 : 1;
+        // (an Upscaler saved as DLAA or FSR 4's native AA, which are the Render resolution's native choice now: DLSS or FSR 4 with
+        // it. The 3D was at full size with them, whatever the Render resolution row kept)
+        if (ur::migrate(opts.dlss, opts.resolution))
+            logf("vk: options: the saved Upscaler was DLAA or FSR 4's Native AA: now the Upscaler %s with Render resolution %s",
+                 opts.dlss == ur::FSR4 ? "AMD FSR 4" : "NVIDIA DLSS", opts.dlss == ur::FSR4 ? "Native AA" : "DLAA (native)");
         opts.rumble = rumble_step(opts.rumble);   // (a hand-edited 60: 50, on the arrows' steps)
         // (Game speed is Real time by default now: Per frame played at half speed at 30 fps, the "slow motion" players
         // reported. An options file from before kept the old default whether chosen or not: Real time for it too)
@@ -2122,6 +2236,14 @@ void menu_init() {
     restart_init();   // (what this run started with: the rows that take a restart differ from it once changed)
 }
 
+int menu_fps_limit() {
+    if (!opts.realtime) return -1;   // (Per frame: the game's steps are whole frames of 1/60 s, the limit does not apply)
+    static const int env = [] {   // (as host/nn_vi.c reads them: HOS_FPS_LIMIT, or Hookshot's HOS_FPS_MAX)
+        const char* e = getenv("HOS_FPS_LIMIT") ? getenv("HOS_FPS_LIMIT") : getenv("HOS_FPS_MAX");
+        return e ? atoi(e) : 0;
+    }();
+    return env > 0 ? std::clamp(env, 30, 360) : fgr::limit_fps(opts.fps_limit);
+}
 bool resolution_auto() { return upscaler_rows::snap(upscaler(), opts.resolution) == 0; }
 int resolution_scale() {
     const int drawn = upscaler_rows::snap(upscaler(), opts.resolution);
@@ -2429,7 +2551,7 @@ void menu_tick() {
         // layout is not applied over them at start)
         if (open_now.load()) auto_pad = pad_last;   // (Menu size Auto: by what opened the menu)
         if (open_now.load()) opts.pad_layout = detect_pad_layout();
-        if (open_now.load()) dlss_probe(), fsr4_probe();   // (whether the Upscaler row can offer DLSS and FSR here: asked once)
+        if (open_now.load()) dlss_probe(), dlss_fg_probe(), fsr4_probe();   // (whether the Upscaler row can offer DLSS and FSR here: asked once)
         if (open_now.load()) refresh_mics();   // (the microphones as they are now)
     }
     if (open_now.load() && page == 5) {   // (hookshot) the restart question: Later (the default) or Restart now

@@ -70,8 +70,10 @@ in [USER_GUIDE.md](USER_GUIDE.md#install-with-recomplauncher).
   keys of the choices; the menu writes the whole file again when the player changes a row, so the two agree.
 - `settings`: one row per menu row, with the menu's own values. A test (`test_recomplauncher_json.py`) checks that every key is a
   row of the menu and every value is one the row takes. The keys are the rows' names with `_` (`frame_rate_limit`,
-  `frame_generation`, `skip_title_screen`); `dlss` is the Upscaler (0 the game's own, 1 DLSS, 2 DLAA, 3 FSR 3.1, 4 FSR 4, 5 FSR 4 Native AA, 6 Off: no upscaling network; `gpu/vk/upscaler_rows.h`), `resolution` the Render resolution, `upscaling` the Window
+  `frame_generation`, `skip_title_screen`); `dlss` is the Upscaler (0 the game's own, 1 DLSS, 3 FSR 3.1, 4 FSR 4, 6 Off: no upscaling network; 2 DLAA and 5 FSR 4 Native AA are not choices any more, and a file that saves them is read as 1 or 4 with the native Render resolution, `migrate` in `gpu/vk/upscaler_rows.h`), `resolution` the Render resolution (7: native, DLAA with DLSS and Native AA with FSR 4), `frame_rate_limit` the Frame rate limit (0 to 5 the rates from 60 to 240, 6 Unlimited), `frame_generation_by` Frame generation by (0 built-in, 1 NVIDIA DLSS FG, 2 AMD FSR 3.1 FG), `upscaling` the Window
   scaling filter, `output_res` the Output resolution (see `ini_key` in `vk_menu.cpp`).
+  `dlss_model` has no `defaults` on purpose: the schema calls them the game's values for keys the file does not have yet, which a
+  launcher may write before the first run, and the game picks that one for the GPU (`menu_first_run_model`).
 - `saves`, `folders`, `actions`: saves are `HeyListen/user/save` on Windows and `~/.local/share/heylisten/save` on Linux. The
   launcher attaches the newest `.log` of the `logs` folder to a crash report: on Windows the game (`host/hos_run_logs.h`, called
   from `hos_main.c` once `hookshot_log.txt` is open) keeps `HeyListen/logs/hookshot.log` (this run) and `hookshot.1.log` to

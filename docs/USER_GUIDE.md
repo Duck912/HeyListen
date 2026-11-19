@@ -50,15 +50,44 @@ the **Open menu** row takes one gamepad button, or two pressed together (L3 + R3
 the ways above keep working. A combination held does not reach the game. When a controller is opened the game's log
 (`hookshot_log.txt`) says what it is and which buttons open the menu. Frame generation is off by default.
 
-### Upscaler
+### Graphics: Upscaler, Render resolution and frame generation
 
-The menu's Graphics tab has an **Upscaler** row: what scales the 3D picture up to the output. **Game's own** (the default) is
-the game's own upscaling network. **NVIDIA DLSS**, **NVIDIA DLAA**, **AMD FSR 3.1**, **AMD FSR 4** and **AMD FSR 4 Native AA** are
-offered where they run. **Off** is on every GPU: the game's upscaling network is not run at all, and the 3D is drawn at the
-**Render resolution** and stretched to the output, with no anti-aliasing. Try it if the game's own network shows glitches on your
-GPU (some older AMD cards, handhelds), or to save its GPU time. Render resolution works as with the game's own upscaler (at 100% the
-picture is the 3D as drawn), **Sharpness** still applies (it works on the picture after the upscaler), and frame generation is
-unaffected. In `hookshot_options.ini` it is `dlss=6`; the launcher's Upscaler setting has it as **Off**.
+The Graphics tab has these rows together, in this order (the Quality preset, Fullscreen and GPU device first, the picture's output
+and window settings after):
+
+1. **Upscaler**: what scales the 3D picture up to the output. **Game's own** (the default) is the game's own upscaling network.
+   **NVIDIA DLSS**, **AMD FSR 3.1** and **AMD FSR 4** are offered where they run. **Off** is on every GPU: the game's upscaling
+   network is not run at all, and the 3D is drawn at the **Render resolution** and stretched to the output, with no anti-aliasing. Try
+   it if the game's own network shows glitches on your GPU (some older AMD cards, handhelds), or to save its GPU time. Render
+   resolution works as with the game's own upscaler (at 100% the picture is the 3D as drawn), **Sharpness** still applies (it works on
+   the picture after the upscaler), and frame generation is unaffected. In `hookshot_options.ini` it is `dlss=6`; the launcher's
+   Upscaler setting has it as **Off**.
+2. **Render resolution**: the share of the output the 3D is drawn at. With **NVIDIA DLSS** its last choice is **DLAA (native)**: the 3D
+   at full size (100%) with DLSS's anti-aliasing, the sharpest and the slowest. With **AMD FSR 4** the same choice is **Native AA (FSR
+   4)**. Other upscalers have no such choice. (They were Upscaler choices before; an options file saved with NVIDIA DLAA or FSR 4
+   Native AA as the Upscaler is read as DLSS or FSR 4 with this Render resolution, and runs as before. `resolution=7` in the options
+   file.)
+3. **DLSS model** (with NVIDIA DLSS).
+4. **Frame generation by**: who makes the made frames: **Built-in / AMD FSR 3.1** (the game's own interpolation, and AMD FSR 3.1's at 2x
+   where it runs), **NVIDIA DLSS FG** (RTX 40 and newer, with a temporal upscaler, DLSS or FSR 4, and NVIDIA's runtime files) or
+   **AMD FSR 3.1 FG**. In `hookshot_options.ini` it is `frame_generation_by` (0, 1, 2).
+5. **Frame generation**, directly under it: Off, Auto and 2x to 8x, but only what the mode above makes. **NVIDIA DLSS FG** goes up to
+   what NVIDIA's runtime makes on your GPU (**6x on an RTX 50, 2x on an RTX 40**) and has no Auto. **AMD FSR 3.1 FG** makes 2x only.
+   **Built-in** has Auto and 2x to 8x. Changing the mode keeps the multiplier within the new mode's, never raising it (8x becomes 6x
+   when you switch to DLSS FG on an RTX 50); a higher value saved before shows, and runs, as the top of the mode.
+6. **Frame pacing**.
+
+### Frame rate limit
+
+**Frame rate limit** is the rate shown: the game's own frames and, with frame generation on, the frames made between them. Frame
+generation Off or Auto: the game runs at the limit (with Auto, made frames fill what the game falls short of, up to the limit and your
+display's refresh). With a fixed multiplier the game runs at the limit divided by it: at 120 with 3x the game runs at 40 and 120 frames a
+second are shown; at 240 with 4x the game runs at 60. The game never runs under 20 frames a second for the limit: where the multiplier
+would leave it less (60 with 4x or more) the multiplier is lowered to the highest that does not (3x at 60, 4x at 90, 6x at 120). The
+FPS counter's line **Frame limit** says it, for example `120 fps (game 40 x 3)`. **Unlimited** (after 240; `frame_rate_limit=6`)
+holds nothing back: the game runs as fast as the PC can, and every one of its frames gets its made frames (your display, and a
+V-Sync setting of the driver, may still hold the shown rate). Above 60 the limit needs **Game speed** on Real time (the default); with
+Per frame the game runs at 60 as before and the limit does not apply.
 
 ## Install with RecompLauncher
 
@@ -71,6 +100,7 @@ not replace the builder: it runs it for you, with no window.
 3. Tick **NVIDIA DLSS** or **AMD FSR 4** if you want them (each asks you to accept its maker's license; the files are
    downloaded from NVIDIA or AMD to your PC, checked, put in place for you, and never shared; nothing to copy by hand). On an NVIDIA RTX card the launcher also fetches NVIDIA's own `nvngx_dlss.dll`
    (the optional **NVIDIA DLSS runtime** item of Easy Setup, which you can switch off) into the game's `ngx` folder.
+   In the game's menu (Graphics, **DLSS model**) you choose **DLSS 4** or **DLSS 4.5** (preset M or L) for every mode, DLAA included, on any RTX card. **DLSS 3** (the older CNN model) is lighter on video memory. The first time, the game picks DLSS 3 on a card with less than 7 GB of video memory, else DLSS 4 on RTX 20 and 30 (DLSS 4.5 costs them more GPU time, but you can use it) and DLSS 4.5 on RTX 40 and 50, and saves it; after that your choice is kept.
    Two more ticks are **off** unless you turn them on: **Send anonymous performance statistics** and **Send crash reports
    automatically**. They only write `send_performance_stats=1` and `send_crash_reports=1` into the game's
    `hookshot_options.ini`, the two rows of the in-game menu (Gameplay tab); what they send is in

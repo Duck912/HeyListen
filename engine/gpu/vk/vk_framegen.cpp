@@ -20,6 +20,9 @@
 #include <cmath>
 
 #include "vk_framegen.h"
+#include "framegen_rows.h"   // (the multiplier each Frame generation by makes, the limit's share)
+#include "vk_dlss.h"   // (NVIDIA DLSS Frame Generation: vk_dlss.cpp)
+#include "vk_temporal.h"   // (temporal_wanted: DLSS FG's inputs)
 #include "vk_fsr3_inputs.h"   // (AMD FSR 3.1 frame interpolation's depth and motion)
 #include "vk_fsr3fi.h"
 #include "vk_draw.h"   // (extern_guarded_shader_module, extern_guarded_compute)
@@ -125,8 +128,9 @@ int auto_cap() {
     const int hz = (display_refresh_mhz() + 500) / 1000;
     return std::clamp(hz > 0 ? (hz + 29) / 30 : 2, 2, 4);
 }
-int multiplier() {   // (the Insert menu; 1 Auto (its most); the game's frames alone at 0)
-    return opts.framegen == 1 ? auto_cap() : std::clamp(opts.framegen, 1, kMaxMult);
+int multiplier() {   // (the Insert menu's, as it runs: framegen_now; 1 Auto (its most); the game's frames alone at 0)
+    const int framegen = framegen_now();
+    return framegen == 1 ? auto_cap() : std::clamp(framegen, 1, kMaxMult);
 }
 /// Auto: the display's refreshes in the game frame's interval (last, now], next the first not given a frame yet (moved
 /// past them). Each one's place between the two game frames in t (1: this one) and its time in at; most of them at the
@@ -238,7 +242,7 @@ bool init() {
         return undo();
     }
     fg.failed = false;
-    if (opts.framegen == 1)
+    if (framegen_now() == 1)
         logf("vk: frame interpolation ready: Auto, a frame for each of the display's refreshes (%d Hz; up to %d a game frame)",
              (display_refresh_mhz() + 500) / 1000, multiplier());
     else
@@ -465,6 +469,16 @@ void display_main() {
 
 } // namespace
 
+int framegen_by_now() {
+    // (DLSS FG makes the frames only where it is asked for and has a temporal Upscaler's inputs: else the renderer's own does,
+    // as the Frame generation by row's line says)
+    if (dlss_fg_wanted() && temporal_wanted()) return framegen_rows::BY_DLSS;
+    return opts.framegen_by == framegen_rows::BY_FSR3 ? framegen_rows::BY_FSR3 : framegen_rows::BY_OWN;
+}
+int framegen_now() {
+    return framegen_rows::limited(menu_fps_limit(), framegen_rows::clamp(framegen_by_now(), dlss_fg_most(), opts.framegen));
+}
+
 // The Insert menu's Frame generation is off at 0. While it was ignored, every present still copied the frame and
 // reduced it to luma (framegen_record), then a second thread showed it. Open areas paid for that on a full GPU and
 // gained no made frames. Auto (1) and 2x and up are the interpolation; RX_VK_FRAMEGEN=0 keeps it off entirely.
@@ -601,15 +615,16 @@ VkImage framegen_made_image(uint32_t* w, uint32_t* h) {
 /// the scene's depth and motion (vk_fsr3_inputs.h): 1 when it made it into set.frame[0], 0 when it did not (no inputs this
 /// present, a reset, anything not made), which leaves the set to the interpolation below. sequence: framegen_record's count
 /// of its presents (one it did not hand over, a gap among them, makes the next one a reset: vk_fsr3fi.h Inputs::sequence)
-int fsr3fi_frame(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_t uh, uint64_t sequence) {
+int fsr3fi_frame(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_t uh, uint64_t sequence,
+                 const fsr3_inputs::Frame* taken) {
     // (every 600 presents asked: how many FSR made, and how many it left to the interpolation below and why)
     static uint64_t asked = 0, made = 0, no_inputs = 0;
     if (++asked % 600 == 0)
         logf("vk: fsr3fi: %llu of the last 600 made frames by FSR 3.1, %llu without its inputs (the renderer's own made them)",
              (unsigned long long)made, (unsigned long long)no_inputs),
             made = no_inputs = 0;
-    fsr3_inputs::Frame f;
-    if (!fsr3_inputs::take(f)) return no_inputs++, 0;
+    if (!taken) return no_inputs++, 0;
+    const fsr3_inputs::Frame& f = *taken;
     fsr3fi::Inputs in;
     in.color = fg.frames[cur].view;
     in.color_image = fg.frames[cur].image;
@@ -634,6 +649,45 @@ int fsr3fi_frame(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_
              uh, f.width, f.height);
     }
     return 1;
+}
+
+/// (hookshot) The count made frames of a set by NVIDIA DLSS Frame Generation (vk_dlss.cpp), from this frame's colour and the scene's
+/// depth, motion and camera (vk_fsr3_inputs.h): count when it made them into set.frame[0..count), 0 when it did not (not asked
+/// for, no inputs this present, more frames than its runtime makes, refused), which leaves the set to the others, nothing written
+int dlssg_frames(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_t uh, int count, uint64_t sequence,
+                 const fsr3_inputs::Frame* taken) {
+    static uint64_t asked = 0, made = 0, no_inputs = 0;
+    if (++asked % 600 == 0)
+        logf("vk: dlssg: %llu of the last 600 sets made by NVIDIA DLSS FG, %llu without its inputs (the renderer's own made them)",
+             (unsigned long long)made, (unsigned long long)no_inputs),
+            made = no_inputs = 0;
+    if (!taken) return no_inputs++, 0;
+    const fsr3_inputs::Frame& f = *taken;
+    if (count < 1 || count > kMaxMult - 1 || !f.depth_image || !f.motion_image) return 0;
+    DlssFgInputs in;
+    in.depth = f.depth_image, in.depth_view = f.depth, in.depth_format = VK_FORMAT_R32_SFLOAT;
+    in.motion = f.motion_image, in.motion_view = f.motion, in.motion_format = VK_FORMAT_R16G16_SFLOAT;
+    in.render_w = f.width, in.render_h = f.height;
+    std::memcpy(in.projection, f.projection, sizeof in.projection);
+    std::memcpy(in.view_projection, f.view_projection, sizeof in.view_projection);
+    std::memcpy(in.prev_view_projection, f.prev_view_projection, sizeof in.prev_view_projection);
+    in.have_prev = f.have_prev;
+    in.jitter[0] = f.jitter[0], in.jitter[1] = f.jitter[1];
+    in.near_z = f.camera.near_plane, in.far_z = f.camera.far_plane, in.fov_y = f.camera.fov_y;
+    in.reset = f.reset;
+    VkImage outs[kMaxMult];
+    VkImageView views[kMaxMult];
+    for (int k = 0; k < count; k++) outs[k] = set.frame[k].image, views[k] = set.frame[k].view;
+    const int n = dlss_fg_frames(cmd, fg.frames[cur].image, fg.frames[cur].view, uw, uh, count, outs, views, in, sequence);
+    if (n != count) return 0;
+    made++;
+    static bool told = false;
+    if (!told) {
+        told = true;
+        logf("vk: dlssg: NVIDIA DLSS Frame Generation makes %d frame(s) between each two of the game's (%ux%u, its depth and "
+             "motion %ux%u)", count, uw, uh, f.width, f.height);
+    }
+    return n;
 }
 
 bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t sh, const int crop[4]) {
@@ -661,7 +715,7 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     // (the multiplier the sets were made for, ensure_size above: the row read again here could be one step up by now, the
     // menu runs on the display thread, and the set's last image would be one that was never made)
     const int cur = fg.cur, prev = cur ^ 1, m = fg.mult;
-    const bool auto_rate = opts.framegen == 1;   // (read once, for the same reason)
+    const bool auto_rate = framegen_now() == 1;   // (read once, for the same reason)
     const bool blend = fg.have_prev && !gap;
     static uint64_t sequence = 0;
     sequence++;
@@ -674,8 +728,11 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     set->made = 0;
     set->shown = -1;
     if (auto_rate) {   // (Auto: a frame for each of the display's refreshes, at its own time)
+        // (the display's refresh, or the Frame rate limit's period where that is longer: Auto fills what the game falls short of
+        // up to the limit, as the limit is the rate presented)
         const int mhz = display_refresh_mhz();
-        const int64_t period = (int64_t)(1e12 / (mhz > 0 ? mhz : 60000));
+        const int limit = menu_fps_limit();
+        const int64_t period = std::max((int64_t)(1e12 / (mhz > 0 ? mhz : 60000)), limit > 0 ? (int64_t)(1000000000LL / limit) : 0);
         float t[kMaxMult];
         int64_t at[kMaxMult];
         int n;
@@ -716,7 +773,13 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     }
     // (hookshot) At 2x, AMD FSR 3.1's frame interpolation where it runs; it makes the midpoint only, so 3x and more (and Auto,
     // above) stay with the interpolation below, as does any present it does not take
-    if (blend && m == 2 && fsr3fi::frames_wanted()) set->made = fsr3fi_frame(cmd, *set, cur, uw, uh, sequence);
+    // (NVIDIA DLSS Frame Generation first where it is chosen, at any fixed multiplier it can make; the inputs are taken once)
+    fsr3_inputs::Frame inputs;
+    const bool dlssg = dlss_fg_wanted(), fsr_fi = m == 2 && fsr3fi::frames_wanted();
+    const bool have_inputs = blend && m >= 2 && (dlssg || fsr_fi) && fsr3_inputs::take(inputs);
+    if (!dlssg) dlss_fg_idle();   // (the row left at the renderer's own: its feature and memory given back)
+    if (blend && m >= 2 && dlssg) set->made = dlssg_frames(cmd, *set, cur, uw, uh, m - 1, sequence, have_inputs ? &inputs : nullptr);
+    if (set->made == 0 && blend && fsr_fi) set->made = fsr3fi_frame(cmd, *set, cur, uw, uh, sequence, have_inputs ? &inputs : nullptr);
     if (set->made == 0 && blend && m > 1) {
         pass(cmd, fg.flow, {{fg.lumas[prev].view, fg.nearest}, {fg.lumas[cur].view, fg.nearest},
                             {fg.flows[0].view, VK_NULL_HANDLE}}, cw, ch);

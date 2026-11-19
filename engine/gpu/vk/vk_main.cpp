@@ -288,6 +288,7 @@ bool pick_device() {
     dev.physical = all[best];
     vkGetPhysicalDeviceProperties(dev.physical, &dev.props);
     vkGetPhysicalDeviceMemoryProperties(dev.physical, &dev.memory);
+    menu_first_run_model(dev.props.vendorID, dev.props.deviceID);   // (the DLSS model row's first-run default, by the GPU)
     return true;
 }
 
@@ -410,6 +411,7 @@ bool create_device() {
     }
 #endif
     dlss_device_extensions(want, exts);   // (hookshot: NVIDIA DLSS's, vk_dlss.cpp)
+    dlss_fg_device_extensions(want, exts);   // (and DLSS Frame Generation's, which NGX names: vk_dlss.cpp)
     bool fsr_descriptor_buffer = false;   // (hookshot, linux: only with a Vulkan FSR 4 library beside the game, vk_fsr4.cpp)
     if (fsr4_wants_descriptor_buffer()) optional(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME, fsr_descriptor_buffer);
     reflex_device_extensions(want, exts);   // (hookshot: NVIDIA Reflex's, vk_reflex.cpp)

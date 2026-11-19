@@ -4,8 +4,13 @@
    Longshot's, in vk_api.h and the renderer's option table) are left alone: 10 is upstream's Text size, 60 Longshot's item
    wheel. The options file is keyed by row name, so the id is not stored anywhere. */
 
-/* The Frame rate limit row (host/nn_vi.c asks, gpu/vk/vk_replay.cpp answers in frames a second: 60, 90, 120, 144, 165, 240) */
+/* The Frame rate limit row (host/nn_vi.c asks, gpu/vk/vk_replay.cpp answers in frames a second: 60, 90, 120, 144, 165, 240; 0
+   for Unlimited). The limit is the rate presented: the game's frames and the frame generation's made ones. */
 #define HL_OPT_FPS_LIMIT 90
+
+/* The multiplier fixed frame generation runs at now (host/nn_vi.c asks, gpu/vk/vk_replay.cpp answers: 2 to 8, or 1 for none made:
+   Off, Auto, or it is not running). The game's own rate is the limit over it. */
+#define HL_OPT_FRAMEGEN_MULT 91
 
 /* The Skip title screen row (host/oot_autoload.c asks, gpu/vk/vk_replay.cpp answers 0 or 1). 44 is the id Longshot's change
    of the same row uses in vk_api.h (free in this tree: the ids there run 32 to 35, 40 to 43), so the two agree. */
