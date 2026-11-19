@@ -16,6 +16,10 @@ Each is a runtime switch where it can be, so the game's own path stays reachable
   before any recompute. So the fixed path kept the dynamic path's last scale (0.75 docked: 1536x864 at every setting). Flag 1 now
   also asks for the recompute, and on the fixed path the flags +0xe20 bits 3/4 (a hardcoded 0.75 / 0.5 in place of the scale)
   are not looked at.
+- The Voice Language option kept after a restart (host/oot_voice.c): the voice resource's update (f_80a9ca30) asks
+  GameDataMgr whether the option was written (f_80a9d1c0) and applies it only then; option.sav's value replaces the
+  option without a write, so a saved choice was never applied (issue 430). The call goes through hos_oot_voice_option,
+  which also says yes when the option's value is not the one of the update before. The supported build only.
 """
 import glob
 import os
@@ -41,6 +45,26 @@ def fixed_scale(t):
         return t, 0
     t = t.replace(APPLY_OLD, APPLY_NEW, 1).replace(FLAGS_OLD, FLAGS_NEW, 1)
     return t.replace('#include "a64.h"\n', '#include "a64.h"\n' + DECL2, 1), 1
+
+
+# The voice resource's update (f_80a9ca30) asks GameDataMgr whether OptionData.VoiceLanguage was written (f_80a9d1c0, its one
+# call there, by its return address) and reads and applies the option only then. Made through host/oot_voice.c
+# hos_oot_voice_option, which calls the game's own and also answers yes when the option's value changed without a write
+# (option.sav read after the start: issue 430). f_80a9d1c0's other callers stay as they are.
+VOICE_OPTION_OLD = "c->x[30] = 0x80a9ca9cULL; f_80a9d1c0(c);"
+VOICE_OPTION_NEW = "c->x[30] = 0x80a9ca9cULL; hos_oot_voice_option(c, f_80a9d1c0);   /* (nx2/oot_patches.py: host/oot_voice.c) */"
+VOICE_OPTION_DECL = "void hos_oot_voice_option(Ctx *A64_NOESC c, A64Fn game);\n"
+
+
+def patch_voice_option(s):
+    """The voice resource's question in one file's text: (text, 1 when made now or found made, else 0)"""
+    if VOICE_OPTION_NEW in s:
+        return s, 1
+    if s.count(VOICE_OPTION_OLD) != 1 or s.count('#include "a64.h"\n') != 1:
+        return s, 0
+    s = s.replace(VOICE_OPTION_OLD, VOICE_OPTION_NEW, 1)
+    return s.replace('#include "a64.h"\n', '#include "a64.h"\n' + VOICE_OPTION_DECL, 1), 1
+
 
 TEXT_DECL = "extern volatile float hos_text_scale;\n"
 LIFE_BUILD_ID = "e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348"
@@ -284,6 +308,7 @@ def apply(gen, *, protect_hearts=False, required=False):
         done["player flight rotation"] = 0
         done["free camera"] = 0
         done["mouse camera"] = 0
+        done["voice option check"] = 0
     for path in sorted(glob.glob(os.path.join(gen, "code_*.c"))):
         with open(path, encoding="utf-8", newline="") as f:
             s = f.read()
@@ -302,6 +327,12 @@ def apply(gen, *, protect_hearts=False, required=False):
         if n:
             done["fixed path's scale"] += 1
             print("oot_patches: the fixed path's scale in", os.path.basename(path))
+        if protect_hearts:
+            voice, found = patch_voice_option(out)
+            done["voice option check"] += found
+            if voice != out:
+                print("oot_patches: the Voice Language option followed after option.sav is read in", os.path.basename(path))
+            out = voice
         life = patch_life(out) if protect_hearts else None
         if life is not None:
             out = life
