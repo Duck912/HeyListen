@@ -65,7 +65,7 @@ Full guide: [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
 
 Saves live in `user\save\` inside the game folder. The builder can also **import and export Ocarina of Time saves** from and to Lichii, Eden and its forks, NX2navi, or any folder, with a backup first.
 
-Problems: [issues](https://github.com/Sacrappy/HeyListen/issues) (include your GPU, driver and log; never attach game files, keys or saves).
+Problems: [issues](https://github.com/Sacrappy/HeyListen/issues) (include your GPU, driver and log; never attach game files, keys or saves). For a symptom a maintainer may name a switch for, [docs/SWITCHES.md](docs/SWITCHES.md) lists every environment switch (`hookshot_env.txt` beside `image.bin`) and what it fixes.
 
 ## Performance
 
