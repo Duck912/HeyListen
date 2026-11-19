@@ -45,10 +45,12 @@ def check_source():
     if shader.count("&raw->ready);") < 2:
         raise SystemExit("a graphics or mesh translation job is pushed without its ready flag")
     jobs = (ROOT / "gpu/vk/vk_jobs.cpp").read_text(encoding="utf-8")
-    wait = jobs[jobs.index("void jobs_wait("):]
+    wait = jobs[jobs.index("bool jobs_wait("):]
     wait = wait[:wait.index("\n}\n")]
     if "it->flag == &flag" not in wait or 'getenv("RX_VK_JOB_STEAL")' not in wait:
         raise SystemExit("jobs_wait no longer runs a queued job it waits for")
+    if "return fresh" not in wait:
+        raise SystemExit("jobs_wait no longer tells whether the job ran during the wait")
 
 
 def main():
