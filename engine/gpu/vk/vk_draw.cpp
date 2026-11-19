@@ -7401,7 +7401,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     // the queue at the pace the storm always had. Engaged above RX_VK_STORM_HOLD jobs (200), released below half of
     // that: the queue saws with each frame's pushes, and a hold that flickered with it drew the churn's transient
     // frames anyway. 0: off, drawn as before
-    static const int hold_deep = getenv("RX_VK_STORM_HOLD") ? atoi(getenv("RX_VK_STORM_HOLD")) : 200;
+    static const int hold_deep = getenv("RX_VK_STORM_HOLD") ? atoi(getenv("RX_VK_STORM_HOLD")) : 0;   // (off by default since v0.4.3: the steal it covers for is off; RX_VK_STORM_HOLD=200 with RX_VK_JOB_STEAL=1)
     static const int64_t hold_off = (int64_t)std::max(1, hold_deep / 2);
     thread_local bool hold_on = false;
     const int64_t pending_jobs = jobs_pending();

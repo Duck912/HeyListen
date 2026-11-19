@@ -6,6 +6,7 @@ python -I -B tests/test_jobs_wait_runs_queued.py
 """
 import argparse
 import shutil
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -68,7 +69,8 @@ def main():
         subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-pthread", "-I", str(tmp),
                         str(tmp / "vk_jobs.cpp"), str(ROOT / "tests/test_jobs_wait_runs_queued.cpp"), "-o", str(exe)],
                        check=True)
-        subprocess.run([str(exe)], check=True, timeout=60)
+        # (the steal is off by default since v0.4.3: this checks it when turned on)
+        subprocess.run([str(exe)], check=True, timeout=60, env={**os.environ, "RX_VK_JOB_STEAL": "1"})
 
 
 if __name__ == "__main__":
