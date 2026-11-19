@@ -150,6 +150,8 @@ def patch_view(source):
     if end < 0:
         end = len(source)
     body = source[start:end]
+    if "hos_oot_free_view(c, c->x[20])" in body:   # (fork: nx2/oot_view.py put the call in at lift time: found, not twice)
+        return source
     for anchor in VIEW_ANCHORS:
         if body.count(anchor) == 1:
             break
