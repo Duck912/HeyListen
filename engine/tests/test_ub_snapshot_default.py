@@ -7,6 +7,7 @@ discrete GPU without them (GCN since #2343, RX_VK_MIRROR=0), it stays in place. 
 
     python -I -B tests/test_ub_snapshot_default.py [--cxx g++]
 """
+import os
 import argparse
 from pathlib import Path
 import subprocess
@@ -67,6 +68,9 @@ def main():
     p.add_argument("--cxx", default="g++")
     p.add_argument("--source", type=Path, default=ROOT / "gpu/vk/vk_draw.cpp")
     a = p.parse_args()
+    if os.name == "nt":   # (an empty RX_VK_UB_SNAPSHOT can't be set on Windows: this tree's run_all has no RUN_ALL_SKIP)
+        print("skip: the fixture sets the switch with POSIX setenv: checked on Linux")
+        return
     code = FIXTURE.replace("SELECTION", selection(a.source.read_text(encoding="utf-8")))
     with tempfile.TemporaryDirectory(prefix="ub-snapshot-") as tmp:
         cpp, exe = Path(tmp) / "t.cpp", Path(tmp) / "t"
